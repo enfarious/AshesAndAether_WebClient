@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xargs grep -l -i \"glb\\\\|building\\\\|road\\\\|extrude\\\\|osm\\\\|geojson\")",
+      "Bash(Get-ChildItem F:/Projects/AshesAndAether/AshesAndAether_Server/scripts -Filter \"*.ps1\" -Recurse)",
+      "Bash(Select-Object Name, LastWriteTime)",
+      "Bash(python scripts/terrain/build_terrain_mesh.py --heightmap data/terrain/usa_ny_stephentown_dem --origin-lat 42.5513326 --origin-lon -73.3792285 --output data/world/assets/USA_NY_Stephentown/usa_ny_stephentown_terrain.glb --downsample 2)",
+      "Bash(# Check if there''s a venv ls F:/Projects/AshesAndAether/AshesAndAether_Server/.venv/Scripts/ | head -5 || ls F:/Projects/AshesAndAether/AshesAndAether_Server/venv/Scripts/)",
+      "Bash(.venv/Scripts/python scripts/terrain/build_terrain_mesh.py --heightmap data/terrain/usa_ny_stephentown_dem --origin-lat 42.5513326 --origin-lon -73.3792285 --output data/world/assets/USA_NY_Stephentown/usa_ny_stephentown_terrain.glb --downsample 2)",
+      "Bash(.venv/Scripts/python scripts/osm/build_buildings.py --input data/osm/USA_NY_Stephentown/buildings.json --origin-lat 42.5513326 --origin-lon -73.3792285 --heightmap data/terrain/usa_ny_stephentown_dem --output data/world/assets/USA_NY_Stephentown/usa_ny_stephentown_buildings.glb)",
+      "Bash(.venv/Scripts/python scripts/osm/build_roads.py --input data/osm/USA_NY_Stephentown/roads.json --origin-lat 42.5513326 --origin-lon -73.3792285 --heightmap data/terrain/usa_ny_stephentown_dem --output data/world/assets/USA_NY_Stephentown/usa_ny_stephentown_roads.glb)"
+    ]
+  }
+}

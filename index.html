@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ashes & Aether</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --ash:    #0e0c0a;
+      --ember:  #c8622a;
+      --aether: #4a7fa5;
+      --bone:   #d4c9b8;
+      --shadow: #1a1612;
+      --muted:  #5a5248;
+      --hp:     #8b2020;
+      --mp:     #1e4d7a;
+      --stam:   #2d5a1e;
+      --ui-bg:  rgba(14, 12, 10, 0.88);
+      --ui-border: rgba(200, 98, 42, 0.3);
+
+      --font-display: 'Cinzel', 'Trajan Pro', serif;
+      --font-body:    'IM Fell English', 'Palatino Linotype', serif;
+      --font-mono:    'Courier New', monospace;
+    }
+
+    html, body {
+      width: 100%; height: 100%;
+      overflow: hidden;
+      background: #0e0c0a;
+      color: var(--bone);
+      font-family: var(--font-body);
+      cursor: default;
+    }
+
+    /* Google Fonts loaded async to avoid blocking */
+    #app {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* Three.js canvas fills the viewport */
+    #game-canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+      cursor: crosshair;
+    }
+
+    /* All UI panels sit above the canvas */
+    #ui-root {
+      position: absolute;
+      inset: 0;
+      pointer-events: none; /* children opt-in with pointer-events: auto */
+      z-index: 10;
+    }
+
+    /* Loading screen */
+    #loading-screen {
+      position: absolute;
+      inset: 0;
+      background: var(--ash);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+      transition: opacity 0.6s ease;
+    }
+
+    #loading-screen.fade-out {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    #loading-title {
+      font-family: var(--font-display);
+      font-size: clamp(2rem, 5vw, 4rem);
+      letter-spacing: 0.25em;
+      color: var(--bone);
+      text-shadow: 0 0 40px rgba(200, 98, 42, 0.6);
+      margin-bottom: 0.25em;
+    }
+
+    #loading-subtitle {
+      font-family: var(--font-body);
+      font-size: 0.9rem;
+      letter-spacing: 0.15em;
+      color: var(--muted);
+      font-style: italic;
+      margin-bottom: 3rem;
+    }
+
+    #loading-bar-track {
+      width: clamp(200px, 30vw, 400px);
+      height: 2px;
+      background: rgba(200, 98, 42, 0.15);
+      position: relative;
+      overflow: hidden;
+    }
+
+    #loading-bar-fill {
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      width: 0%;
+      background: linear-gradient(90deg, var(--ember), #f0a060);
+      transition: width 0.3s ease;
+      box-shadow: 0 0 8px rgba(200, 98, 42, 0.8);
+    }
+
+    #loading-status {
+      margin-top: 1rem;
+      font-size: 0.75rem;
+      letter-spacing: 0.1em;
+      color: var(--muted);
+      font-family: var(--font-mono);
+      height: 1em;
+    }
+  </style>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600&family=IM+Fell+English:ital@0;1&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div id="app">
+    <canvas id="game-canvas"></canvas>
+    <div id="ui-root"></div>
+
+    <div id="loading-screen">
+      <div id="loading-title">Ashes &amp; Aether</div>
+      <div id="loading-subtitle">where the dead world breathes</div>
+      <div id="loading-bar-track">
+        <div id="loading-bar-fill"></div>
+      </div>
+      <div id="loading-status">initializing…</div>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

@@ -73,17 +73,20 @@ export class ClickMoveController {
 
     this.player.clearTarget();
 
-    // ── 2. Heightmap hit? ────────────────────────────────────────────────────
-    if (!this.heightmap) {
-      console.warn('[ClickMove] No heightmap loaded — cannot click-to-move');
+    // ── 2. Terrain hit? ─────────────────────────────────────────────────────
+    if (this.heightmap) {
+      const hit = this.heightmap.raycast(this.raycaster.ray);
+      if (!hit) return;
+      this.socket.sendMovePosition({ x: hit.x, y: hit.y, z: hit.z });
       return;
     }
 
-    const hit = this.heightmap.raycast(this.raycaster.ray);
-    if (!hit) return;
-
-    console.log(`[ClickMove] Heightmap hit (${hit.x.toFixed(1)}, ${hit.y.toFixed(1)}, ${hit.z.toFixed(1)})`);
-    this.socket.sendMovePosition({ x: hit.x, y: hit.y, z: hit.z });
+    // Fallback for flat terrain (e.g. village zones): intersect y=0 ground plane
+    const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    const hit = new THREE.Vector3();
+    if (this.raycaster.ray.intersectPlane(groundPlane, hit)) {
+      this.socket.sendMovePosition({ x: hit.x, y: 0, z: hit.z });
+    }
   };
 
   private _resolveEntityId(obj: THREE.Object3D): string | null {

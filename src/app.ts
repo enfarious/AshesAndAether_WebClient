@@ -434,6 +434,12 @@ export class App {
       this.clickMove.clearWorldRoot();
     }
 
+    // Village zones use procedural terrain instead of server-hosted GLBs
+    if (zoneId.startsWith('village:')) {
+      this._buildVillageTerrain();
+      return;
+    }
+
     try {
       const { worldRoot: root, heightmap } = await this.assets.loadZone(zoneId);
       this.worldRoot = root;
@@ -471,6 +477,60 @@ export class App {
     } catch (err) {
       console.error('[App] Zone asset load failed:', err);
     }
+  }
+
+  /**
+   * Build a simple procedural village terrain: grass ground plane + subtle grid lines.
+   */
+  private _buildVillageTerrain(): void {
+    const root = new THREE.Group();
+    root.name = 'WorldRoot';
+
+    const size = 64; // metres — covers hilltop_medium; meadow/riverside fit too
+
+    // Ground plane
+    const groundGeo = new THREE.PlaneGeometry(size, size);
+    groundGeo.rotateX(-Math.PI / 2);
+    const groundMat = new THREE.MeshStandardMaterial({
+      color: 0x5a8a3a,
+      roughness: 0.95,
+      metalness: 0,
+    });
+    const ground = new THREE.Mesh(groundGeo, groundMat);
+    ground.receiveShadow = true;
+    ground.name = 'village-ground';
+    root.add(ground);
+
+    // Grid overlay (subtle lines at 2m intervals)
+    const gridSize = 2;
+    const halfSize = size / 2;
+    const gridGeo = new THREE.BufferGeometry();
+    const verts: number[] = [];
+    for (let i = -halfSize; i <= halfSize; i += gridSize) {
+      verts.push(i, 0.01, -halfSize, i, 0.01, halfSize);   // Z lines
+      verts.push(-halfSize, 0.01, i, halfSize, 0.01, i);    // X lines
+    }
+    gridGeo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+    const gridMat = new THREE.LineBasicMaterial({ color: 0x4a7a30, transparent: true, opacity: 0.25 });
+    const grid = new THREE.LineSegments(gridGeo, gridMat);
+    grid.name = 'village-grid';
+    root.add(grid);
+
+    // Boundary fence (wireframe box outline)
+    const boundaryGeo = new THREE.EdgesGeometry(new THREE.BoxGeometry(size, 1, size));
+    const boundaryMat = new THREE.LineBasicMaterial({ color: 0x8b6914, transparent: true, opacity: 0.4 });
+    const boundary = new THREE.LineSegments(boundaryGeo, boundaryMat);
+    boundary.position.y = 0.5;
+    boundary.name = 'village-boundary';
+    root.add(boundary);
+
+    this.worldRoot = root;
+    this.scene.scene.add(root);
+    this.clickMove.setHeightmap(null);
+    this.clickMove.setWorldRoot(root);
+    this.factory.setHeightmap(null);
+    this.camera.setDistance(30);
+    console.log('[App] Village procedural terrain built');
   }
 }
 

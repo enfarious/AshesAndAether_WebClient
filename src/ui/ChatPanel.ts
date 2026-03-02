@@ -30,6 +30,9 @@ export class ChatPanel {
 
     const unsub = world.onChat(entry => this._appendEntry(entry));
     this.cleanup.push(unsub);
+
+    window.addEventListener('keydown', this._onGlobalKey);
+    this.cleanup.push(() => window.removeEventListener('keydown', this._onGlobalKey));
   }
 
   show(): void { this.root.style.display = ''; }
@@ -131,10 +134,38 @@ export class ChatPanel {
   private _onInputKey = (e: KeyboardEvent): void => {
     if (e.key !== 'Enter') return;
     const text = this.input.value.trim();
-    if (!text) return;
     this.input.value = '';
-    this._sendChat(text);
+    this.input.blur(); // return focus to game so WASD resumes
+    if (text) this._sendChat(text);
   };
+
+  // ── Global hot-keys that open chat ────────────────────────────────────────
+  // '/' focuses and seeds the command prefix.
+  // Enter / Space focus with a blank input.
+  // All three are suppressed when any text field already has focus.
+  private _onGlobalKey = (e: KeyboardEvent): void => {
+    if (this.root.style.display === 'none') return;
+    if (this._isTypingTarget(e.target)) return;
+
+    if (e.key === '/') {
+      // Let the '/' propagate naturally — the browser will insert it once the
+      // input is focused (keypress / input fire after keydown).
+      this.input.focus();
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault(); // prevent page scroll (Space) or form submission
+      this.input.focus();
+    }
+  };
+
+  private _isTypingTarget(target: EventTarget | null): boolean {
+    if (!target) return false;
+    const el = target as HTMLElement;
+    return (
+      el instanceof HTMLInputElement    ||
+      el instanceof HTMLTextAreaElement ||
+      el.isContentEditable
+    );
+  }
 
   private _sendChat(text: string): void {
     console.log(`[ChatPanel] _sendChat → "${text}"`);

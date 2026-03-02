@@ -459,6 +459,24 @@ export interface CommandResponsePayload {
   timestamp:  number;
 }
 
+// ── Examine / Peek ───────────────────────────────────────────────────────────
+
+export interface ExaminePeekPayload {
+  id:          string;
+  name:        string;
+  entityType:  'player' | 'npc' | 'companion' | 'mob' | 'wildlife' | 'structure';
+  isAlive:     boolean;
+  inCombat:    boolean;
+  range:       number;
+  description: string | null;
+  level?:      number;
+  healthPct?:  number;
+  // Mob / wildlife
+  faction?:    string;
+  notorious?:  boolean;
+  tag?:        string;
+}
+
 // ── Error ─────────────────────────────────────────────────────────────────────
 
 export interface ErrorPayload {

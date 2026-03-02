@@ -42,7 +42,7 @@ Buy/sell/search/cancel orders, 2% listing fee, regional & world scope.
 Complete WalletService for gold tracking.
 - Needs: market window, order list, buy/sell dialogs, wallet/gold display
 
-### Harvesting / Foraging
+### Harvesting / Foraging - In Progress
 12+ plant species with growth stages. `/harvest` command exists server-side.
 Plants render as entities but no interaction prompt.
 - Needs: harvest interaction when clicking/targeting a plant, gather progress
@@ -60,7 +60,7 @@ Every entity has a `description` field. TargetWindow only shows name + HP.
 
 ## Low Priority
 
-### Player Peek / Inspect
+### Player Peek / Inspect - Done
 Server supports `player_peek_response` with level, title, guild, appearance,
 equipment, pronouns, combat status, AFK status.
 - Needs: inspect window when clicking other players

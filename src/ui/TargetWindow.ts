@@ -134,6 +134,10 @@ export class TargetWindow {
     this.root = this._build();
     uiRoot.appendChild(this.root);
 
+    this.root.querySelector('#tw-lock')!.addEventListener('click', () => {
+      this.player.toggleTargetLock();
+    });
+
     const unsubPlayer = player.onChange(() => this._onTargetChange());
     const unsubUpdate = entities.onUpdate(e => {
       if (e.id === player.targetId) this._refresh();
@@ -232,6 +236,34 @@ export class TargetWindow {
           text-shadow: 0 1px 2px #000;
         }
 
+        .tw-lock {
+          flex-shrink: 0;
+          width: 18px;
+          height: 18px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 11px;
+          cursor: pointer;
+          color: rgba(212, 190, 160, 0.35);
+          border: 1px solid rgba(200, 145, 60, 0.15);
+          border-radius: 3px;
+          transition: color 0.15s, border-color 0.15s, background 0.15s;
+          background: transparent;
+          line-height: 1;
+        }
+
+        .tw-lock:hover {
+          color: rgba(212, 190, 160, 0.65);
+          border-color: rgba(200, 145, 60, 0.35);
+        }
+
+        .tw-lock.tw-locked {
+          color: var(--ember, #c8823a);
+          border-color: rgba(200, 145, 60, 0.5);
+          background: rgba(200, 145, 60, 0.1);
+        }
+
         .tw-hp-row {
           margin-top: 5px;
           display: flex;
@@ -311,6 +343,7 @@ export class TargetWindow {
           <div class="tw-name-row">
             <div class="tw-name" id="tw-name"></div>
             <div class="tw-dist" id="tw-dist"></div>
+            <div class="tw-lock" id="tw-lock" title="Target lock (L)">&#x1f513;</div>
           </div>
           <div class="tw-hp-row" id="tw-hp-row">
             <div class="tw-hp-track">
@@ -383,6 +416,12 @@ export class TargetWindow {
     } else {
       hpRow.style.display = 'none';
     }
+
+    // Lock icon
+    const lockEl = this.root.querySelector<HTMLElement>('#tw-lock')!;
+    const locked = this.player.targetLocked;
+    lockEl.classList.toggle('tw-locked', locked);
+    lockEl.innerHTML = locked ? '&#x1f512;' : '&#x1f513;';
 
     // Menu — only rebuild when the set of visible actions could have changed
     // (target swap, type change, or hostile flag change). HP/distance ticks skip this.

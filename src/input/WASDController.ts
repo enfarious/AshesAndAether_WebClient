@@ -219,6 +219,12 @@ export class WASDController {
       return;
     }
 
+    // L — toggle target lock-on
+    if (e.key.toLowerCase() === 'l') {
+      this.player.toggleTargetLock();
+      return;
+    }
+
     // 1-8 — action bar ability slots
     const num = parseInt(e.key, 10);
     if (num >= 1 && num <= 8) {

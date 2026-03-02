@@ -31,6 +31,7 @@ import type {
   VillagePlacementModePayload,
   VillageStatePayload,
   RegisterResultPayload,
+  ExaminePeekPayload,
 } from './Protocol';
 
 /**
@@ -48,6 +49,7 @@ export class MessageRouter {
   private registerResultListeners = new Set<(p: RegisterResultPayload) => void>();
   private villagePlacementListeners = new Set<(p: VillagePlacementModePayload) => void>();
   private villageStateListeners    = new Set<(p: VillageStatePayload) => void>();
+  private examineListeners         = new Set<(p: ExaminePeekPayload) => void>();
 
   constructor(
     private readonly socket:   SocketClient,
@@ -91,6 +93,11 @@ export class MessageRouter {
   onVillageState(fn: (p: VillageStatePayload) => void): () => void {
     this.villageStateListeners.add(fn);
     return () => this.villageStateListeners.delete(fn);
+  }
+
+  onExamine(fn: (p: ExaminePeekPayload) => void): () => void {
+    this.examineListeners.add(fn);
+    return () => this.examineListeners.delete(fn);
   }
 
   mount(): void {
@@ -289,6 +296,14 @@ export class MessageRouter {
 
     s.on('command_response', (p) => {
       const payload = p as CommandResponsePayload;
+
+      // Dispatch structured examine/look data to the ExamineWindow.
+      const cmdData = payload.data as { type?: string; target?: ExaminePeekPayload } | undefined;
+      if (payload.success && cmdData?.type === 'look' && cmdData.target) {
+        this.examineListeners.forEach(fn => fn(cmdData.target as ExaminePeekPayload));
+        return; // rich UI handles it — don't also dump text to chat
+      }
+
       // Show the human-readable result (success message or error string) in chat.
       const text = payload.success ? payload.message : payload.error;
       if (text) this.world.pushMessage('system', text);

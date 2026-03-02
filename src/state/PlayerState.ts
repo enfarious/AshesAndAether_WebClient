@@ -68,8 +68,9 @@ export class PlayerState {
     specialCharges:   {},
   };
 
-  private _targetId:   string | null = null;
-  private _targetName: string | null = null;
+  private _targetId:     string | null = null;
+  private _targetName:   string | null = null;
+  private _targetLocked: boolean       = false;
 
   /**
    * Unix-ms timestamp at which the player's corpse will fully dissolve and
@@ -135,6 +136,7 @@ export class PlayerState {
   get combat():   CombatGauges { return this._combat; }
   get targetId(): string | null { return this._targetId; }
   get targetName(): string | null { return this._targetName; }
+  get targetLocked(): boolean { return this._targetLocked; }
   /** Unix-ms at which corpse auto-dissolves. null if alive. */
   get corpseDissolvesAt(): number | null { return this._corpseDissolvesAt; }
 
@@ -372,8 +374,15 @@ export class PlayerState {
   }
 
   clearTarget(): void {
-    this._targetId   = null;
-    this._targetName = null;
+    this._targetId     = null;
+    this._targetName   = null;
+    this._targetLocked = false;
+    this._notify();
+  }
+
+  toggleTargetLock(): void {
+    if (!this._targetId) return;
+    this._targetLocked = !this._targetLocked;
     this._notify();
   }
 

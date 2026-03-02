@@ -17,6 +17,7 @@ import { ChatPanel }          from '@/ui/ChatPanel';
 import { TargetWindow }       from '@/ui/TargetWindow';
 import { InventoryWindow }    from '@/ui/InventoryWindow';
 import { LootWindow }         from '@/ui/LootWindow';
+import { ExamineWindow }      from '@/ui/ExamineWindow';
 import { AbilityWindow }      from '@/ui/AbilityWindow';
 import { CharacterSheet }    from '@/ui/CharacterSheet';
 import { PartyWindow }       from '@/ui/PartyWindow';
@@ -69,6 +70,7 @@ export class App {
   private targetWindow:    TargetWindow    | null = null;
   private inventoryWindow: InventoryWindow | null = null;
   private lootWindow:      LootWindow      | null = null;
+  private examineWindow:   ExamineWindow   | null = null;
   private abilityWindow:   AbilityWindow   | null = null;
   private characterSheet:  CharacterSheet  | null = null;
   private partyWindow:     PartyWindow     | null = null;
@@ -247,6 +249,7 @@ export class App {
     this.targetWindow?.dispose();
     this.inventoryWindow?.dispose();
     this.lootWindow?.dispose();
+    this.examineWindow?.dispose();
     this.abilityWindow?.dispose();
     this.characterSheet?.dispose();
     this.partyWindow?.dispose();
@@ -385,6 +388,10 @@ export class App {
     }
     if (!this.lootWindow) {
       this.lootWindow = new LootWindow(this.uiRoot, this.socket, this.router);
+    }
+    if (!this.examineWindow) {
+      this.examineWindow = new ExamineWindow(this.uiRoot);
+      this.router.onExamine(p => this.examineWindow!.show(p));
     }
     if (!this.registrationModal) {
       this.registrationModal = new RegistrationModal(this.uiRoot, this.player, this.socket, this.router);

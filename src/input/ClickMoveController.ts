@@ -71,7 +71,7 @@ export class ClickMoveController {
       }
     }
 
-    this.player.clearTarget();
+    if (!this.player.targetLocked) this.player.clearTarget();
 
     // ── 2. Terrain hit? ─────────────────────────────────────────────────────
     if (this.heightmap) {

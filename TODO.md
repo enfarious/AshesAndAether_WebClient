@@ -6,13 +6,13 @@ Server features that exist but have no client UI yet, roughly prioritized.
 
 ## High Priority
 
-### Character Sheet / Stats Panel
+### Character Sheet / Stats Panel - Done for now
 Server sends full `coreStats` (str, vit, dex, agi, int, wis) and ~18 `derivedStats`
 (attackRating, defenseRating, evasion, glancingBlowChance, magicAttack, etc.)
 on world_entry and state_update. None of this is displayed anywhere.
 - Also: `statPoints` available for spending, `level`, `experience`
 
-### Corruption System
+### Corruption System - Done for now
 4-state machine: Clean → Stained → Warped → Lost (0-100 value).
 Server sends `corruption_update` events and corruption data in CharacterState.
 Benefits at higher corruption: cacheDetectionBonus, hazardResistBonus, deadSystemInterface.
@@ -32,7 +32,7 @@ Not displayed — critical for ability-based combat feedback.
 
 ## Medium Priority
 
-### Party System
+### Party System - V1
 Full party management implemented server-side: invite, accept, decline, leave, kick,
 lead, list. Redis-backed member tracking. Party chat channel exists.
 - Needs: party frames (member HP/mana bars), invite dialog, party chat tab

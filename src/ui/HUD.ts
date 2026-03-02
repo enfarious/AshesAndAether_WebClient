@@ -1,6 +1,23 @@
 import type { PlayerState }  from '@/state/PlayerState';
 import type { WorldState }   from '@/state/WorldState';
 import type { SocketClient } from '@/network/SocketClient';
+import type { CorruptionState } from '@/network/Protocol';
+
+// ── Corruption display data ──────────────────────────────────────────────────
+
+const CORRUPTION_COLORS: Record<CorruptionState, { gradient: string; label: string }> = {
+  CLEAN:   { gradient: 'linear-gradient(90deg, #2a3a2a, #3a5a3a)', label: 'rgba(180,200,180,0.50)' },
+  STAINED: { gradient: 'linear-gradient(90deg, #3a3a1a, #6a6a20)', label: 'rgba(200,200,100,0.70)' },
+  WARPED:  { gradient: 'linear-gradient(90deg, #3a2a10, #8a5a10)', label: 'rgba(220,160,60,0.85)' },
+  LOST:    { gradient: 'linear-gradient(90deg, #2a1030, #6a2080)', label: 'rgba(180,100,220,0.90)' },
+};
+
+const CORRUPTION_TOOLTIPS: Record<CorruptionState, string> = {
+  CLEAN:   'Corruption: Clean — No benefits, no taint.',
+  STAINED: 'Corruption: Stained — +5% cache detection.',
+  WARPED:  'Corruption: Warped — +15% cache detection, +10% hazard resist, dead system interface.',
+  LOST:    'Corruption: Lost — +30% cache detection, +25% hazard resist, dead system interface.',
+};
 
 /**
  * HUD — vitals bars, combat gauges, target display, and death overlay.
@@ -13,6 +30,10 @@ export class HUD {
   private clockEl:       HTMLElement | null = null;
   private timerInterval: ReturnType<typeof setInterval> | null = null;
   private clockInterval: ReturnType<typeof setInterval> | null = null;
+  private _lastCorruptionState: CorruptionState = 'CLEAN';
+  private effectsInterval: ReturnType<typeof setInterval> | null = null;
+  private _lastBuffCount   = 0;
+  private _lastDebuffCount = 0;
   private cleanup: (() => void)[] = [];
 
   constructor(
@@ -31,6 +52,12 @@ export class HUD {
     // Tick the clock every second (≈ 1 in-game minute).
     this.clockInterval = setInterval(() => this._updateClock(), 1_000);
 
+    // Tick effect durations every 100ms for smooth countdown display.
+    this.effectsInterval = setInterval(() => {
+      this.player.tickEffects(0.1);
+      this._updateEffects();
+    }, 100);
+
     this._refresh();
     this._updateClock();
   }
@@ -40,8 +67,9 @@ export class HUD {
 
   dispose(): void {
     this.cleanup.forEach(fn => fn());
-    if (this.timerInterval !== null) clearInterval(this.timerInterval);
-    if (this.clockInterval !== null) clearInterval(this.clockInterval);
+    if (this.timerInterval   !== null) clearInterval(this.timerInterval);
+    if (this.clockInterval   !== null) clearInterval(this.clockInterval);
+    if (this.effectsInterval !== null) clearInterval(this.effectsInterval);
     this.root.remove();
   }
 
@@ -256,6 +284,123 @@ export class HUD {
         .hud-clock-wx-icon {
           margin-right: 2px;
         }
+
+        /* ── Status effects — top of screen, split buffs / debuffs ──── */
+        #hud-effects-wrapper {
+          position: fixed;
+          top: 12px;
+          left: 0;
+          right: 0;
+          display: flex;
+          pointer-events: none;
+        }
+
+        #hud-buffs {
+          flex: 1;
+          display: flex;
+          flex-wrap: wrap;
+          justify-content: flex-end;
+          align-content: flex-start;
+          gap: 4px;
+          padding-right: 6px;
+        }
+
+        #hud-debuffs {
+          flex: 1;
+          display: flex;
+          flex-wrap: wrap;
+          justify-content: flex-start;
+          align-content: flex-start;
+          gap: 4px;
+          padding-left: 6px;
+        }
+
+        .hud-effect {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          min-width: 52px;
+          max-width: 80px;
+          height: 34px;
+          padding: 1px 6px;
+          border-radius: 3px;
+          pointer-events: auto;
+          cursor: default;
+        }
+
+        .hud-effect.buff {
+          background: rgba(40,80,40,0.7);
+          border: 1px solid rgba(80,160,80,0.4);
+        }
+
+        .hud-effect.debuff {
+          background: rgba(80,30,30,0.7);
+          border: 1px solid rgba(180,60,60,0.4);
+        }
+
+        .hud-effect-name {
+          font-family: var(--font-mono);
+          font-size: 11px;
+          color: rgba(212,201,184,0.85);
+          letter-spacing: 0.06em;
+          text-transform: uppercase;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          max-width: 100%;
+          line-height: 1.2;
+        }
+
+        .hud-effect-timer {
+          font-family: var(--font-mono);
+          font-size: 12px;
+          color: rgba(200,180,140,0.75);
+          letter-spacing: 0.08em;
+          line-height: 1.2;
+        }
+
+        /* ── Corruption bar ──────────────────────────────────────────── */
+        .hud-corruption {
+          width: 100%;
+          height: 18px;
+          background: rgba(10,8,6,0.7);
+          border: 1px solid rgba(200,98,42,0.15);
+          position: relative;
+          overflow: hidden;
+          pointer-events: auto;
+          cursor: default;
+        }
+
+        .hud-corruption-fill {
+          position: absolute;
+          inset: 0;
+          transform-origin: left;
+          transition: transform 0.4s ease;
+        }
+
+        .hud-corruption-text {
+          position: absolute;
+          inset: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-family: var(--font-mono);
+          font-size: 10px;
+          letter-spacing: 0.12em;
+          text-shadow: 0 1px 2px #000;
+          pointer-events: none;
+          text-transform: uppercase;
+        }
+
+        @keyframes hud-corruption-pulse {
+          0%   { box-shadow: 0 0 0 0 rgba(160,80,220,0.6); }
+          50%  { box-shadow: 0 0 8px 2px rgba(160,80,220,0.4); }
+          100% { box-shadow: 0 0 0 0 rgba(160,80,220,0); }
+        }
+        .hud-corruption.pulse {
+          animation: hud-corruption-pulse 0.6s ease-out;
+        }
       </style>
 
       <div id="hud-clock">
@@ -290,6 +435,11 @@ export class HUD {
         </div>
       </div>
 
+      <div id="hud-effects-wrapper">
+        <div id="hud-buffs"></div>
+        <div id="hud-debuffs"></div>
+      </div>
+
       <div class="hud-vitals">
         <div class="hud-bar">
           <div class="hud-bar-fill hp" id="hud-hp-fill"></div>
@@ -303,6 +453,11 @@ export class HUD {
           <div class="hud-bar-fill mp" id="hud-mp-fill"></div>
           <div class="hud-bar-text" id="hud-mp-text"></div>
         </div>
+      </div>
+
+      <div class="hud-corruption" id="hud-corruption">
+        <div class="hud-corruption-fill" id="hud-corruption-fill"></div>
+        <div class="hud-corruption-text" id="hud-corruption-text"></div>
       </div>
     `;
 
@@ -410,8 +565,104 @@ export class HUD {
     const targetEl = this.root.querySelector<HTMLElement>('#hud-target')!;
     targetEl.textContent = p.targetName ? `⟨ ${p.targetName} ⟩` : '';
 
+    // ── Status effects ──────────────────────────────────────────────────────
+    this._updateEffects();
+
+    // ── Corruption ─────────────────────────────────────────────────────────
+    this._updateCorruption();
+
     // ── Death overlay ───────────────────────────────────────────────────────
     this._updateDeathOverlay();
+  }
+
+  private _updateCorruption(): void {
+    const state = this.player.corruptionState;
+    const value = this.player.corruption;
+    const colors = CORRUPTION_COLORS[state];
+
+    // Fill
+    const fillEl = this.root.querySelector<HTMLElement>('#hud-corruption-fill');
+    if (fillEl) {
+      fillEl.style.background = colors.gradient;
+      fillEl.style.transform  = `scaleX(${Math.max(0, Math.min(1, value / 100))})`;
+    }
+
+    // Label
+    const textEl = this.root.querySelector<HTMLElement>('#hud-corruption-text');
+    if (textEl) {
+      textEl.textContent = `${state} ${Math.round(value)}`;
+      textEl.style.color = colors.label;
+    }
+
+    // Tooltip
+    const barEl = this.root.querySelector<HTMLElement>('#hud-corruption');
+    if (barEl) barEl.title = CORRUPTION_TOOLTIPS[state];
+
+    // Pulse on state change
+    if (state !== this._lastCorruptionState) {
+      this._lastCorruptionState = state;
+      if (barEl) {
+        barEl.classList.remove('pulse');
+        // Force reflow so re-adding the class restarts the animation
+        void barEl.offsetWidth;
+        barEl.classList.add('pulse');
+      }
+    }
+  }
+
+  private _updateEffects(): void {
+    const buffContainer   = this.root.querySelector<HTMLElement>('#hud-buffs');
+    const debuffContainer = this.root.querySelector<HTMLElement>('#hud-debuffs');
+    if (!buffContainer || !debuffContainer) return;
+
+    const effects = this.player.effects;
+    const buffs   = effects.filter(e => e.type !== 'debuff');
+    const debuffs = effects.filter(e => e.type === 'debuff');
+
+    HUD._syncEffectContainer(buffContainer,   buffs,   this._lastBuffCount);
+    HUD._syncEffectContainer(debuffContainer, debuffs, this._lastDebuffCount);
+
+    this._lastBuffCount   = buffs.length;
+    this._lastDebuffCount = debuffs.length;
+  }
+
+  private static _syncEffectContainer(
+    container: HTMLElement,
+    effects: { id: string; name: string; duration: number; type?: string; description?: string }[],
+    lastCount: number,
+  ): void {
+    if (effects.length === 0) {
+      if (container.childElementCount > 0) container.innerHTML = '';
+      return;
+    }
+
+    if (effects.length !== lastCount) {
+      container.innerHTML = '';
+      for (const fx of effects) {
+        const badge = document.createElement('div');
+        badge.className = `hud-effect ${fx.type === 'debuff' ? 'debuff' : 'buff'}`;
+        badge.title = fx.description ?? fx.name;
+        badge.innerHTML = `
+          <span class="hud-effect-name">${HUD._truncate(fx.name, 10)}</span>
+          <span class="hud-effect-timer">${HUD._formatDuration(fx.duration)}</span>
+        `;
+        container.appendChild(badge);
+      }
+    } else {
+      const badges = container.children;
+      for (let i = 0; i < effects.length && i < badges.length; i++) {
+        const timerEl = (badges[i] as HTMLElement).querySelector<HTMLElement>('.hud-effect-timer');
+        if (timerEl) timerEl.textContent = HUD._formatDuration(effects[i]!.duration);
+      }
+    }
+  }
+
+  private static _formatDuration(secs: number): string {
+    if (secs < 0) return '0s';
+    const s = Math.ceil(secs);
+    if (s < 60)   return `${s}s`;
+    if (s < 3600) return `${Math.floor(s / 60)}m`;
+    return `${Math.floor(s / 3600)}h`;
   }
 
   private _updateDeathOverlay(): void {

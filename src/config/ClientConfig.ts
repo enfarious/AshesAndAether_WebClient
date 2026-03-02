@@ -13,8 +13,12 @@ export const ClientConfig = {
   /** Target server updates per second. */
   maxUpdateRate: 20,
 
-  /** Camera orbit elevation in degrees (fixed). */
+  /** Camera orbit elevation in degrees (initial). */
   cameraElevation: 58,
+
+  /** Min/max elevation (pitch) in degrees. */
+  cameraMinElevation: 15,
+  cameraMaxElevation: 85,
 
   /** Initial camera distance from player. */
   cameraDistance: 22,
@@ -25,6 +29,9 @@ export const ClientConfig = {
 
   /** How fast yaw drag rotates (radians per pixel). */
   cameraYawSensitivity: 0.005,
+
+  /** How fast pitch drag rotates (degrees per pixel). */
+  cameraPitchSensitivity: 0.15,
 
   /** Movement interpolation: snap if server/client delta exceeds this (world units). */
   movementSnapThreshold: 4,

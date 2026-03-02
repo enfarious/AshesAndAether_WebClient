@@ -25,6 +25,8 @@ import type {
   LootItemResultPayload,
   LootSessionEndPayload,
   AbilityUpdatePayload,
+  PartyMemberInfo,
+  PartyAllyState,
 } from './Protocol';
 
 /**
@@ -127,6 +129,9 @@ export class MessageRouter {
 
       if (payload.character) {
         this.player.applyStateUpdate(payload.character);
+        if (payload.character.effects) {
+          this.player.applyEffects(payload.character.effects);
+        }
       }
 
       if (payload.combat) {
@@ -150,7 +155,7 @@ export class MessageRouter {
               // Keep player state in sync from entity updates
               if (e.id === this.player.id) {
                 if (e.position) {
-                  this.player.applyServerPosition(e.position, e.heading);
+                  this.player.applyServerPosition(e.position, e.heading, undefined, e.movementSpeed);
                 }
                 if (e.isAlive !== undefined) {
                   this.player.applyStateUpdate({ isAlive: e.isAlive });
@@ -165,16 +170,74 @@ export class MessageRouter {
           }
         }
       }
+
+      if (payload.allies) {
+        this.player.applyPartyAllies(payload.allies as PartyAllyState[]);
+      }
     });
 
     s.on('event', (p) => {
       const payload = p as EventPayload;
       this.world.onGameEvent(payload);
+
+      // ── Party events ────────────────────────────────────────────────────
+      if (payload.eventType?.startsWith('party_')) {
+        console.log(`[MessageRouter] party event: ${payload.eventType}`, payload);
+      }
+      if (payload.eventType === 'party_roster') {
+        this.player.applyPartyRoster(
+          payload['partyId'] as string,
+          payload['leaderId'] as string,
+          payload['members'] as PartyMemberInfo[],
+        );
+      }
+      if (payload.eventType === 'party_joined') {
+        this.player.applyPartyMemberJoined(
+          payload['memberId'] as string,
+          payload['memberName'] as string,
+        );
+        this.world.pushMessage('system', `${payload['memberName']} joined the party.`);
+      }
+      if (payload.eventType === 'party_left' || payload.eventType === 'party_kicked') {
+        const memberId = payload['memberId'] as string;
+        if (memberId === this.player.id) {
+          this.player.clearParty();
+        } else {
+          this.player.applyPartyMemberLeft(memberId);
+        }
+        const verb = payload.eventType === 'party_left' ? 'left' : 'was kicked from';
+        this.world.pushMessage('system', `${payload['memberName']} ${verb} the party.`);
+      }
+      if (payload.eventType === 'party_invite') {
+        this.player.applyPartyInvite(
+          payload['fromName'] as string,
+          payload['expiresAt'] as number,
+        );
+        this.world.pushMessage('system',
+          `${payload['fromName']} invites you to a party. /party accept or /party decline`);
+      }
     });
 
     s.on('communication', (p) => {
       const payload = p as CommunicationPayload;
+      console.log('[MessageRouter] communication →', payload.channel, payload.senderName, payload.content);
       this.world.onCommunication(payload);
+    });
+
+    // Server sends ALL chat (say/shout/emote/whisper/party) as 'chat' events with
+    // { channel, sender, senderId, message, timestamp }.  Map to CommunicationPayload.
+    s.on('chat', (p) => {
+      const raw = p as { channel: string; sender: string; senderId: string; message: string; timestamp: number; distance?: number };
+      console.log(`[MessageRouter] chat → channel="${raw.channel}" sender="${raw.sender}" message="${raw.message}"`);
+      const mapped: CommunicationPayload = {
+        channel:    raw.channel as CommunicationPayload['channel'],
+        senderId:   raw.senderId,
+        senderName: raw.sender,
+        content:    raw.message,
+        timestamp:  raw.timestamp,
+        ...(raw.distance !== undefined ? { distance: raw.distance } : {}),
+      };
+      this.world.onCommunication(mapped);
     });
 
     s.on('proximity_roster', (p) => {
@@ -190,6 +253,11 @@ export class MessageRouter {
     s.on('corruption_update', (p) => {
       const payload = p as CorruptionUpdatePayload;
       this.player.applyCorruptionUpdate(payload);
+      // Notify chat on state transitions
+      if (payload.previousState && payload.previousState !== payload.state) {
+        const label = payload.state.charAt(0) + payload.state.slice(1).toLowerCase();
+        this.world.pushMessage('system', `Your corruption has shifted to ${label}.`);
+      }
     });
 
     s.on('inventory_update', (p) => {

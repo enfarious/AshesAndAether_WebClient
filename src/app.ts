@@ -18,6 +18,8 @@ import { TargetWindow }       from '@/ui/TargetWindow';
 import { InventoryWindow }    from '@/ui/InventoryWindow';
 import { LootWindow }         from '@/ui/LootWindow';
 import { AbilityWindow }      from '@/ui/AbilityWindow';
+import { CharacterSheet }    from '@/ui/CharacterSheet';
+import { PartyWindow }       from '@/ui/PartyWindow';
 import { ActionBar }          from '@/ui/ActionBar';
 import { Minimap }            from '@/ui/Minimap';
 import { LoginScreen }        from '@/ui/LoginScreen';
@@ -65,6 +67,8 @@ export class App {
   private inventoryWindow: InventoryWindow | null = null;
   private lootWindow:      LootWindow      | null = null;
   private abilityWindow:   AbilityWindow   | null = null;
+  private characterSheet:  CharacterSheet  | null = null;
+  private partyWindow:     PartyWindow     | null = null;
   private actionBar:       ActionBar       | null = null;
   private minimap:         Minimap         | null = null;
   private scaleWidget:     UIScaleWidget   | null = null;
@@ -238,6 +242,8 @@ export class App {
     this.inventoryWindow?.dispose();
     this.lootWindow?.dispose();
     this.abilityWindow?.dispose();
+    this.characterSheet?.dispose();
+    this.partyWindow?.dispose();
     this.actionBar?.dispose();
     this.minimap?.dispose();
   }
@@ -265,8 +271,12 @@ export class App {
       this.camera.follow(playerEntity.cameraTarget, dt);
     }
 
-    // Advance day/night / weather crossfade
-    this.scene.tick(dt);
+    // Advance day/night / weather crossfade + sun orbit
+    this.scene.tick(
+      dt,
+      this.world.getTimeOfDayNormalized(),
+      playerEntity?.cameraTarget,
+    );
 
     // Tick action bar cooldowns
     this.actionBar?.tick(dt);
@@ -286,6 +296,8 @@ export class App {
     this.chatPanel?.hide();
     this.targetWindow?.hide();
     this.inventoryWindow?.hide();
+    this.characterSheet?.hide();
+    this.partyWindow?.hide();
     this.actionBar?.hide();
     this.minimap?.hide();
 
@@ -368,9 +380,17 @@ export class App {
       // Wire 'K' key to ability tree toggle via WASDController callback
       this.wasd.setAbilityToggle(() => this.abilityWindow!.toggle());
     }
+    if (!this.characterSheet) {
+      this.characterSheet = new CharacterSheet(this.uiRoot, this.player);
+      this.wasd.setCharacterSheetToggle(() => this.characterSheet!.toggle());
+    }
     if (!this.actionBar) {
       this.actionBar = new ActionBar(this.uiRoot, this.player, this.socket);
       this.wasd.setAbilitySlotCallback((idx) => this.actionBar!.activateSlot(idx));
+    }
+    if (!this.partyWindow) {
+      this.partyWindow = new PartyWindow(this.uiRoot, this.player, this.entities, this.socket);
+      this.wasd.setPartyToggle(() => this.partyWindow!.toggle());
     }
     if (!this.minimap) {
       this.minimap = new Minimap(this.uiRoot, this.player, this.entities, this.world);

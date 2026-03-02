@@ -8,6 +8,7 @@ import { ClientConfig } from '@/config/ClientConfig';
 export class CameraInput {
   private dragging       = false;
   private lastMouseX     = 0;
+  private lastMouseY     = 0;
   private middleMouseDown = false;
   private lastMiddleX    = 0;
 
@@ -36,6 +37,7 @@ export class CameraInput {
     if (e.button === 2) {
       this.dragging   = true;
       this.lastMouseX = e.clientX;
+      this.lastMouseY = e.clientY;
     }
     if (e.button === 1) {
       e.preventDefault();
@@ -45,12 +47,18 @@ export class CameraInput {
   };
 
   private _onMouseMove = (e: MouseEvent): void => {
-    if (this.dragging || this.middleMouseDown) {
-      const refX = this.dragging ? this.lastMouseX : this.lastMiddleX;
-      const dx   = e.clientX - refX;
-      this.camera.addYaw(dx * ClientConfig.cameraYawSensitivity);
-      if (this.dragging)       this.lastMouseX  = e.clientX;
-      if (this.middleMouseDown) this.lastMiddleX = e.clientX;
+    if (this.dragging) {
+      const dx = e.clientX - this.lastMouseX;
+      const dy = e.clientY - this.lastMouseY;
+      this.camera.addYaw(-dx * ClientConfig.cameraYawSensitivity);
+      this.camera.addPitch(-dy * ClientConfig.cameraPitchSensitivity);
+      this.lastMouseX = e.clientX;
+      this.lastMouseY = e.clientY;
+    }
+    if (this.middleMouseDown) {
+      const dx = e.clientX - this.lastMiddleX;
+      this.camera.addYaw(-dx * ClientConfig.cameraYawSensitivity);
+      this.lastMiddleX = e.clientX;
     }
   };
 

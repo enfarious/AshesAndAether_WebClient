@@ -112,6 +112,20 @@ export interface CoreStats {
   agility: number; intelligence: number; wisdom: number;
 }
 
+export interface DerivedStats {
+  // Resources
+  maxHp: number; maxStamina: number; maxMana: number; carryingCapacity: number;
+  // Physical combat
+  attackRating: number; defenseRating: number; physicalAccuracy: number;
+  evasion: number; damageAbsorption: number; glancingBlowChance: number;
+  criticalHitChance: number; penetratingBlowChance: number; deflectedBlowChance: number;
+  // Magic combat
+  magicAttack: number; magicDefense: number; magicAccuracy: number;
+  magicEvasion: number; magicAbsorption: number;
+  // Speed & timing
+  initiative: number; movementSpeed: number; attackSpeedBonus: number;
+}
+
 export interface CorruptionStatus {
   current: number;
   state: CorruptionState;
@@ -123,6 +137,14 @@ export interface CorruptionBenefits {
   cacheDetectionBonus: number;
   hazardResistBonus: number;
   deadSystemInterface: boolean;
+}
+
+export interface StatusEffect {
+  id: string;
+  name: string;
+  duration: number;            // remaining seconds
+  type?: 'buff' | 'debuff';   // display coloring; defaults to 'buff'
+  description?: string;        // hover tooltip text
 }
 
 export interface CharacterState {
@@ -140,6 +162,8 @@ export interface CharacterState {
   health: StatBar;
   stamina: StatBar;
   mana: StatBar;
+  coreStats?: CoreStats;
+  derivedStats?: DerivedStats;
   corruption: CorruptionStatus;
   corruptionBenefits: CorruptionBenefits;
   unlockedFeats: string[];
@@ -217,6 +241,8 @@ export interface StateUpdatePayload {
     level?: number;
     abilityPoints?: number;
     statPoints?: number;
+    // Status effects
+    effects?: StatusEffect[];
   };
   combat?: {
     atb?: StatBar;
@@ -248,12 +274,12 @@ export interface EventPayload {
 // ── Communication ─────────────────────────────────────────────────────────────
 
 export interface CommunicationPayload {
-  channel: 'say' | 'shout' | 'emote' | 'cfh';
+  channel: 'say' | 'shout' | 'emote' | 'cfh' | 'whisper' | 'party';
   senderId: string;
   senderName: string;
-  senderType: 'player' | 'npc' | 'companion';
+  senderType?: 'player' | 'npc' | 'companion';
   content: string;
-  distance: number;
+  distance?: number;
   timestamp: number;
 }
 
@@ -390,6 +416,20 @@ export interface AbilityUpdatePayload {
   abilityPoints:        number;
   success:              boolean;
   message:              string;
+}
+
+// ── Party ────────────────────────────────────────────────────────────────────
+
+export interface PartyMemberInfo {
+  id:   string;
+  name: string;
+}
+
+export interface PartyAllyState {
+  entityId:    string;
+  staminaPct?: number;
+  manaPct?:    number;
+  atb?:        StatBar;
 }
 
 // ── Command response ──────────────────────────────────────────────────────────

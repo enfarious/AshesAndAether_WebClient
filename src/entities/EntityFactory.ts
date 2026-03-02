@@ -20,8 +20,10 @@ export class EntityFactory {
   private objects = new Map<string, EntityObject>();
   private player:  PlayerEntity | null = null;
 
-  // ── Heightmap (for fixing entities with missing Y) ───────────────────────
+  // ── Heightmap (for snapping entities to rendered terrain surface) ─────────
   private heightmap: HeightmapService | null = null;
+  /** Small offset so entities sit visibly above the terrain, not inside it. */
+  private static readonly GROUND_CLEARANCE = 0.15;
 
   // ── Target highlight ring ─────────────────────────────────────────────────
   private highlightRing: THREE.Mesh | null = null;
@@ -55,24 +57,23 @@ export class EntityFactory {
   }
 
   /**
-   * Provide the heightmap so entities with missing Y (e.g. plants at Y=0)
-   * can be placed at the correct terrain elevation.
-   * Also retroactively fixes any existing entities that were created before
-   * the heightmap was available.
+   * Provide the heightmap so non-player entities can be snapped to the
+   * client-side terrain elevation (server heights may differ from the
+   * rendered terrain mesh).
+   * Retroactively fixes all existing non-player entities.
    */
   setHeightmap(hm: HeightmapService | null): void {
     this.heightmap = hm;
     if (!hm) return;
 
-    // Fix any entities already in the scene with Y ≈ 0
     for (const [id, obj] of this.objects) {
+      if (id === this.registry.playerId) continue;
       const regEntity = this.registry.get(id);
-      if (!regEntity || !regEntity.position) continue;
-      if (Math.abs(regEntity.position.y) > 1) continue; // already has a real Y
+      if (!regEntity?.position) continue;
 
       const elev = hm.getElevation(regEntity.position.x, regEntity.position.z);
       if (elev !== null) {
-        obj.object3d.position.y = elev;
+        obj.object3d.position.y = elev + EntityFactory.GROUND_CLEARANCE;
       }
     }
   }
@@ -116,12 +117,12 @@ export class EntityFactory {
   private _onCreate(entity: Entity): void {
     const isPlayer = entity.id === this.registry.playerId;
 
-    // Fix entities with missing Y (server sends Y=0 for plants) by looking up
-    // the terrain elevation from the heightmap.
-    if (!isPlayer && entity.position && Math.abs(entity.position.y) <= 1 && this.heightmap) {
+    // Snap non-player entities to client-side terrain elevation so they sit
+    // on the rendered surface (server heights may differ from the GLB mesh).
+    if (!isPlayer && entity.position && this.heightmap) {
       const elev = this.heightmap.getElevation(entity.position.x, entity.position.z);
       if (elev !== null) {
-        entity = { ...entity, position: { ...entity.position, y: elev } };
+        entity = { ...entity, position: { ...entity.position, y: elev + EntityFactory.GROUND_CLEARANCE } };
       }
     }
 
@@ -157,7 +158,13 @@ export class EntityFactory {
     }
 
     if (entity.position) {
-      const pos = new THREE.Vector3(entity.position.x, entity.position.y, entity.position.z);
+      let y = entity.position.y;
+      // Snap non-player entities to client terrain elevation
+      if (entity.id !== this.registry.playerId && this.heightmap) {
+        const elev = this.heightmap.getElevation(entity.position.x, entity.position.z);
+        if (elev !== null) y = elev + EntityFactory.GROUND_CLEARANCE;
+      }
+      const pos = new THREE.Vector3(entity.position.x, y, entity.position.z);
       obj.setTargetPosition(pos, entity.heading, entity.movementDuration);
     }
 

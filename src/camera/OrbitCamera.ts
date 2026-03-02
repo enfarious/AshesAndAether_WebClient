@@ -4,8 +4,8 @@ import { ClientConfig } from '@/config/ClientConfig';
 /**
  * OrbitCamera — 3/4 perspective camera that follows a target point.
  *
- * - Elevation is fixed (configurable, default ~58°)
- * - Yaw is free (mouse drag or programmatic)
+ * - Elevation (pitch) is adjustable within a configurable range
+ * - Yaw is free (mouse drag, arrow keys, or programmatic)
  * - Zoom is camera distance from target
  * - Far plane is set to 10km to cover real-world-scale zones
  */
@@ -81,6 +81,15 @@ export class OrbitCamera {
 
   addYaw(deltaRadians: number): void {
     this.yaw = (this.yaw + deltaRadians) % (Math.PI * 2);
+    this._applyTransform();
+  }
+
+  addPitch(deltaDegrees: number): void {
+    this.elevation = THREE.MathUtils.clamp(
+      this.elevation + deltaDegrees,
+      ClientConfig.cameraMinElevation,
+      ClientConfig.cameraMaxElevation,
+    );
     this._applyTransform();
   }
 

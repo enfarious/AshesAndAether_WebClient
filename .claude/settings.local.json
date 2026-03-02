@@ -24,7 +24,8 @@
       "Bash(xargs grep -l \"party\\\\|Party\")",
       "Bash(xargs grep -l \"quest\\\\|Quest\")",
       "Bash(xargs grep -l \"respawn\\\\|death\\\\|Death\")",
-      "Bash(grep -n \"visible\\\\s*=\" /f/Projects/AshesAndAether/AshesAndAether_WebClient/src/entities/*.ts)"
+      "Bash(grep -n \"visible\\\\s*=\" /f/Projects/AshesAndAether/AshesAndAether_WebClient/src/entities/*.ts)",
+      "Bash(xargs grep -l \"statPoints\\\\|stat.*allocat\\\\|stat.*spend\")"
     ]
   }
 }

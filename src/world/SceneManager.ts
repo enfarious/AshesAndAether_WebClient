@@ -72,6 +72,7 @@ export class SceneManager {
     this.directionalLight.shadow.camera.bottom = -600;
     this.directionalLight.shadow.bias = -0.0005;
     this.scene.add(this.directionalLight);
+    this.scene.add(this.directionalLight.target);
 
     // Fill/rim from the opposite side.
     this.fillLight = new THREE.DirectionalLight(0x4060a0, 0.4);
@@ -106,16 +107,27 @@ export class SceneManager {
   // ── Frame ──────────────────────────────────────────────────────────────────
 
   /**
-   * Advance any in-progress environment transition.
+   * Advance any in-progress environment transition and update the sun position.
    * Must be called once per frame, before render().
+   *
+   * @param dt            Frame delta in seconds.
+   * @param timeOfDay     Normalised TOD (0–1, 0 = midnight, 0.5 = noon).
+   * @param focusPoint    World-space player position — shadow frustum follows this.
    */
-  tick(dt: number): void {
-    if (!this.envTransition) return;
-    const tr = this.envTransition;
-    tr.elapsed = Math.min(tr.elapsed + dt, tr.duration);
-    const t = _easeInOut(tr.elapsed / tr.duration);
-    this._applyLerped(tr.from, tr.to, t);
-    if (tr.elapsed >= tr.duration) this.envTransition = null;
+  tick(dt: number, timeOfDay?: number, focusPoint?: THREE.Vector3): void {
+    // Environment crossfade
+    if (this.envTransition) {
+      const tr = this.envTransition;
+      tr.elapsed = Math.min(tr.elapsed + dt, tr.duration);
+      const t = _easeInOut(tr.elapsed / tr.duration);
+      this._applyLerped(tr.from, tr.to, t);
+      if (tr.elapsed >= tr.duration) this.envTransition = null;
+    }
+
+    // Sun orbit — move the directional light based on time of day
+    if (timeOfDay !== undefined) {
+      this._updateSunPosition(timeOfDay, focusPoint);
+    }
   }
 
   render(camera: THREE.Camera): void {
@@ -130,6 +142,70 @@ export class SceneManager {
   private _onResize = (): void => {
     this.renderer.setSize(window.innerWidth, window.innerHeight);
   };
+
+  // ── Sun orbit ────────────────────────────────────────────────────────────
+
+  /**
+   * Position the directional light on a circular orbit based on time of day.
+   *
+   * During the day the light represents the sun; at night it becomes the
+   * moon (positioned on the opposite arc, at a lower elevation).  The env
+   * presets already set the correct colour and intensity for each TOD
+   * bucket — night preset gives a cool blue (0x5070c0) at 0.75 intensity,
+   * so shadows at night are naturally moonlit without an extra light.
+   *
+   * TOD mapping (sun):
+   *   0.25  = 6 am  → sunrise in the east   (horizon)
+   *   0.5   = noon  → overhead               (zenith)
+   *   0.75  = 6 pm  → sunset in the west     (horizon)
+   *
+   * TOD mapping (moon — active when sun is below horizon):
+   *   0.75  = 6 pm  → moonrise in the east   (low)
+   *   0.0   = midnight → highest point        (lower than noon sun)
+   *   0.25  = 6 am  → moonset in the west     (low)
+   */
+  private _updateSunPosition(tod: number, focusPoint?: THREE.Vector3): void {
+    const SUN_DIST  = 500;  // distance from focus point
+    const SHADOW_SZ = 300;  // half-size of the shadow frustum
+
+    // Sun orbit angle: 0 at sunrise (east), π/2 at noon (top), π at sunset
+    const sunAngle = (tod - 0.25) * Math.PI * 2;
+    const sunAboveHorizon = Math.sin(sunAngle) > 0;
+
+    let lx: number, ly: number, lz: number;
+
+    if (sunAboveHorizon) {
+      // Daytime — sun arc
+      lx =  Math.cos(sunAngle) * SUN_DIST;
+      ly =  Math.sin(sunAngle) * SUN_DIST;
+      lz = -0.3 * SUN_DIST; // slightly south (temperate latitude feel)
+    } else {
+      // Nighttime — moon on the opposite arc, lower elevation
+      const moonAngle = sunAngle + Math.PI;
+      const moonDist  = SUN_DIST * 0.7;        // feels closer / lower sky
+      lx =  Math.cos(moonAngle) * moonDist;
+      ly =  Math.sin(moonAngle) * moonDist * 0.6; // lower arc — moon never reaches full zenith
+      lz =  0.2 * moonDist;                     // slightly north (opposite to sun)
+    }
+
+    const fx = focusPoint?.x ?? 0;
+    const fy = focusPoint?.y ?? 0;
+    const fz = focusPoint?.z ?? 0;
+
+    this.directionalLight.position.set(fx + lx, fy + ly, fz + lz);
+    this.directionalLight.target.position.set(fx, fy, fz);
+    this.directionalLight.target.updateMatrixWorld();
+
+    // Shadow camera follows the player
+    const cam = this.directionalLight.shadow.camera;
+    cam.left   = -SHADOW_SZ;
+    cam.right  =  SHADOW_SZ;
+    cam.top    =  SHADOW_SZ;
+    cam.bottom = -SHADOW_SZ;
+    cam.near   = 1;
+    cam.far    = SUN_DIST * 2;
+    cam.updateProjectionMatrix();
+  }
 
   // ── Preset helpers ────────────────────────────────────────────────────────
 
@@ -253,12 +329,12 @@ function resolveEnvironment(zone: ZoneInfo): EnvPreset {
 
   if (tod === 'night') {
     preset = {
-      skyColor: 0x05080f, fogColor: 0x080c18, fogDensity: 0.00040,
-      hemiSkyColor: 0x1e3050, hemiGroundColor: 0x0c0c10, hemiIntensity: 1.1,
-      ambientColor: 0x1a2840, ambientIntensity: 0.75,
-      sunColor: 0x4060b0, sunIntensity: 0.6,
-      fillColor: 0x0c1020, fillIntensity: 0.28,
-      exposure: 0.92,
+      skyColor: 0x0a1020, fogColor: 0x101828, fogDensity: 0.00035,
+      hemiSkyColor: 0x2a4060, hemiGroundColor: 0x141418, hemiIntensity: 1.3,
+      ambientColor: 0x263850, ambientIntensity: 0.90,
+      sunColor: 0x5070c0, sunIntensity: 0.75,
+      fillColor: 0x182040, fillIntensity: 0.35,
+      exposure: 1.0,
     };
   } else if (tod === 'dusk' || tod === 'dawn') {
     preset = {

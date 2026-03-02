@@ -120,7 +120,7 @@ export class ChatPanel {
 
     this.input.id          = 'chat-input';
     this.input.type        = 'text';
-    this.input.placeholder = 'say, /shout, /emote, /party…';
+    this.input.placeholder = 'say, /shout, /emote, /p, /w, /r…';
     this.input.maxLength   = 512;
     this.input.addEventListener('keydown', this._onInputKey);
 
@@ -137,17 +137,33 @@ export class ChatPanel {
   };
 
   private _sendChat(text: string): void {
+    console.log(`[ChatPanel] _sendChat → "${text}"`);
     if (text.startsWith('/shout ')) {
       this.socket.sendChat('shout', text.slice(7));
     } else if (text.startsWith('/emote ') || text.startsWith('/me ')) {
       this.socket.sendChat('emote', text.startsWith('/me ') ? text.slice(4) : text.slice(7));
-    } else if (text.startsWith('/party ')) {
-      this.socket.sendChat('party', text.slice(7));
+    } else if (text.startsWith('/p ') && !text.startsWith('/party')) {
+      // /p <message> — party chat shorthand.
+      this.socket.sendChat('party', text.slice(3));
+    } else if (text.startsWith('/party ') || text === '/party') {
+      // /party is a server command (invite, accept, decline, leave, kick, lead, list).
+      this.socket.sendCommand(text);
+    } else if (text.startsWith('/r ') || text.startsWith('/reply ')) {
+      // /r or /reply — whisper to the last person who told us.
+      const prefix  = text.startsWith('/r ') ? '/r ' : '/reply ';
+      const message = text.slice(prefix.length);
+      const target  = this.world.lastWhisperSender;
+      if (!target) {
+        this.world.pushMessage('system', 'No one has whispered you yet.');
+        return;
+      }
+      this.socket.sendCommand(`/tell ${target} ${message}`);
     } else if (text.startsWith('/w ')) {
+      // /w <name> <message> — whisper shorthand, routed as /tell.
       const parts   = text.slice(3).split(' ');
       const target  = parts.shift() ?? '';
       const message = parts.join(' ');
-      this.socket.sendChat('whisper', message, target);
+      this.socket.sendCommand(`/tell ${target} ${message}`);
     } else if (text.startsWith('/')) {
       // Send as a slash command — server CommandParser requires the leading '/'.
       this.socket.sendCommand(text);

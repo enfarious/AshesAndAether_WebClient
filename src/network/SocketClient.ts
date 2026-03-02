@@ -67,6 +67,7 @@ export class SocketClient {
       'state_update',
       'event',
       'communication',
+      'chat',
       'proximity_roster', 'proximity_roster_delta',
       'corruption_update',
       'inventory_update',
@@ -83,6 +84,9 @@ export class SocketClient {
         if (name === 'dev_ack') {
           const p = payload as { event?: string; ok?: boolean; reason?: string };
           console.log(`[Gateway dev_ack] event="${p.event}" ok=${p.ok}${p.reason ? ` reason="${p.reason}"` : ''}`);
+        }
+        if (name === 'chat' || name === 'communication') {
+          console.log(`[SocketClient] ← ${name}`, payload);
         }
         this._emit(name, payload);
       });
@@ -159,6 +163,15 @@ export class SocketClient {
     });
   }
 
+  sendMoveContinuous(heading: number, speed: MovementSpeed): void {
+    this._send('move', {
+      method: 'continuous',
+      heading,
+      speed,
+      timestamp: Date.now(),
+    });
+  }
+
   sendMoveStop(): void {
     this._send('move', {
       method: 'heading',
@@ -168,6 +181,7 @@ export class SocketClient {
   }
 
   sendChat(channel: CommunicationChannel, message: string, target?: string): void {
+    console.log(`[SocketClient] → chat  channel="${channel}" target="${target ?? ''}" message="${message}"`);
     this._send('chat', { channel, message, target, timestamp: Date.now() });
   }
 
@@ -181,6 +195,7 @@ export class SocketClient {
   }
 
   sendCommand(command: string): void {
+    console.log(`[SocketClient] → command "${command}"`);
     this._send('command', { command, timestamp: Date.now() });
   }
 

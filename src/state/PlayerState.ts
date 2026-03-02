@@ -3,12 +3,18 @@ import type {
   StatBar,
   Vector3,
   MovementSpeed,
+  CoreStats,
+  DerivedStats,
+  CorruptionState,
   CorruptionUpdatePayload,
+  StatusEffect,
   ItemInfo,
   EquipSlot,
   InventoryUpdatePayload,
   AbilityNodeSummary,
   AbilityUpdatePayload,
+  PartyMemberInfo,
+  PartyAllyState,
 } from '@/network/Protocol';
 
 type Listener = () => void;
@@ -37,6 +43,8 @@ export class PlayerState {
   private _isAlive:       boolean = true;
   private _heading:  number  = 0;
   private _speed:    MovementSpeed = 'stop';
+  /** Actual server movement speed in metres/second (from entity updates). */
+  private _movementSpeedMPS: number = 10.0; // default to jog until first update
 
   private _position: Vector3 = { x: 0, y: 0, z: 0 };
 
@@ -44,7 +52,12 @@ export class PlayerState {
   private _stamina: StatBar = { current: 0, max: 0 };
   private _mana:    StatBar = { current: 0, max: 0 };
 
+  private _coreStats:    CoreStats | null    = null;
+  private _derivedStats: DerivedStats | null = null;
+
   private _corruption: number = 0;
+  private _corruptionState: CorruptionState = 'CLEAN';
+  private _effects: StatusEffect[] = [];
 
   private _combat: CombatGauges = {
     atb:              null,
@@ -78,6 +91,13 @@ export class PlayerState {
   /** Full node manifest sent once on world_entry. */
   private _abilityManifest:      AbilityNodeSummary[] = [];
 
+  // ── Party ──────────────────────────────────────────────────────────────────
+  private _partyId:       string | null = null;
+  private _partyLeaderId: string | null = null;
+  private _partyMembers:  PartyMemberInfo[] = [];
+  private _partyAllies:   PartyAllyState[] = [];
+  private _pendingInvite: { fromName: string; expiresAt: number } | null = null;
+
   /**
    * Client-predicted position — set every frame by WASDController while
    * movement keys are held.  EntityFactory reads this and forwards it to
@@ -100,10 +120,16 @@ export class PlayerState {
   get position(): Vector3 { return this._position; }
   get heading():  number  { return this._heading; }
   get speed():    MovementSpeed { return this._speed; }
+  /** Actual movement speed in m/s as reported by the server. */
+  get movementSpeedMPS(): number { return this._movementSpeedMPS; }
   get health():   StatBar { return this._health; }
   get stamina():  StatBar { return this._stamina; }
   get mana():     StatBar { return this._mana; }
+  get coreStats():    CoreStats | null    { return this._coreStats; }
+  get derivedStats(): DerivedStats | null { return this._derivedStats; }
   get corruption(): number { return this._corruption; }
+  get corruptionState(): CorruptionState { return this._corruptionState; }
+  get effects(): StatusEffect[] { return this._effects; }
   get combat():   CombatGauges { return this._combat; }
   get targetId(): string | null { return this._targetId; }
   get targetName(): string | null { return this._targetName; }
@@ -120,6 +146,12 @@ export class PlayerState {
   get passiveLoadout():       (string | null)[]    { return this._passiveLoadout; }
   get specialLoadout():       string[]             { return this._specialLoadout; }
   get abilityManifest():      AbilityNodeSummary[] { return this._abilityManifest; }
+
+  get partyId():       string | null          { return this._partyId; }
+  get partyLeaderId(): string | null          { return this._partyLeaderId; }
+  get partyMembers():  PartyMemberInfo[]      { return this._partyMembers; }
+  get partyAllies():   PartyAllyState[]       { return this._partyAllies; }
+  get pendingInvite(): { fromName: string; expiresAt: number } | null { return this._pendingInvite; }
 
   /** Client-predicted position; null while stationary. */
   get localPosition(): Vector3 | null { return this._localPos; }
@@ -146,7 +178,16 @@ export class PlayerState {
     this._health   = character.health  ? { ...character.health }  : { current: 0, max: 0 };
     this._stamina  = character.stamina ? { ...character.stamina } : { current: 0, max: 0 };
     this._mana     = character.mana    ? { ...character.mana }    : { current: 0, max: 0 };
-    this._corruption = character.corruption?.current ?? 0;
+    this._corruption      = character.corruption?.current ?? 0;
+    this._corruptionState = character.corruption?.state   ?? 'CLEAN';
+    this._effects         = [];
+    this._partyId         = null;
+    this._partyLeaderId   = null;
+    this._partyMembers    = [];
+    this._partyAllies     = [];
+    this._pendingInvite   = null;
+    this._coreStats    = character.coreStats    ?? null;
+    this._derivedStats = character.derivedStats ?? null;
     // Ability tree
     this._unlockedActiveNodes  = character.unlockedAbilities?.activeNodes  ?? [];
     this._unlockedPassiveNodes = character.unlockedAbilities?.passiveNodes ?? [];
@@ -175,6 +216,8 @@ export class PlayerState {
     level?:         number;
     abilityPoints?: number;
     statPoints?:    number;
+    coreStats?:     CoreStats;
+    derivedStats?:  DerivedStats;
   }): void {
     if (update.health)               this._health   = { ...update.health };
     if (update.stamina)              this._stamina  = { ...update.stamina };
@@ -188,6 +231,8 @@ export class PlayerState {
     if (update.level         !== undefined) this._level         = update.level;
     if (update.abilityPoints !== undefined) this._abilityPoints = update.abilityPoints;
     if (update.statPoints    !== undefined) this._statPoints    = update.statPoints;
+    if (update.coreStats)    this._coreStats    = { ...update.coreStats };
+    if (update.derivedStats) this._derivedStats = { ...update.derivedStats };
     this._notify();
   }
 
@@ -213,16 +258,35 @@ export class PlayerState {
     this._notify();
   }
 
-  applyServerPosition(position: Vector3, heading?: number, speed?: MovementSpeed): void {
+  applyServerPosition(position: Vector3, heading?: number, speed?: MovementSpeed, movementSpeedMPS?: number): void {
     this._position = { ...position };
-    if (heading !== undefined) this._heading = heading;
-    if (speed   !== undefined) this._speed   = speed;
+    if (heading          !== undefined) this._heading          = heading;
+    if (speed            !== undefined) this._speed            = speed;
+    if (movementSpeedMPS !== undefined) this._movementSpeedMPS = movementSpeedMPS;
     this._notify();
   }
 
   applyCorruptionUpdate(payload: CorruptionUpdatePayload): void {
-    this._corruption = payload.corruption;
+    this._corruption      = payload.corruption;
+    this._corruptionState = payload.state;
     this._notify();
+  }
+
+  applyEffects(effects: StatusEffect[]): void {
+    this._effects = effects;
+    this._notify();
+  }
+
+  /** Tick effect durations locally for smooth timer display. */
+  tickEffects(dt: number): void {
+    if (this._effects.length === 0) return;
+    let removed = false;
+    this._effects = this._effects.filter(e => {
+      e.duration -= dt;
+      if (e.duration <= 0) { removed = true; return false; }
+      return true;
+    });
+    if (removed) this._notify();
   }
 
   /**
@@ -238,6 +302,57 @@ export class PlayerState {
     this._inventory       = payload.items;
     this._equipment       = { ...payload.equipment };
     this._activeWeaponSet = payload.activeWeaponSet;
+    this._notify();
+  }
+
+  // ── Party mutations ────────────────────────────────────────────────────────
+
+  applyPartyRoster(partyId: string, leaderId: string, members: PartyMemberInfo[]): void {
+    this._partyId       = partyId;
+    this._partyLeaderId = leaderId;
+    this._partyMembers  = members;
+    this._pendingInvite = null;
+    this._notify();
+  }
+
+  applyPartyMemberJoined(id: string, name: string): void {
+    if (!this._partyMembers.some(m => m.id === id)) {
+      this._partyMembers = [...this._partyMembers, { id, name }];
+    }
+    this._notify();
+  }
+
+  applyPartyMemberLeft(id: string): void {
+    this._partyMembers = this._partyMembers.filter(m => m.id !== id);
+    this._partyAllies  = this._partyAllies.filter(a => a.entityId !== id);
+    if (this._partyMembers.length <= 1) {
+      this.clearParty();
+      return;
+    }
+    this._notify();
+  }
+
+  applyPartyAllies(allies: PartyAllyState[]): void {
+    this._partyAllies = allies;
+    this._notify();
+  }
+
+  applyPartyInvite(fromName: string, expiresAt: number): void {
+    this._pendingInvite = { fromName, expiresAt };
+    this._notify();
+  }
+
+  clearPartyInvite(): void {
+    this._pendingInvite = null;
+    this._notify();
+  }
+
+  clearParty(): void {
+    this._partyId       = null;
+    this._partyLeaderId = null;
+    this._partyMembers  = [];
+    this._partyAllies   = [];
+    this._pendingInvite = null;
     this._notify();
   }
 

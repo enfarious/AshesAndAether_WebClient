@@ -8,9 +8,10 @@ import type { Entity }         from '@/network/Protocol';
 const RETREAT_UNITS = 2;
 
 interface MenuItem {
-  label:   string;
-  visible: (e: Entity) => boolean;
-  execute: (e: Entity) => void;
+  label:    string;
+  visible:  (e: Entity) => boolean;
+  disabled?: (e: Entity) => boolean;
+  execute:  (e: Entity) => void;
 }
 
 /**
@@ -50,6 +51,27 @@ export class TargetWindow {
       label:   'Talk',
       visible: e => e.type === 'npc' || e.type === 'companion',
       execute: e => this.socket.sendCommand(`/talk "${e.name}" --id=${e.id}`),
+    },
+    {
+      // Tell — whisper to a player.
+      label:   'Tell',
+      visible: e => e.type === 'player',
+      execute: e => {
+        const input = document.getElementById('chat-input') as HTMLInputElement | null;
+        if (input) {
+          input.value = `/tell ${e.name} `;
+          input.focus();
+          // Move caret to end so the player can start typing immediately.
+          input.setSelectionRange(input.value.length, input.value.length);
+        }
+      },
+    },
+    {
+      // Invite — invite a player to your party.
+      label:    'Invite',
+      visible:  e => e.type === 'player',
+      disabled: e => this.player.partyMembers.some(m => m.id === e.id),
+      execute:  e => this.socket.sendCommand(`/party invite ${e.name}`),
     },
     {
       // Examine — always available.
@@ -276,6 +298,12 @@ export class TargetWindow {
           color: var(--ember, #c8823a);
           line-height: 1;
         }
+
+        .tw-item.tw-disabled {
+          color: rgba(212, 201, 184, 0.28);
+          cursor: default;
+          pointer-events: none;
+        }
       </style>
 
       <div class="tw-panel">
@@ -358,7 +386,8 @@ export class TargetWindow {
 
     // Menu — only rebuild when the set of visible actions could have changed
     // (target swap, type change, or hostile flag change). HP/distance ticks skip this.
-    const newKey = `${id}|${entity?.type ?? ''}|${entity?.hostile ?? false}|${entity?.isAlive ?? true}`;
+    const inParty = entity ? this.player.partyMembers.some(m => m.id === entity.id) : false;
+    const newKey = `${id}|${entity?.type ?? ''}|${entity?.hostile ?? false}|${entity?.isAlive ?? true}|${inParty}`;
     if (newKey !== this._menuKey) {
       this._menuKey = newKey;
       this._rebuildMenu(entity ?? null);
@@ -376,9 +405,12 @@ export class TargetWindow {
     this._cursor = Math.min(this._cursor, Math.max(0, visible.length - 1));
 
     visible.forEach((item, i) => {
-      const isActive = i === this._cursor;
+      const isActive  = i === this._cursor;
+      const isDisabled = entity ? (item.disabled?.(entity) ?? false) : false;
       const row = document.createElement('div');
-      row.className = 'tw-item' + (isActive ? ' tw-active' : '');
+      row.className = 'tw-item'
+        + (isActive ? ' tw-active' : '')
+        + (isDisabled ? ' tw-disabled' : '');
 
       const glyph = document.createElement('span');
       glyph.className = 'tw-glyph';
@@ -390,18 +422,17 @@ export class TargetWindow {
       row.appendChild(glyph);
       row.appendChild(label);
 
-      row.addEventListener('mouseenter', () => {
-        this._cursor = i;
-        this._updateCursor();
-      });
+      if (!isDisabled) {
+        row.addEventListener('mouseenter', () => {
+          this._cursor = i;
+          this._updateCursor();
+        });
 
-      row.addEventListener('click', () => {
-        // Always fetch live entity from registry so Approach (and all other
-        // actions) use the entity's current position, not its position at the
-        // time _rebuildMenu was called.
-        const liveEntity = this.entities.get(this.player.targetId ?? '');
-        if (liveEntity) item.execute(liveEntity);
-      });
+        row.addEventListener('click', () => {
+          const liveEntity = this.entities.get(this.player.targetId ?? '');
+          if (liveEntity) item.execute(liveEntity);
+        });
+      }
 
       menuEl.appendChild(row);
     });
@@ -437,7 +468,7 @@ export class TargetWindow {
       case 'NumpadEnter': {
         ev.preventDefault();
         const item = visible[this._cursor];
-        if (item && entity) item.execute(entity);
+        if (item && entity && !(item.disabled?.(entity))) item.execute(entity);
         break;
       }
 

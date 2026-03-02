@@ -62,6 +62,8 @@ export class WorldState {
 
   private _chatLog: ChatEntry[] = [];
   private _chatCounter = 0;
+  /** Name of the last player who whispered us — used for /r and /reply. */
+  private _lastWhisperSender: string | null = null;
 
   private readonly MAX_CHAT = 200;
 
@@ -76,6 +78,8 @@ export class WorldState {
   get proximity():   ProximityRosterPayload | null { return this._proximity; }
   get dangerState(): boolean                    { return this._dangerState; }
   get chatLog():     ChatEntry[]                { return this._chatLog; }
+  /** Name of the last player who whispered us (for /r, /reply). */
+  get lastWhisperSender(): string | null        { return this._lastWhisperSender; }
 
   // ── Mutations ─────────────────────────────────────────────────────────────
 
@@ -209,13 +213,18 @@ export class WorldState {
   }
 
   onCommunication(payload: CommunicationPayload): void {
+    console.log(`[WorldState] onCommunication channel="${payload.channel}" sender="${payload.senderName}" content="${payload.content}"`);
+    // Track last whisper sender for /r and /reply
+    if (payload.channel === 'whisper' && payload.senderName) {
+      this._lastWhisperSender = payload.senderName;
+    }
     const entry: ChatEntry = {
       id:        `chat-${++this._chatCounter}`,
       timestamp: payload.timestamp,
       channel:   payload.channel,
       sender:    payload.senderName,
       content:   payload.content,
-      distance:  payload.distance,
+      ...(payload.distance !== undefined ? { distance: payload.distance } : {}),
     };
     this._chatLog.push(entry);
     if (this._chatLog.length > this.MAX_CHAT) {

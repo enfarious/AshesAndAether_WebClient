@@ -497,3 +497,41 @@ export interface LootItemResultPayload {
 export interface LootSessionEndPayload {
   sessionId: string;
 }
+
+// ── Village / Plot System ────────────────────────────────────────────────────
+
+export interface ZoneTransferPayload {
+  zoneId: string;
+}
+
+export interface VillagePlacementModePayload {
+  catalogId:    string;
+  structureName: string;
+  displayName:  string;
+  sizeX:        number;
+  sizeZ:        number;
+  modelAsset:   string;
+  gridSize:     number;
+  goldCost:     number;
+}
+
+export interface VillageStructureInfo {
+  id:        string;
+  catalogId: string;
+  name:      string;
+  position:  Vector3;
+  rotation:  number;
+  sizeX:     number;
+  sizeZ:     number;
+}
+
+export interface VillageStatePayload {
+  villageName:     string;
+  ownerCharacterId: string;
+  ownerName:       string;
+  templateName:    string;
+  structures:      VillageStructureInfo[];
+  maxStructures:   number;
+  gridSize:        number;
+  isOwner:         boolean;
+}

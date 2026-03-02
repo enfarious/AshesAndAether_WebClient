@@ -25,7 +25,9 @@ import { Minimap }            from '@/ui/Minimap';
 import { LoginScreen }        from '@/ui/LoginScreen';
 import { CharacterSelect }    from '@/ui/CharacterSelect';
 import { UIScaleWidget }      from '@/ui/UIScaleWidget';
+import { VillagePanel }       from '@/ui/VillagePanel';
 import { CorpseSystem }       from '@/entities/CorpseSystem';
+import { PlacementMode }      from '@/village/PlacementMode';
 
 /**
  * App — top-level bootstrap. Creates all modules, wires them together,
@@ -72,6 +74,8 @@ export class App {
   private actionBar:       ActionBar       | null = null;
   private minimap:         Minimap         | null = null;
   private scaleWidget:     UIScaleWidget   | null = null;
+  private villagePanel:    VillagePanel    | null = null;
+  private placementMode:   PlacementMode   | null = null;
 
   // ── Loop ──────────────────────────────────────────────────────────────────
   private rafId: number = 0;
@@ -246,6 +250,8 @@ export class App {
     this.partyWindow?.dispose();
     this.actionBar?.dispose();
     this.minimap?.dispose();
+    this.villagePanel?.dispose();
+    this.placementMode?.dispose();
   }
 
   // ── Game loop ─────────────────────────────────────────────────────────────
@@ -300,6 +306,8 @@ export class App {
     this.partyWindow?.hide();
     this.actionBar?.hide();
     this.minimap?.hide();
+    this.villagePanel?.hide();
+    this.placementMode?.exit();
 
     switch (phase) {
       case 'login':
@@ -395,11 +403,24 @@ export class App {
     if (!this.minimap) {
       this.minimap = new Minimap(this.uiRoot, this.player, this.entities, this.world);
     }
+    if (!this.villagePanel) {
+      this.villagePanel = new VillagePanel(this.uiRoot, this.world, this.player, this.socket);
+    }
+    if (!this.placementMode) {
+      this.placementMode = new PlacementMode(
+        this.scene.scene, this.camera.getCamera(), this.canvas, this.socket, this.uiRoot,
+      );
+      this.router.onVillagePlacementMode(p => this.placementMode!.enter(p));
+    }
     this.hud.show();
     this.actionBar.show();
     this.minimap.show();
     this.chatPanel.show();
     this.targetWindow.show();
+    // Show village panel if we're in a village zone
+    if (this.world.isVillage) {
+      this.villagePanel.show();
+    }
     // inventoryWindow and lootWindow start hidden (loot panels auto-appear on drops)
   }
 

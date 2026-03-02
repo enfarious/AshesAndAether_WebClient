@@ -32,12 +32,12 @@ Not displayed — critical for ability-based combat feedback.
 
 ## Medium Priority
 
-### Party System - V1
+### Party System - V1 - Done for now
 Full party management implemented server-side: invite, accept, decline, leave, kick,
 lead, list. Redis-backed member tracking. Party chat channel exists.
 - Needs: party frames (member HP/mana bars), invite dialog, party chat tab
 
-### Market / Trading
+### Market / Trading - Merges with Housing
 Buy/sell/search/cancel orders, 2% listing fee, regional & world scope.
 Complete WalletService for gold tracking.
 - Needs: market window, order list, buy/sell dialogs, wallet/gold display

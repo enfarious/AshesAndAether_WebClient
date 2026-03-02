@@ -73,6 +73,7 @@ export class SocketClient {
       'inventory_update',
       'loot_session_start', 'loot_item_result', 'loot_session_end',
       'ability_update',
+      'zone_transfer', 'village_state', 'village_placement_mode',
       'error',
       'pong',
       'command_response',
@@ -237,6 +238,14 @@ export class SocketClient {
 
   sendSlotPassiveAbility(slotNumber: number, nodeId: string): void {
     this._send('slot_passive_ability', { slotNumber, nodeId });
+  }
+
+  sendZoneTransferReady(): void {
+    this._send('zone_transfer_ready', {});
+  }
+
+  sendVillagePlaceConfirm(catalogId: string, posX: number, posZ: number, rotation: number): void {
+    this._send('village_place_confirm', { catalogId, posX, posZ, rotation });
   }
 
   // ── Event bus ─────────────────────────────────────────────────────────────

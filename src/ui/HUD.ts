@@ -153,15 +153,6 @@ export class HUD {
           transition: transform 0.15s linear;
         }
 
-        .hud-target {
-          font-family: var(--font-body);
-          font-size: 17px;
-          color: var(--ember);
-          letter-spacing: 0.08em;
-          font-style: italic;
-          text-shadow: 0 1px 4px rgba(0,0,0,0.8);
-        }
-
         /* ── Death overlay ────────────────────────────────────────────── */
         #hud-death {
           position: fixed;
@@ -424,8 +415,6 @@ export class HUD {
         </button>
       </div>
 
-      <div class="hud-target" id="hud-target"></div>
-
       <div id="hud-combat" class="hud-combat" style="display:none">
         <div class="hud-atb" title="ATB">
           <div class="hud-atb-fill" id="hud-atb-fill"></div>
@@ -561,9 +550,6 @@ export class HUD {
       const pct = combat.autoAttack.max > 0 ? combat.autoAttack.current / combat.autoAttack.max : 0;
       this._setFill('hud-aa-fill', pct);
     }
-
-    const targetEl = this.root.querySelector<HTMLElement>('#hud-target')!;
-    targetEl.textContent = p.targetName ? `⟨ ${p.targetName} ⟩` : '';
 
     // ── Status effects ──────────────────────────────────────────────────────
     this._updateEffects();

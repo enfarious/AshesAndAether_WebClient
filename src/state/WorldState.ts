@@ -81,6 +81,17 @@ export class WorldState {
   /** Name of the last player who whispered us (for /r, /reply). */
   get lastWhisperSender(): string | null        { return this._lastWhisperSender; }
 
+  /** True when the current zone is a village instance (zone ID starts with "village:"). */
+  get isVillage(): boolean {
+    return this._zone?.id?.startsWith('village:') ?? false;
+  }
+
+  /** If in a village zone, returns the owner's character ID. */
+  get villageOwnerId(): string | null {
+    if (!this._zone?.id?.startsWith('village:')) return null;
+    return this._zone.id.slice('village:'.length);
+  }
+
   // ── Mutations ─────────────────────────────────────────────────────────────
 
   applyZone(zone: ZoneInfo): void {

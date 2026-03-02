@@ -27,6 +27,9 @@ import type {
   AbilityUpdatePayload,
   PartyMemberInfo,
   PartyAllyState,
+  ZoneTransferPayload,
+  VillagePlacementModePayload,
+  VillageStatePayload,
 } from './Protocol';
 
 /**
@@ -41,6 +44,8 @@ export class MessageRouter {
   private lootResultListeners   = new Set<(p: LootItemResultPayload) => void>();
   private lootEndListeners      = new Set<(p: LootSessionEndPayload) => void>();
   private abilityUpdateListeners = new Set<(p: AbilityUpdatePayload) => void>();
+  private villagePlacementListeners = new Set<(p: VillagePlacementModePayload) => void>();
+  private villageStateListeners    = new Set<(p: VillageStatePayload) => void>();
 
   constructor(
     private readonly socket:   SocketClient,
@@ -69,6 +74,16 @@ export class MessageRouter {
   onAbilityUpdate(fn: (p: AbilityUpdatePayload) => void): () => void {
     this.abilityUpdateListeners.add(fn);
     return () => this.abilityUpdateListeners.delete(fn);
+  }
+
+  onVillagePlacementMode(fn: (p: VillagePlacementModePayload) => void): () => void {
+    this.villagePlacementListeners.add(fn);
+    return () => this.villagePlacementListeners.delete(fn);
+  }
+
+  onVillageState(fn: (p: VillageStatePayload) => void): () => void {
+    this.villageStateListeners.add(fn);
+    return () => this.villageStateListeners.delete(fn);
   }
 
   mount(): void {
@@ -302,6 +317,25 @@ export class MessageRouter {
       // Surface success/error message in chat (same pattern as command_response)
       if (payload.message) this.world.pushMessage('system', payload.message);
       this.abilityUpdateListeners.forEach(fn => fn(payload));
+    });
+
+    // ── Zone transfer (village system) ────────────────────────────────────
+    s.on('zone_transfer', (p) => {
+      const payload = p as ZoneTransferPayload;
+      console.log('[MessageRouter] zone_transfer →', payload.zoneId);
+      // Clear all entities and set phase to loading_world (shows loading screen)
+      this.entities.clear();
+      this.session.setPhase('loading_world');
+      // Acknowledge so the gateway triggers enterWorld for the new zone
+      this.socket.sendZoneTransferReady();
+    });
+
+    s.on('village_state', (p) => {
+      this.villageStateListeners.forEach(fn => fn(p as VillageStatePayload));
+    });
+
+    s.on('village_placement_mode', (p) => {
+      this.villagePlacementListeners.forEach(fn => fn(p as VillagePlacementModePayload));
     });
 
     s.on('_connected', () => {

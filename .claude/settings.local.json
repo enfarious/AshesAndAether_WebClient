@@ -25,7 +25,9 @@
       "Bash(xargs grep -l \"quest\\\\|Quest\")",
       "Bash(xargs grep -l \"respawn\\\\|death\\\\|Death\")",
       "Bash(grep -n \"visible\\\\s*=\" /f/Projects/AshesAndAether/AshesAndAether_WebClient/src/entities/*.ts)",
-      "Bash(xargs grep -l \"statPoints\\\\|stat.*allocat\\\\|stat.*spend\")"
+      "Bash(xargs grep -l \"statPoints\\\\|stat.*allocat\\\\|stat.*spend\")",
+      "Bash(python3 -c \"import sys,json; data=json.load\\(sys.stdin\\); print\\(data[0][''text'']\\)\")",
+      "Bash(python -c \"import sys,json; data=json.load\\(sys.stdin\\); print\\(data[0][''text'']\\)\")"
     ]
   }
 }

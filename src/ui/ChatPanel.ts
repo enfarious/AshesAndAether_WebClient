@@ -49,7 +49,7 @@ export class ChatPanel {
         position: absolute;
         bottom: 72px;
         left: 16px;
-        width: clamp(260px, 28vw, 400px);
+        width: clamp(320px, 34vw, 520px);
         pointer-events: auto;
         display: flex;
         flex-direction: column;
@@ -57,14 +57,14 @@ export class ChatPanel {
       }
 
       #chat-log {
-        height: clamp(120px, 20vh, 240px);
+        height: clamp(160px, 22vh, 320px);
         overflow-y: auto;
-        padding: 6px 8px;
+        padding: 8px 10px;
         background: var(--ui-bg);
         border: 1px solid var(--ui-border);
         display: flex;
         flex-direction: column;
-        gap: 2px;
+        gap: 3px;
         scrollbar-width: thin;
         scrollbar-color: var(--ember) transparent;
       }
@@ -73,8 +73,8 @@ export class ChatPanel {
       #chat-log::-webkit-scrollbar-thumb { background: var(--ember); border-radius: 2px; }
 
       .chat-line {
-        font-size: 15px;
-        line-height: 1.45;
+        font-size: 19px;
+        line-height: 1.5;
         font-family: var(--font-body);
         word-break: break-word;
       }
@@ -99,8 +99,8 @@ export class ChatPanel {
         border: 1px solid var(--ui-border);
         color: var(--bone);
         font-family: var(--font-body);
-        font-size: 15px;
-        padding: 6px 8px;
+        font-size: 19px;
+        padding: 8px 10px;
         outline: none;
         width: 100%;
       }
@@ -169,10 +169,14 @@ export class ChatPanel {
       line.appendChild(sender);
     }
 
-    const content = document.createTextNode(
-      entry.channel === 'emote' ? ` ${entry.content}` : entry.content
-    );
-    line.appendChild(content);
+    // Split on newlines so multi-line messages (e.g. /look descriptions) render
+    // with proper line breaks without using innerHTML.
+    const text  = entry.channel === 'emote' ? ` ${entry.content}` : entry.content;
+    const parts = text.split('\n');
+    for (let i = 0; i < parts.length; i++) {
+      line.appendChild(document.createTextNode(parts[i]!));
+      if (i < parts.length - 1) line.appendChild(document.createElement('br'));
+    }
 
     this.log.appendChild(line);
     this.log.scrollTop = this.log.scrollHeight;

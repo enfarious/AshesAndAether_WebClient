@@ -3,6 +3,13 @@ import type { ZoneInfo } from '@/network/Protocol';
 
 /**
  * SceneManager — owns the Three.js renderer, scene, and base lighting.
+ *
+ * Environment changes (day/night cycle, weather) are applied via
+ * transitionZone() which smoothly crossfades all light colours, intensities,
+ * fog density, and tone-mapping exposure over a configurable duration.
+ *
+ * Call tick(dt) every frame (before render()) to advance transitions.
+ * Call applyZone() for instant snaps (world entry, teleport).
  */
 export class SceneManager {
   readonly renderer: THREE.WebGLRenderer;
@@ -12,6 +19,14 @@ export class SceneManager {
   private hemiLight:        THREE.HemisphereLight;
   private directionalLight: THREE.DirectionalLight;
   private fillLight:        THREE.DirectionalLight;
+
+  // ── Environment transitions ────────────────────────────────────────────────
+  private envTransition: {
+    from:     EnvPreset;
+    to:       EnvPreset;
+    elapsed:  number;
+    duration: number;
+  } | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({
@@ -33,12 +48,10 @@ export class SceneManager {
 
     // ── Lighting ──────────────────────────────────────────────────────────
     // Hemisphere: sky colour from above, ground bounce from below.
-    // This is the most important light for making unlit/untextured geometry
-    // readable — it gives hills a light top and dark underside naturally.
     this.hemiLight = new THREE.HemisphereLight(
       0xb0c8e0, // sky colour  (cool blue-white)
       0x304820, // ground colour (cool dark green — light bouncing off grass)
-      1.2,      // intensity
+      1.2,
     );
     this.scene.add(this.hemiLight);
 
@@ -48,7 +61,7 @@ export class SceneManager {
 
     // Key light (sun/moon) — angled to show terrain relief.
     this.directionalLight = new THREE.DirectionalLight(0xffffff, 1.3);
-    this.directionalLight.position.set(200, 400, 150);  // roughly south-east, high angle
+    this.directionalLight.position.set(200, 400, 150);
     this.directionalLight.castShadow = true;
     this.directionalLight.shadow.mapSize.set(2048, 2048);
     this.directionalLight.shadow.camera.near = 1;
@@ -70,9 +83,58 @@ export class SceneManager {
 
   // ── Zone environment ──────────────────────────────────────────────────────
 
+  /**
+   * Instantly apply a zone environment — use on initial world entry or teleport.
+   * Cancels any in-progress transition.
+   */
   applyZone(zone: ZoneInfo): void {
-    const env = resolveEnvironment(zone);
+    this.envTransition = null;
+    this._applyPreset(resolveEnvironment(zone));
+  }
 
+  /**
+   * Smoothly crossfade from the current environment to the new zone environment.
+   * @param durationSecs  Seconds to complete the fade (default 20 s).
+   */
+  transitionZone(zone: ZoneInfo, durationSecs = 20): void {
+    const to = resolveEnvironment(zone);
+    // If we are mid-transition, start the new fade from wherever we currently are.
+    const from = this._capturePreset();
+    this.envTransition = { from, to, elapsed: 0, duration: durationSecs };
+  }
+
+  // ── Frame ──────────────────────────────────────────────────────────────────
+
+  /**
+   * Advance any in-progress environment transition.
+   * Must be called once per frame, before render().
+   */
+  tick(dt: number): void {
+    if (!this.envTransition) return;
+    const tr = this.envTransition;
+    tr.elapsed = Math.min(tr.elapsed + dt, tr.duration);
+    const t = _easeInOut(tr.elapsed / tr.duration);
+    this._applyLerped(tr.from, tr.to, t);
+    if (tr.elapsed >= tr.duration) this.envTransition = null;
+  }
+
+  render(camera: THREE.Camera): void {
+    this.renderer.render(this.scene, camera);
+  }
+
+  dispose(): void {
+    window.removeEventListener('resize', this._onResize);
+    this.renderer.dispose();
+  }
+
+  private _onResize = (): void => {
+    this.renderer.setSize(window.innerWidth, window.innerHeight);
+  };
+
+  // ── Preset helpers ────────────────────────────────────────────────────────
+
+  /** Write an EnvPreset directly to all lights / fog / renderer. */
+  private _applyPreset(env: EnvPreset): void {
     this.scene.background = new THREE.Color(env.skyColor);
     (this.scene.fog as THREE.FogExp2).color.set(env.fogColor);
     (this.scene.fog as THREE.FogExp2).density = env.fogDensity;
@@ -93,21 +155,62 @@ export class SceneManager {
     this.renderer.toneMappingExposure = env.exposure;
   }
 
-  // ── Frame ─────────────────────────────────────────────────────────────────
-
-  render(camera: THREE.Camera): void {
-    this.renderer.render(this.scene, camera);
+  /** Read current scene state back into an EnvPreset (for transition start). */
+  private _capturePreset(): EnvPreset {
+    return {
+      skyColor:         (this.scene.background as THREE.Color).getHex(),
+      fogColor:         (this.scene.fog as THREE.FogExp2).color.getHex(),
+      fogDensity:       (this.scene.fog as THREE.FogExp2).density,
+      hemiSkyColor:     this.hemiLight.color.getHex(),
+      hemiGroundColor:  this.hemiLight.groundColor.getHex(),
+      hemiIntensity:    this.hemiLight.intensity,
+      ambientColor:     this.ambientLight.color.getHex(),
+      ambientIntensity: this.ambientLight.intensity,
+      sunColor:         this.directionalLight.color.getHex(),
+      sunIntensity:     this.directionalLight.intensity,
+      fillColor:        this.fillLight.color.getHex(),
+      fillIntensity:    this.fillLight.intensity,
+      exposure:         this.renderer.toneMappingExposure,
+    };
   }
 
-  dispose(): void {
-    window.removeEventListener('resize', this._onResize);
-    this.renderer.dispose();
-  }
+  /** Interpolate every field between two presets at position t ∈ [0, 1]. */
+  private _applyLerped(from: EnvPreset, to: EnvPreset, t: number): void {
+    const lc = (a: number, b: number): number => {
+      const ca = new THREE.Color(a);
+      const cb = new THREE.Color(b);
+      return ca.lerp(cb, t).getHex();
+    };
+    const ln = (a: number, b: number): number => a + (b - a) * t;
 
-  private _onResize = (): void => {
-    this.renderer.setSize(window.innerWidth, window.innerHeight);
-    // Camera aspect ratio update happens in OrbitCamera._onResize
-  };
+    this.scene.background = new THREE.Color(lc(from.skyColor, to.skyColor));
+
+    const fog = this.scene.fog as THREE.FogExp2;
+    fog.color.set(lc(from.fogColor, to.fogColor));
+    fog.density = ln(from.fogDensity, to.fogDensity);
+
+    this.hemiLight.color.set(lc(from.hemiSkyColor, to.hemiSkyColor));
+    this.hemiLight.groundColor.set(lc(from.hemiGroundColor, to.hemiGroundColor));
+    this.hemiLight.intensity = ln(from.hemiIntensity, to.hemiIntensity);
+
+    this.ambientLight.color.set(lc(from.ambientColor, to.ambientColor));
+    this.ambientLight.intensity = ln(from.ambientIntensity, to.ambientIntensity);
+
+    this.directionalLight.color.set(lc(from.sunColor, to.sunColor));
+    this.directionalLight.intensity = ln(from.sunIntensity, to.sunIntensity);
+
+    this.fillLight.color.set(lc(from.fillColor, to.fillColor));
+    this.fillLight.intensity = ln(from.fillIntensity, to.fillIntensity);
+
+    this.renderer.toneMappingExposure = ln(from.exposure, to.exposure);
+  }
+}
+
+// ── Private helpers ───────────────────────────────────────────────────────────
+
+/** Smooth step easing — ease in then out, feels natural for sky changes. */
+function _easeInOut(t: number): number {
+  return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
 }
 
 // ── Environment presets ───────────────────────────────────────────────────────
@@ -129,7 +232,20 @@ interface EnvPreset {
 }
 
 function resolveEnvironment(zone: ZoneInfo): EnvPreset {
-  const tod = zone.timeOfDay ?? 'day';
+  // Derive tod from float when available; only override string if they agree
+  // (or if no string was sent). Protects against stale server default floats.
+  let tod = zone.timeOfDay ?? 'day';
+  if (zone.timeOfDayValue !== undefined) {
+    const t = zone.timeOfDayValue;
+    const floatTod = (t >= 0.167 && t < 0.25)  ? 'dawn'
+                   : (t >= 0.25  && t < 0.75)  ? 'day'
+                   : (t >= 0.75  && t < 0.833) ? 'dusk'
+                   : 'night';
+    if (!zone.timeOfDay || floatTod === zone.timeOfDay) {
+      tod = floatTod;
+    }
+    // else: float and string disagree → trust string (stale gateway fallback)
+  }
   const wx  = zone.weather   ?? 'clear';
   const lit = zone.lighting  ?? 'normal';
 
@@ -138,11 +254,11 @@ function resolveEnvironment(zone: ZoneInfo): EnvPreset {
   if (tod === 'night') {
     preset = {
       skyColor: 0x05080f, fogColor: 0x080c18, fogDensity: 0.00040,
-      hemiSkyColor: 0x101828, hemiGroundColor: 0x0a0808, hemiIntensity: 0.8,
-      ambientColor: 0x101828, ambientIntensity: 0.4,
-      sunColor: 0x3050a0, sunIntensity: 0.4,
-      fillColor: 0x080c18, fillIntensity: 0.15,
-      exposure: 0.85,
+      hemiSkyColor: 0x1e3050, hemiGroundColor: 0x0c0c10, hemiIntensity: 1.1,
+      ambientColor: 0x1a2840, ambientIntensity: 0.75,
+      sunColor: 0x4060b0, sunIntensity: 0.6,
+      fillColor: 0x0c1020, fillIntensity: 0.28,
+      exposure: 0.92,
     };
   } else if (tod === 'dusk' || tod === 'dawn') {
     preset = {
@@ -165,7 +281,7 @@ function resolveEnvironment(zone: ZoneInfo): EnvPreset {
     };
   }
 
-  // Weather
+  // Weather modifiers
   if (wx === 'fog' || wx === 'mist') {
     preset.fogDensity      *= 5;
     preset.fogColor         = 0x909aaa;
@@ -178,9 +294,14 @@ function resolveEnvironment(zone: ZoneInfo): EnvPreset {
     preset.sunIntensity    *= 0.3;
     preset.hemiIntensity   *= 0.6;
     preset.ambientIntensity *= 0.7;
+  } else if (wx === 'cloudy') {
+    preset.fogDensity      *= 1.8;
+    preset.sunIntensity    *= 0.7;
+    preset.hemiIntensity   *= 0.85;
+    preset.exposure        *= 0.95;
   }
 
-  // Lighting — only dim/dark, never below readable minimums
+  // Lighting — zone-level modifier (dungeons, special areas)
   if (lit === 'dark') {
     preset.sunIntensity     = Math.max(preset.sunIntensity * 0.5, 0.3);
     preset.hemiIntensity    = Math.max(preset.hemiIntensity * 0.6, 0.5);

@@ -25,10 +25,40 @@ export interface ChatEntry {
  *
  * Represents the "world around the player" rather than the player themselves.
  */
+/** Real seconds for one full in-game day — must match server DAY_CYCLE_SECS. */
+const DAY_CYCLE_SECS = 1440;
+
+/** Returns the midpoint (0–1) of the named TOD bucket, used when an exact
+ *  timeOfDayValue is unavailable. */
+function _todBucketMidpoint(tod: string): number {
+  switch (tod) {
+    case 'dawn':  return 0.208; // midpoint of [0.167, 0.25)
+    case 'day':   return 0.500; // midpoint of [0.25,  0.75)
+    case 'dusk':  return 0.792; // midpoint of [0.75,  0.833)
+    default:      return 0.042; // night — near midnight
+  }
+}
+
+/** Returns true if value falls inside the expected range for tod string. */
+function _todValueInBucket(value: number, tod: string): boolean {
+  switch (tod) {
+    case 'dawn':  return value >= 0.167 && value < 0.25;
+    case 'day':   return value >= 0.25  && value < 0.75;
+    case 'dusk':  return value >= 0.75  && value < 0.833;
+    default:      return value >= 0.833 || value < 0.167; // night
+  }
+}
+
 export class WorldState {
   private _zone: ZoneInfo | null = null;
   private _proximity: ProximityRosterPayload | null = null;
   private _dangerState = false;
+
+  // ── Local TOD interpolation ───────────────────────────────────────────────
+  // The server sends timeOfDayValue on zone updates; we advance it locally
+  // each second so the clock stays accurate between server broadcasts.
+  private _todValue: number   = 0.33;
+  private _todSyncAt: number  = 0;
 
   private _chatLog: ChatEntry[] = [];
   private _chatCounter = 0;
@@ -51,13 +81,53 @@ export class WorldState {
 
   applyZone(zone: ZoneInfo): void {
     this._zone = { ...zone };
+    if (zone.timeOfDayValue !== undefined) {
+      // If the float value and the string bucket disagree (e.g. gateway sent the
+      // default 0.33 fallback but the scene string is 'dusk'), trust the string.
+      if (zone.timeOfDay && !_todValueInBucket(zone.timeOfDayValue, zone.timeOfDay)) {
+        this._todValue = _todBucketMidpoint(zone.timeOfDay);
+      } else {
+        this._todValue = zone.timeOfDayValue;
+      }
+      this._todSyncAt = Date.now();
+    } else if (zone.timeOfDay) {
+      this._todValue  = _todBucketMidpoint(zone.timeOfDay);
+      this._todSyncAt = Date.now();
+    }
     this._notifyZone();
   }
 
   applyZonePartial(partial: Partial<ZoneInfo>): void {
     if (!this._zone) return;
+    const prevTod = this._zone.timeOfDay;
     this._zone = { ...this._zone, ...partial };
+    if (partial.timeOfDayValue !== undefined) {
+      // Cross-validate float vs current string bucket (same logic as applyZone).
+      const currentTod = this._zone.timeOfDay;
+      if (currentTod && !_todValueInBucket(partial.timeOfDayValue, currentTod)) {
+        this._todValue = _todBucketMidpoint(currentTod);
+      } else {
+        this._todValue = partial.timeOfDayValue;
+      }
+      this._todSyncAt = Date.now();
+    } else if (partial.timeOfDay !== undefined && partial.timeOfDay !== prevTod) {
+      // Bucket changed but no exact value — snap to bucket midpoint so the
+      // HUD clock stays consistent with the scene lighting.
+      this._todValue  = _todBucketMidpoint(partial.timeOfDay);
+      this._todSyncAt = Date.now();
+    }
     this._notifyZone();
+  }
+
+  /**
+   * Returns the current normalised time-of-day (0–1), interpolated forward
+   * from the last server sync using the known day-cycle rate.
+   * 0 = midnight · 0.25 = 6 am · 0.5 = noon · 0.75 = 6 pm
+   */
+  getTimeOfDayNormalized(): number {
+    if (this._todSyncAt === 0) return this._todValue;
+    const elapsed = (Date.now() - this._todSyncAt) / 1000;
+    return (this._todValue + elapsed / DAY_CYCLE_SECS) % 1.0;
   }
 
   applyProximityRoster(payload: ProximityRosterPayload): void {

@@ -7,6 +7,7 @@ import type {
   MovementSpeed,
   CommunicationChannel,
   InteractionAction,
+  EquipSlot,
 } from './Protocol';
 
 type RawListener = (payload: unknown) => void;
@@ -68,6 +69,9 @@ export class SocketClient {
       'communication',
       'proximity_roster', 'proximity_roster_delta',
       'corruption_update',
+      'inventory_update',
+      'loot_session_start', 'loot_item_result', 'loot_session_end',
+      'ability_update',
       'error',
       'pong',
       'command_response',
@@ -186,6 +190,38 @@ export class SocketClient {
 
   sendPing(): void {
     this._send('ping', { timestamp: Date.now() });
+  }
+
+  sendRespawn(): void {
+    this._send('respawn', { timestamp: Date.now() });
+  }
+
+  sendEquipItem(itemId: string, slot: EquipSlot): void {
+    this._send('equip_item', { itemId, slot, timestamp: Date.now() });
+  }
+
+  sendUnequipItem(slot: EquipSlot): void {
+    this._send('unequip_item', { slot, timestamp: Date.now() });
+  }
+
+  sendWeaponSetSwap(): void {
+    this._send('weapon_set_swap', { timestamp: Date.now() });
+  }
+
+  sendLootRoll(sessionId: string, itemId: string, roll: 'need' | 'want' | 'pass'): void {
+    this._send('loot_roll', { sessionId, itemId, roll });
+  }
+
+  sendUnlockAbility(nodeId: string): void {
+    this._send('unlock_ability', { nodeId });
+  }
+
+  sendSlotActiveAbility(slotNumber: number, nodeId: string): void {
+    this._send('slot_active_ability', { slotNumber, nodeId });
+  }
+
+  sendSlotPassiveAbility(slotNumber: number, nodeId: string): void {
+    this._send('slot_passive_ability', { slotNumber, nodeId });
   }
 
   // ── Event bus ─────────────────────────────────────────────────────────────

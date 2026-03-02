@@ -8,7 +8,23 @@
       "Bash(# Check if there''s a venv ls F:/Projects/AshesAndAether/AshesAndAether_Server/.venv/Scripts/ | head -5 || ls F:/Projects/AshesAndAether/AshesAndAether_Server/venv/Scripts/)",
       "Bash(.venv/Scripts/python scripts/terrain/build_terrain_mesh.py --heightmap data/terrain/usa_ny_stephentown_dem --origin-lat 42.5513326 --origin-lon -73.3792285 --output data/world/assets/USA_NY_Stephentown/usa_ny_stephentown_terrain.glb --downsample 2)",
       "Bash(.venv/Scripts/python scripts/osm/build_buildings.py --input data/osm/USA_NY_Stephentown/buildings.json --origin-lat 42.5513326 --origin-lon -73.3792285 --heightmap data/terrain/usa_ny_stephentown_dem --output data/world/assets/USA_NY_Stephentown/usa_ny_stephentown_buildings.glb)",
-      "Bash(.venv/Scripts/python scripts/osm/build_roads.py --input data/osm/USA_NY_Stephentown/roads.json --origin-lat 42.5513326 --origin-lon -73.3792285 --heightmap data/terrain/usa_ny_stephentown_dem --output data/world/assets/USA_NY_Stephentown/usa_ny_stephentown_roads.glb)"
+      "Bash(.venv/Scripts/python scripts/osm/build_roads.py --input data/osm/USA_NY_Stephentown/roads.json --origin-lat 42.5513326 --origin-lon -73.3792285 --heightmap data/terrain/usa_ny_stephentown_dem --output data/world/assets/USA_NY_Stephentown/usa_ny_stephentown_roads.glb)",
+      "Bash(xargs grep -l \"revive\\\\|restoreHealth\\\\|fullHeal\\\\|healToFull\")",
+      "Bash(xargs grep -l \"mob.*definition\\\\|mobDefinition\\\\|MOB_DATA\")",
+      "Bash(xargs grep -l \"definition\\\\|DEFINITION\")",
+      "Bash(find \"F:\\\\Projects\\\\AshesAndAether\\\\AshesAndAether_Server\\\\src\" -name \"*.ts\" -exec grep -l \"glb\\\\|asset\\\\|mesh\\\\|load.*building\\\\|load.*structure\" {} ;)",
+      "Bash(xargs grep -l \"building\\\\|glb\\\\|mesh\\\\|model\")",
+      "Bash(npx tsc --noEmit)",
+      "Bash(xargs grep -l \"sprint\\\\|dodge\")",
+      "Bash(find /f/Projects/AshesAndAether/AshesAndAether_Server -name \"*.ts\" -type f -exec grep -l \"enum MessageType\\\\|PLAYER_RESPAWN\" {} ;)",
+      "Bash(xargs grep -l \"export\")",
+      "Bash(npx ts-node --project tsconfig.json prisma/seed-loot.ts)",
+      "Bash(npx tsc --noEmit --skipLibCheck)",
+      "Bash(xargs grep -l \"perception\")",
+      "Bash(xargs grep -l \"party\\\\|Party\")",
+      "Bash(xargs grep -l \"quest\\\\|Quest\")",
+      "Bash(xargs grep -l \"respawn\\\\|death\\\\|Death\")",
+      "Bash(grep -n \"visible\\\\s*=\" /f/Projects/AshesAndAether/AshesAndAether_WebClient/src/entities/*.ts)"
     ]
   }
 }

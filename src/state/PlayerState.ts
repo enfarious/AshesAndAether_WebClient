@@ -4,6 +4,11 @@ import type {
   Vector3,
   MovementSpeed,
   CorruptionUpdatePayload,
+  ItemInfo,
+  EquipSlot,
+  InventoryUpdatePayload,
+  AbilityNodeSummary,
+  AbilityUpdatePayload,
 } from '@/network/Protocol';
 
 type Listener = () => void;
@@ -23,10 +28,13 @@ interface CombatGauges {
  * The rendered position (with interpolation) lives in PlayerEntity.
  */
 export class PlayerState {
-  private _id:       string  = '';
-  private _name:     string  = '';
-  private _level:    number  = 1;
-  private _isAlive:  boolean = true;
+  private _id:            string  = '';
+  private _name:          string  = '';
+  private _level:         number  = 1;
+  private _experience:    number  = 0;
+  private _abilityPoints: number  = 0;
+  private _statPoints:    number  = 0;
+  private _isAlive:       boolean = true;
   private _heading:  number  = 0;
   private _speed:    MovementSpeed = 'stop';
 
@@ -49,14 +57,46 @@ export class PlayerState {
   private _targetId:   string | null = null;
   private _targetName: string | null = null;
 
+  /**
+   * Unix-ms timestamp at which the player's corpse will fully dissolve and
+   * auto-release to homepoint.  null when the player is alive.
+   * Set by App when an `entity_death` event arrives for this player.
+   */
+  private _corpseDissolvesAt: number | null = null;
+
+  // ── Inventory ───────────────────────────────────────────────────────────
+  private _inventory:      ItemInfo[]                           = [];
+  private _equipment:      Partial<Record<EquipSlot, ItemInfo>> = {};
+  private _activeWeaponSet: 1 | 2                               = 1;
+
+  // ── Ability tree ─────────────────────────────────────────────────────────
+  private _unlockedActiveNodes:  string[]            = [];
+  private _unlockedPassiveNodes: string[]            = [];
+  private _activeLoadout:        (string | null)[]   = Array(8).fill(null);
+  private _passiveLoadout:       (string | null)[]   = Array(8).fill(null);
+  private _specialLoadout:       string[]            = [];
+  /** Full node manifest sent once on world_entry. */
+  private _abilityManifest:      AbilityNodeSummary[] = [];
+
+  /**
+   * Client-predicted position — set every frame by WASDController while
+   * movement keys are held.  EntityFactory reads this and forwards it to
+   * PlayerEntity so the player capsule moves smoothly without waiting for
+   * server round-trips.  null when the player is stationary.
+   */
+  private _localPos: Vector3 | null = null;
+
   private listeners = new Set<Listener>();
 
   // ── Getters ───────────────────────────────────────────────────────────────
 
-  get id():       string  { return this._id; }
-  get name():     string  { return this._name; }
-  get level():    number  { return this._level; }
-  get isAlive():  boolean { return this._isAlive; }
+  get id():            string  { return this._id; }
+  get name():          string  { return this._name; }
+  get level():         number  { return this._level; }
+  get experience():    number  { return this._experience; }
+  get abilityPoints(): number  { return this._abilityPoints; }
+  get statPoints():    number  { return this._statPoints; }
+  get isAlive():       boolean { return this._isAlive; }
   get position(): Vector3 { return this._position; }
   get heading():  number  { return this._heading; }
   get speed():    MovementSpeed { return this._speed; }
@@ -67,14 +107,39 @@ export class PlayerState {
   get combat():   CombatGauges { return this._combat; }
   get targetId(): string | null { return this._targetId; }
   get targetName(): string | null { return this._targetName; }
+  /** Unix-ms at which corpse auto-dissolves. null if alive. */
+  get corpseDissolvesAt(): number | null { return this._corpseDissolvesAt; }
+
+  get inventory():       ItemInfo[]                            { return this._inventory; }
+  get equipment():       Partial<Record<EquipSlot, ItemInfo>>  { return this._equipment; }
+  get activeWeaponSet(): 1 | 2                                 { return this._activeWeaponSet; }
+
+  get unlockedActiveNodes():  string[]             { return this._unlockedActiveNodes; }
+  get unlockedPassiveNodes(): string[]             { return this._unlockedPassiveNodes; }
+  get activeLoadout():        (string | null)[]    { return this._activeLoadout; }
+  get passiveLoadout():       (string | null)[]    { return this._passiveLoadout; }
+  get specialLoadout():       string[]             { return this._specialLoadout; }
+  get abilityManifest():      AbilityNodeSummary[] { return this._abilityManifest; }
+
+  /** Client-predicted position; null while stationary. */
+  get localPosition(): Vector3 | null { return this._localPos; }
+
+  /** Called by WASDController every frame movement keys are held. */
+  setLocalPosition(pos: Vector3): void { this._localPos = { ...pos }; }
+
+  /** Called by WASDController when movement keys are released. */
+  clearLocalPosition(): void { this._localPos = null; }
 
   // ── Mutations ─────────────────────────────────────────────────────────────
 
-  applyWorldEntry(character: CharacterState): void {
-    this._id       = character.id;
-    this._name     = character.name;
-    this._level    = character.level;
-    this._isAlive  = character.isAlive;
+  applyWorldEntry(character: CharacterState, abilityManifest?: AbilityNodeSummary[]): void {
+    this._id            = character.id;
+    this._name          = character.name;
+    this._level         = character.level;
+    this._experience    = character.experience   ?? 0;
+    this._abilityPoints = character.abilityPoints ?? 0;
+    this._statPoints    = character.statPoints    ?? 0;
+    this._isAlive       = character.isAlive;
     this._position = { ...character.position };
     this._heading  = character.heading;
     this._speed    = character.currentSpeed ?? 'stop';
@@ -82,17 +147,47 @@ export class PlayerState {
     this._stamina  = character.stamina ? { ...character.stamina } : { current: 0, max: 0 };
     this._mana     = character.mana    ? { ...character.mana }    : { current: 0, max: 0 };
     this._corruption = character.corruption?.current ?? 0;
+    // Ability tree
+    this._unlockedActiveNodes  = character.unlockedAbilities?.activeNodes  ?? [];
+    this._unlockedPassiveNodes = character.unlockedAbilities?.passiveNodes ?? [];
+    this._activeLoadout        = character.activeLoadout  ?? Array(8).fill(null);
+    this._passiveLoadout       = character.passiveLoadout ?? Array(8).fill(null);
+    this._specialLoadout       = character.specialLoadout ?? [];
+    if (abilityManifest) this._abilityManifest = abilityManifest;
+    this._notify();
+  }
+
+  applyAbilityUpdate(payload: AbilityUpdatePayload): void {
+    this._unlockedActiveNodes  = payload.unlockedActiveNodes;
+    this._unlockedPassiveNodes = payload.unlockedPassiveNodes;
+    this._activeLoadout        = payload.activeLoadout;
+    this._passiveLoadout       = payload.passiveLoadout;
+    this._abilityPoints        = payload.abilityPoints;
     this._notify();
   }
 
   applyStateUpdate(update: {
-    health?:  StatBar;
-    stamina?: StatBar;
-    mana?:    StatBar;
+    health?:        StatBar;
+    stamina?:       StatBar;
+    mana?:          StatBar;
+    isAlive?:       boolean;
+    experience?:    number;
+    level?:         number;
+    abilityPoints?: number;
+    statPoints?:    number;
   }): void {
-    if (update.health)  this._health  = { ...update.health };
-    if (update.stamina) this._stamina = { ...update.stamina };
-    if (update.mana)    this._mana    = { ...update.mana };
+    if (update.health)               this._health   = { ...update.health };
+    if (update.stamina)              this._stamina  = { ...update.stamina };
+    if (update.mana)                 this._mana     = { ...update.mana };
+    if (update.isAlive !== undefined) {
+      this._isAlive = update.isAlive;
+      // Clear the corpse timer when the player comes back to life
+      if (update.isAlive) this._corpseDissolvesAt = null;
+    }
+    if (update.experience    !== undefined) this._experience    = update.experience;
+    if (update.level         !== undefined) this._level         = update.level;
+    if (update.abilityPoints !== undefined) this._abilityPoints = update.abilityPoints;
+    if (update.statPoints    !== undefined) this._statPoints    = update.statPoints;
     this._notify();
   }
 
@@ -127,6 +222,22 @@ export class PlayerState {
 
   applyCorruptionUpdate(payload: CorruptionUpdatePayload): void {
     this._corruption = payload.corruption;
+    this._notify();
+  }
+
+  /**
+   * Called by App when the server sends an `entity_death` event for this player.
+   * Records when the corpse will auto-dissolve so the HUD can show a countdown.
+   */
+  setCorpseDissolvesAt(dissolveAtMs: number): void {
+    this._corpseDissolvesAt = dissolveAtMs;
+    this._notify();
+  }
+
+  applyInventoryUpdate(payload: InventoryUpdatePayload): void {
+    this._inventory       = payload.items;
+    this._equipment       = { ...payload.equipment };
+    this._activeWeaponSet = payload.activeWeaponSet;
     this._notify();
   }
 

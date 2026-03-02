@@ -5,15 +5,23 @@ import type { CharacterState } from '@/network/Protocol';
 /**
  * PlayerEntity — the local player's visual representation.
  *
- * Position is driven by server updates via setTargetPosition.
- * The camera follows this object's world position.
+ * Position is driven by two sources:
+ *   • setPredictedPosition() — called by EntityFactory each frame while
+ *     WASD keys are held.  X/Z snap directly to the predicted position
+ *     so movement is perfectly smooth.  Y is lerped so terrain transitions
+ *     don't stutter.
+ *   • setTargetPosition()    — called on server state_update.  Stored as
+ *     serverTarget; the entity lerps toward it when prediction is inactive
+ *     (player stopped moving) to reconcile any small drift.
  *
- * Uses a distinct visual to differentiate from RemoteEntity.
+ * The camera follows this object's world position.
  */
 export class PlayerEntity extends EntityObject {
-  /** Smoothly lerp toward the server position each frame. */
-  private serverTarget = new THREE.Vector3();
-  private lerpSpeed    = 12; // units/sec reciprocal — higher = snappier
+  /** Smoothly lerp toward the server position each frame (used when not predicting). */
+  private serverTarget  = new THREE.Vector3();
+  private lerpSpeed     = 12; // units/sec reciprocal — higher = snappier
+  /** Set by EntityFactory before this entity's update(); consumed and cleared inside update(). */
+  private _predictedPos: THREE.Vector3 | null = null;
 
   constructor(character: CharacterState, scene: THREE.Scene) {
     const root = new THREE.Group();
@@ -58,9 +66,32 @@ export class PlayerEntity extends EntityObject {
     this.serverTarget.copy(root.position);
   }
 
+  /**
+   * Called by EntityFactory.update() BEFORE this entity's own update() runs.
+   * The position is consumed (and cleared) inside update() so it must be
+   * re-supplied every frame prediction is active.
+   */
+  setPredictedPosition(v: THREE.Vector3): void {
+    if (!this._predictedPos) this._predictedPos = new THREE.Vector3();
+    this._predictedPos.copy(v);
+  }
+
   override update(dt: number): void {
-    // Smooth follow toward server-authoritative position
-    this.object3d.position.lerp(this.serverTarget, Math.min(this.lerpSpeed * dt, 1));
+    if (this._predictedPos) {
+      // Prediction active: X/Z snap directly (perfectly smooth);
+      // Y lerps so terrain slope changes don't pop.
+      this.object3d.position.x = this._predictedPos.x;
+      this.object3d.position.z = this._predictedPos.z;
+      this.object3d.position.y = THREE.MathUtils.lerp(
+        this.object3d.position.y,
+        this._predictedPos.y,
+        Math.min(this.lerpSpeed * dt, 1),
+      );
+      this._predictedPos = null; // Consumed — must be re-set next frame
+    } else {
+      // No prediction (player stopped) — lerp toward server position to reconcile.
+      this.object3d.position.lerp(this.serverTarget, Math.min(this.lerpSpeed * dt, 1));
+    }
   }
 
   override setTargetPosition(

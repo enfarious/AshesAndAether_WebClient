@@ -15,8 +15,15 @@ import { WASDController }      from '@/input/WASDController';
 import { HUD }                from '@/ui/HUD';
 import { ChatPanel }          from '@/ui/ChatPanel';
 import { TargetWindow }       from '@/ui/TargetWindow';
+import { InventoryWindow }    from '@/ui/InventoryWindow';
+import { LootWindow }         from '@/ui/LootWindow';
+import { AbilityWindow }      from '@/ui/AbilityWindow';
+import { ActionBar }          from '@/ui/ActionBar';
+import { Minimap }            from '@/ui/Minimap';
 import { LoginScreen }        from '@/ui/LoginScreen';
 import { CharacterSelect }    from '@/ui/CharacterSelect';
+import { UIScaleWidget }      from '@/ui/UIScaleWidget';
+import { CorpseSystem }       from '@/entities/CorpseSystem';
 
 /**
  * App — top-level bootstrap. Creates all modules, wires them together,
@@ -42,6 +49,7 @@ export class App {
   private camInput: CameraInput;
   private assets:  AssetLoader;
   private factory: EntityFactory;
+  private corpses: CorpseSystem;
   private worldRoot: THREE.Group | null = null;
 
   // ── Input ─────────────────────────────────────────────────────────────────
@@ -54,6 +62,12 @@ export class App {
   private hud:             HUD             | null = null;
   private chatPanel:       ChatPanel       | null = null;
   private targetWindow:    TargetWindow    | null = null;
+  private inventoryWindow: InventoryWindow | null = null;
+  private lootWindow:      LootWindow      | null = null;
+  private abilityWindow:   AbilityWindow   | null = null;
+  private actionBar:       ActionBar       | null = null;
+  private minimap:         Minimap         | null = null;
+  private scaleWidget:     UIScaleWidget   | null = null;
 
   // ── Loop ──────────────────────────────────────────────────────────────────
   private rafId: number = 0;
@@ -70,6 +84,10 @@ export class App {
     this.entities = new EntityRegistry();
     this.world    = new WorldState();
 
+    // UI scale — mount outside #ui-root so it doesn't zoom itself.
+    // Applies saved scale to #ui-root immediately, persists to localStorage.
+    this.scaleWidget = new UIScaleWidget(document.body, this.uiRoot);
+
     // Network
     this.socket = new SocketClient();
     this.router = new MessageRouter(
@@ -83,6 +101,7 @@ export class App {
     this.camInput = new CameraInput(this.camera, canvas);
     this.assets  = new AssetLoader();
     this.factory = new EntityFactory(this.scene.scene, this.entities, this.player);
+    this.corpses = new CorpseSystem(this.scene.scene, this.entities);
 
     // Input
     this.clickMove = new ClickMoveController(
@@ -106,7 +125,47 @@ export class App {
 
     this.world.onZoneChange(() => {
       if (this.world.zone) {
-        this.scene.applyZone(this.world.zone);
+        // Server-pushed time/weather updates during gameplay → smooth crossfade.
+        // The initial world_entry also fires this; starting from the default
+        // scene colours and fading into the zone preset looks like a natural
+        // world-materialisation effect, so a short transition is fine there too.
+        this.scene.transitionZone(this.world.zone, 20);
+      }
+    });
+
+    // ── XP gain / level-up notifications ──────────────────────────────────
+    this.world.onEvent(payload => {
+      if (payload.eventType === 'xp_gain' || payload.eventType === 'level_up') {
+        const msg = payload['message'] as string | undefined;
+        if (msg) this.world.pushMessage('system', msg);
+      }
+    });
+
+    // ── Eldritch death events ──────────────────────────────────────────────
+    this.world.onEvent(payload => {
+      if (payload.eventType !== 'entity_death') return;
+
+      const entityId              = payload['entityId'] as string | undefined;
+      const dissolveDurationSecs  = (payload['dissolveDurationSeconds'] as number | undefined) ?? 4;
+      if (!entityId) return;
+
+      // Resolve spawn position: use registry lookup (entity still in scene at this point)
+      // falling back to the coordinates embedded in the event payload.
+      const regEntity = this.entities.get(entityId);
+      const pos = regEntity?.position
+        ? new THREE.Vector3(regEntity.position.x, regEntity.position.y, regEntity.position.z)
+        : new THREE.Vector3(
+            (payload['x'] as number | undefined) ?? 0,
+            (payload['y'] as number | undefined) ?? 0,
+            (payload['z'] as number | undefined) ?? 0,
+          );
+
+      this.corpses.spawnEffect(entityId, pos, dissolveDurationSecs);
+
+      // If this death is the local player, record the dissolve deadline in PlayerState
+      // so the HUD can show a countdown and the WASDController can listen.
+      if (entityId === this.player.id) {
+        this.player.setCorpseDissolvesAt(Date.now() + dissolveDurationSecs * 1000);
       }
     });
   }
@@ -167,6 +226,7 @@ export class App {
     this.wasd.dispose();
     this.camInput.dispose();
     this.camera.dispose();
+    this.corpses.dispose();
     this.factory.dispose();
     this.scene.dispose();
     this.socket.disconnect();
@@ -175,6 +235,11 @@ export class App {
     this.hud?.dispose();
     this.chatPanel?.dispose();
     this.targetWindow?.dispose();
+    this.inventoryWindow?.dispose();
+    this.lootWindow?.dispose();
+    this.abilityWindow?.dispose();
+    this.actionBar?.dispose();
+    this.minimap?.dispose();
   }
 
   // ── Game loop ─────────────────────────────────────────────────────────────
@@ -188,6 +253,9 @@ export class App {
     // Tick entities
     this.factory.update(dt);
 
+    // Tick tendril / corpse effects
+    this.corpses.update(dt);
+
     // WASD movement + Q/E camera rotation
     this.wasd.tick(dt);
 
@@ -196,6 +264,12 @@ export class App {
     if (playerEntity) {
       this.camera.follow(playerEntity.cameraTarget, dt);
     }
+
+    // Advance day/night / weather crossfade
+    this.scene.tick(dt);
+
+    // Tick action bar cooldowns
+    this.actionBar?.tick(dt);
 
     this.scene.render(this.camera.getCamera());
   };
@@ -211,6 +285,9 @@ export class App {
     this.hud?.hide();
     this.chatPanel?.hide();
     this.targetWindow?.hide();
+    this.inventoryWindow?.hide();
+    this.actionBar?.hide();
+    this.minimap?.hide();
 
     switch (phase) {
       case 'login':
@@ -270,7 +347,7 @@ export class App {
 
   private _showGameUI(): void {
     if (!this.hud) {
-      this.hud = new HUD(this.uiRoot, this.player);
+      this.hud = new HUD(this.uiRoot, this.player, this.socket, this.world);
     }
     if (!this.chatPanel) {
       this.chatPanel = new ChatPanel(this.uiRoot, this.world, this.socket);
@@ -278,9 +355,32 @@ export class App {
     if (!this.targetWindow) {
       this.targetWindow = new TargetWindow(this.uiRoot, this.player, this.entities, this.socket);
     }
+    if (!this.inventoryWindow) {
+      this.inventoryWindow = new InventoryWindow(this.uiRoot, this.player, this.socket);
+      // Wire 'I' key to inventory toggle via WASDController callback
+      this.wasd.setInventoryToggle(() => this.inventoryWindow!.toggle());
+    }
+    if (!this.lootWindow) {
+      this.lootWindow = new LootWindow(this.uiRoot, this.socket, this.router);
+    }
+    if (!this.abilityWindow) {
+      this.abilityWindow = new AbilityWindow(this.uiRoot, this.player, this.socket, this.router);
+      // Wire 'K' key to ability tree toggle via WASDController callback
+      this.wasd.setAbilityToggle(() => this.abilityWindow!.toggle());
+    }
+    if (!this.actionBar) {
+      this.actionBar = new ActionBar(this.uiRoot, this.player, this.socket);
+      this.wasd.setAbilitySlotCallback((idx) => this.actionBar!.activateSlot(idx));
+    }
+    if (!this.minimap) {
+      this.minimap = new Minimap(this.uiRoot, this.player, this.entities, this.world);
+    }
     this.hud.show();
+    this.actionBar.show();
+    this.minimap.show();
     this.chatPanel.show();
     this.targetWindow.show();
+    // inventoryWindow and lootWindow start hidden (loot panels auto-appear on drops)
   }
 
   // ── Asset loading ─────────────────────────────────────────────────────────
@@ -299,6 +399,7 @@ export class App {
       this.scene.scene.add(root);
       this.clickMove.setHeightmap(heightmap);
       this.clickMove.setWorldRoot(root);  // no-op but kept for future mesh targets
+      this.factory.setHeightmap(heightmap);
 
       // Compute world bounding box, log diagnostics, fit camera.
       const box = new THREE.Box3().setFromObject(root);

@@ -18,8 +18,13 @@ import type {
   ProximityRosterPayload,
   ProximityRosterDeltaPayload,
   CorruptionUpdatePayload,
+  InventoryUpdatePayload,
   ErrorPayload,
   CommandResponsePayload,
+  LootSessionStartPayload,
+  LootItemResultPayload,
+  LootSessionEndPayload,
+  AbilityUpdatePayload,
 } from './Protocol';
 
 /**
@@ -30,6 +35,11 @@ import type {
  * Nothing else should read from the socket directly.
  */
 export class MessageRouter {
+  private lootStartListeners    = new Set<(p: LootSessionStartPayload) => void>();
+  private lootResultListeners   = new Set<(p: LootItemResultPayload) => void>();
+  private lootEndListeners      = new Set<(p: LootSessionEndPayload) => void>();
+  private abilityUpdateListeners = new Set<(p: AbilityUpdatePayload) => void>();
+
   constructor(
     private readonly socket:   SocketClient,
     private readonly session:  SessionState,
@@ -37,6 +47,27 @@ export class MessageRouter {
     private readonly entities: EntityRegistry,
     private readonly world:    WorldState,
   ) {}
+
+  onLootSessionStart(fn: (p: LootSessionStartPayload) => void): () => void {
+    this.lootStartListeners.add(fn);
+    return () => this.lootStartListeners.delete(fn);
+  }
+
+  onLootItemResult(fn: (p: LootItemResultPayload) => void): () => void {
+    this.lootResultListeners.add(fn);
+    return () => this.lootResultListeners.delete(fn);
+  }
+
+  onLootSessionEnd(fn: (p: LootSessionEndPayload) => void): () => void {
+    this.lootEndListeners.add(fn);
+    return () => this.lootEndListeners.delete(fn);
+  }
+
+  /** Subscribe to ability_update events (unlock result or slot change). */
+  onAbilityUpdate(fn: (p: AbilityUpdatePayload) => void): () => void {
+    this.abilityUpdateListeners.add(fn);
+    return () => this.abilityUpdateListeners.delete(fn);
+  }
 
   mount(): void {
     const s = this.socket;
@@ -85,7 +116,7 @@ export class MessageRouter {
     s.on('world_entry', (p) => {
       const payload = p as WorldEntryPayload;
       this.world.applyZone(payload.zone);
-      this.player.applyWorldEntry(payload.character);
+      this.player.applyWorldEntry(payload.character, payload.abilityManifest);
       this.entities.applyWorldEntry(payload.entities, payload.character.id);
       // setPhase last — listeners will find world.zone and player.position ready
       this.session.setPhase('in_world');
@@ -114,7 +145,18 @@ export class MessageRouter {
         }
         if (payload.entities.updated) {
           for (const e of payload.entities.updated) {
-            if (e.id) this.entities.update(e.id, e);
+            if (e.id) {
+              this.entities.update(e.id, e);
+              // Keep player state in sync from entity updates
+              if (e.id === this.player.id) {
+                if (e.position) {
+                  this.player.applyServerPosition(e.position, e.heading);
+                }
+                if (e.isAlive !== undefined) {
+                  this.player.applyStateUpdate({ isAlive: e.isAlive });
+                }
+              }
+            }
           }
         }
         if (payload.entities.removed) {
@@ -150,6 +192,11 @@ export class MessageRouter {
       this.player.applyCorruptionUpdate(payload);
     });
 
+    s.on('inventory_update', (p) => {
+      const payload = p as InventoryUpdatePayload;
+      this.player.applyInventoryUpdate(payload);
+    });
+
     s.on('command_response', (p) => {
       const payload = p as CommandResponsePayload;
       // Show the human-readable result (success message or error string) in chat.
@@ -166,6 +213,27 @@ export class MessageRouter {
         // Surface non-fatal server errors in the chat log so the player sees them.
         this.world.pushMessage('system', payload.message);
       }
+    });
+
+    s.on('loot_session_start', (p) => {
+      this.lootStartListeners.forEach(fn => fn(p as LootSessionStartPayload));
+    });
+
+    s.on('loot_item_result', (p) => {
+      this.lootResultListeners.forEach(fn => fn(p as LootItemResultPayload));
+    });
+
+    s.on('loot_session_end', (p) => {
+      this.lootEndListeners.forEach(fn => fn(p as LootSessionEndPayload));
+    });
+
+    s.on('ability_update', (p) => {
+      const payload = p as AbilityUpdatePayload;
+      // Sync state first, then notify UI listeners
+      this.player.applyAbilityUpdate(payload);
+      // Surface success/error message in chat (same pattern as command_response)
+      if (payload.message) this.world.pushMessage('system', payload.message);
+      this.abilityUpdateListeners.forEach(fn => fn(payload));
     });
 
     s.on('_connected', () => {

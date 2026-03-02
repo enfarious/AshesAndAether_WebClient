@@ -25,6 +25,12 @@ export class TargetWindow {
   private cleanup: (() => void)[] = [];
   private _cursor  = 0;
 
+  // Track which entity state last drove a menu build, so we skip it on HP/distance ticks
+  private _menuKey: string = '';
+
+  // Last target ID seen by _onTargetChange, so we only reset on an actual target swap
+  private _lastTargetId: string | null = null;
+
   // ── Action definitions ────────────────────────────────────────────────────
 
   private readonly _menu: MenuItem[] = [
@@ -38,10 +44,12 @@ export class TargetWindow {
     },
     {
       // Talk — NPCs and companions only; never mobs or wildlife.
-      // Routed as /talk <id> — server defaults the message to "Hello."
+      // Pass the entity name as the positional arg (for display) and the
+      // entity ID as a named --id flag so the server can do a targeted LLM /
+      // airlock lookup.  Message defaults to "Hello." server-side.
       label:   'Talk',
       visible: e => e.type === 'npc' || e.type === 'companion',
-      execute: e => this.socket.sendCommand(`/talk ${e.id}`),
+      execute: e => this.socket.sendCommand(`/talk "${e.name}" --id=${e.id}`),
     },
     {
       // Examine — always available.
@@ -140,10 +148,11 @@ export class TargetWindow {
     el.innerHTML = `
       <style>
         #target-window {
-          position: absolute;
-          top: 24px;
-          right: 24px;
-          width: 210px;
+          position: fixed;
+          /* Anchor at the right edge of the HUD's MP bar, expand up */
+          bottom: 24px;
+          left: calc(50% + min(250px, 45vw) + 10px);
+          width: 200px;
           pointer-events: auto;
           user-select: none;
 
@@ -152,7 +161,7 @@ export class TargetWindow {
         }
 
         #target-window.tw-hidden {
-          transform: translateX(calc(100% + 32px));
+          transform: translateX(calc(100% + 24px));
           opacity: 0;
           pointer-events: none;
         }
@@ -172,6 +181,12 @@ export class TargetWindow {
           border-bottom: 1px solid rgba(200, 145, 60, 0.18);
         }
 
+        .tw-name-row {
+          display: flex;
+          align-items: baseline;
+          gap: 6px;
+        }
+
         .tw-name {
           font-family: var(--font-body);
           font-size: 15px;
@@ -182,6 +197,17 @@ export class TargetWindow {
           white-space: nowrap;
           overflow: hidden;
           text-overflow: ellipsis;
+          flex: 1;
+          min-width: 0;
+        }
+
+        .tw-dist {
+          font-family: var(--font-mono);
+          font-size: 10px;
+          color: rgba(212, 190, 160, 0.55);
+          white-space: nowrap;
+          flex-shrink: 0;
+          text-shadow: 0 1px 2px #000;
         }
 
         .tw-hp-row {
@@ -254,7 +280,10 @@ export class TargetWindow {
 
       <div class="tw-panel">
         <div class="tw-header">
-          <div class="tw-name" id="tw-name"></div>
+          <div class="tw-name-row">
+            <div class="tw-name" id="tw-name"></div>
+            <div class="tw-dist" id="tw-dist"></div>
+          </div>
           <div class="tw-hp-row" id="tw-hp-row">
             <div class="tw-hp-track">
               <div class="tw-hp-fill" id="tw-hp-fill"></div>
@@ -271,11 +300,25 @@ export class TargetWindow {
   // ── State updates ─────────────────────────────────────────────────────────
 
   private _onTargetChange(): void {
-    if (!this.player.targetId) {
+    const newId = this.player.targetId;
+
+    if (!newId) {
       this.root.classList.add('tw-hidden');
+      this._menuKey     = '';
+      this._lastTargetId = null;
       return;
     }
-    this._cursor = 0;
+
+    // Only reset cursor + force a menu rebuild when the target itself swaps.
+    // All other player-state changes (health ticks, ATB, position, etc.) also
+    // fire player.onChange, but those should just update the HP bar / distance
+    // text — not nuke the user's cursor position and rebuild the DOM.
+    if (newId !== this._lastTargetId) {
+      this._cursor       = 0;
+      this._menuKey      = '';
+      this._lastTargetId = newId;
+    }
+
     this._refresh();
     this.root.classList.remove('tw-hidden');
   }
@@ -290,7 +333,18 @@ export class TargetWindow {
     const nameEl = this.root.querySelector<HTMLElement>('#tw-name')!;
     nameEl.textContent = entity?.name ?? this.player.targetName ?? '—';
 
-    // HP bar
+    // Distance
+    const distEl = this.root.querySelector<HTMLElement>('#tw-dist')!;
+    if (entity) {
+      const pp = this.player.position;
+      const ep = entity.position;
+      const dist = Math.hypot(ep.x - pp.x, ep.z - pp.z);
+      distEl.textContent = `${dist.toFixed(1)}m`;
+    } else {
+      distEl.textContent = '';
+    }
+
+    // HP bar — update in-place (no DOM rebuild)
     const hpRow  = this.root.querySelector<HTMLElement>('#tw-hp-row')!;
     const hp     = entity?.health;
     if (hp && hp.max > 0) {
@@ -302,8 +356,13 @@ export class TargetWindow {
       hpRow.style.display = 'none';
     }
 
-    // Menu
-    this._rebuildMenu(entity ?? null);
+    // Menu — only rebuild when the set of visible actions could have changed
+    // (target swap, type change, or hostile flag change). HP/distance ticks skip this.
+    const newKey = `${id}|${entity?.type ?? ''}|${entity?.hostile ?? false}|${entity?.isAlive ?? true}`;
+    if (newKey !== this._menuKey) {
+      this._menuKey = newKey;
+      this._rebuildMenu(entity ?? null);
+    }
   }
 
   private _rebuildMenu(entity: Entity | null): void {
@@ -337,8 +396,11 @@ export class TargetWindow {
       });
 
       row.addEventListener('click', () => {
-        const e = entity ?? this.entities.get(this.player.targetId ?? '');
-        if (e) item.execute(e);
+        // Always fetch live entity from registry so Approach (and all other
+        // actions) use the entity's current position, not its position at the
+        // time _rebuildMenu was called.
+        const liveEntity = this.entities.get(this.player.targetId ?? '');
+        if (liveEntity) item.execute(liveEntity);
       });
 
       menuEl.appendChild(row);

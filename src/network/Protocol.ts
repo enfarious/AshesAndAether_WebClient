@@ -130,6 +130,8 @@ export interface CharacterState {
   name: string;
   level: number;
   experience: number;
+  abilityPoints: number;
+  statPoints: number;
   isAlive: boolean;
   position: Vector3;
   heading: number;
@@ -141,9 +143,9 @@ export interface CharacterState {
   corruption: CorruptionStatus;
   corruptionBenefits: CorruptionBenefits;
   unlockedFeats: string[];
-  unlockedAbilities: string[];
-  activeLoadout: string[];
-  passiveLoadout: string[];
+  unlockedAbilities: { activeNodes: string[]; passiveNodes: string[]; apSpent: number };
+  activeLoadout:  (string | null)[];
+  passiveLoadout: (string | null)[];
   specialLoadout: string[];
 }
 
@@ -153,6 +155,8 @@ export interface ZoneInfo {
   description: string;
   weather: string;
   timeOfDay: string;
+  /** Normalised 0–1 time of day (0 = midnight, 0.25 = 6 am, 0.5 = noon). */
+  timeOfDayValue?: number;
   lighting: string;
   contentRating: ContentRating;
 }
@@ -168,7 +172,8 @@ export interface Entity {
   interactive?: boolean;
   hostile?: boolean;
   animation?: string;
-  currentAction?: AnimationAction;
+  /** For characters: the current animation action. For plants: the growth stage name ('sprout', 'mature', 'flowering', etc.). */
+  currentAction?: AnimationAction | string;
   movementDuration?: number;
   movementSpeed?: number;
   heading?: number;
@@ -187,6 +192,8 @@ export interface WorldEntryPayload {
   zone: ZoneInfo;
   entities: Entity[];
   exits: Exit[];
+  /** Static ability node definitions — used to render the ability tree. */
+  abilityManifest: AbilityNodeSummary[];
 }
 
 // ── State Updates ─────────────────────────────────────────────────────────────
@@ -204,6 +211,12 @@ export interface StateUpdatePayload {
     health?: StatBar;
     stamina?: StatBar;
     mana?: StatBar;
+    isAlive?: boolean;
+    // Progression
+    experience?: number;
+    level?: number;
+    abilityPoints?: number;
+    statPoints?: number;
   };
   combat?: {
     atb?: StatBar;
@@ -301,6 +314,84 @@ export interface ProximityRosterDeltaPayload {
   dangerState?: boolean;
 }
 
+// ── Inventory ─────────────────────────────────────────────────────────────────
+
+export type EquipSlot =
+  | 'head' | 'body' | 'hands' | 'legs' | 'feet'
+  | 'necklace' | 'bracelet' | 'ring1' | 'ring2'
+  | 'mainhand' | 'offhand'
+  | 'mainhand2' | 'offhand2';
+
+export const EQUIP_SLOTS: EquipSlot[] = [
+  'head', 'body', 'hands', 'legs', 'feet',
+  'necklace', 'bracelet', 'ring1', 'ring2',
+  'mainhand', 'offhand', 'mainhand2', 'offhand2',
+];
+
+export const EQUIP_SLOT_LABELS: Record<EquipSlot, string> = {
+  head: 'Head', body: 'Body', hands: 'Hands', legs: 'Legs', feet: 'Feet',
+  necklace: 'Necklace', bracelet: 'Bracelet', ring1: 'Ring', ring2: 'Ring',
+  mainhand: 'Main Hand', offhand: 'Off Hand',
+  mainhand2: 'Main Hand', offhand2: 'Off Hand',
+};
+
+export interface ItemInfo {
+  id:           string;
+  templateId:   string;
+  name:         string;
+  description:  string;
+  itemType:     string;
+  quantity:     number;
+  durability?:  number;
+  properties?:  Record<string, unknown>;
+  iconUrl?:     string;
+  equipped:     boolean;
+  equipSlot?:   EquipSlot;
+}
+
+export interface InventoryUpdatePayload {
+  items:           ItemInfo[];
+  equipment:       Partial<Record<EquipSlot, ItemInfo>>;
+  activeWeaponSet: 1 | 2;
+  timestamp:       number;
+}
+
+// ── Ability Tree ──────────────────────────────────────────────────────────────
+
+/** Static metadata for one ability-tree node, sent once inside world_entry. */
+export interface AbilityNodeSummary {
+  id:               string;
+  web:              'active' | 'passive';
+  sector:           string;
+  tier:             number;       // 1–4
+  name:             string;
+  description:      string;
+  cost:             number;       // AP cost
+  adjacentTo:       string[];     // neighbour node IDs
+  // Active effect (active-web nodes)
+  effectDescription?: string;
+  staminaCost?:       number;
+  manaCost?:          number;
+  cooldown?:          number;
+  castTime?:          number;
+  targetType?:        string;
+  range?:             number;
+  // Passive stat bonuses
+  statBonuses?: Record<string, number>;
+  questGate?:   string;
+}
+
+/** Emitted by the server after every unlock / slot operation. */
+export interface AbilityUpdatePayload {
+  unlockedActiveNodes:  string[];
+  unlockedPassiveNodes: string[];
+  activeLoadout:        (string | null)[];
+  passiveLoadout:       (string | null)[];
+  abilityPoints:        number;
+  success:              boolean;
+  message:              string;
+}
+
 // ── Command response ──────────────────────────────────────────────────────────
 
 export interface CommandResponsePayload {
@@ -329,4 +420,40 @@ export interface CorruptionUpdatePayload {
   delta: number;
   reason?: string;
   timestamp: number;
+}
+
+// ── Loot ──────────────────────────────────────────────────────────────────────
+
+export interface LootSessionItem {
+  id:          string;
+  templateId:  string;
+  name:        string;
+  itemType:    string;
+  description: string;
+  iconUrl?:    string;
+  quantity:    number;
+}
+
+export interface LootSessionStartPayload {
+  sessionId:     string;
+  mobName:       string;
+  mode:          'solo' | 'party';
+  items:         LootSessionItem[];
+  gold:          number;
+  goldPerMember: number;
+  expiresAt:     number;
+}
+
+export interface LootItemResultPayload {
+  sessionId:  string;
+  itemId:     string;
+  itemName:   string;
+  winnerId:   string | null;
+  winnerName: string | null;
+  winRoll:    'need' | 'want' | null;
+  rollValue:  number;
+}
+
+export interface LootSessionEndPayload {
+  sessionId: string;
 }

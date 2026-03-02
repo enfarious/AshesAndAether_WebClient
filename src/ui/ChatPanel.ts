@@ -11,6 +11,9 @@ export class ChatPanel {
   private log:      HTMLElement;
   private input:    HTMLInputElement;
   private cleanup:  (() => void)[] = [];
+  private registerCallback: (() => void) | null = null;
+
+  setRegisterCallback(fn: () => void): void { this.registerCallback = fn; }
 
   constructor(
     private readonly uiRoot: HTMLElement,
@@ -132,6 +135,11 @@ export class ChatPanel {
   }
 
   private _onInputKey = (e: KeyboardEvent): void => {
+    if (e.key === 'Escape') {
+      this.input.value = '';
+      this.input.blur();
+      return;
+    }
     if (e.key !== 'Enter') return;
     const text = this.input.value.trim();
     this.input.value = '';
@@ -169,6 +177,10 @@ export class ChatPanel {
 
   private _sendChat(text: string): void {
     console.log(`[ChatPanel] _sendChat → "${text}"`);
+    if (text === '/register') {
+      this.registerCallback?.();
+      return;
+    }
     if (text.startsWith('/shout ')) {
       this.socket.sendChat('shout', text.slice(7));
     } else if (text.startsWith('/emote ') || text.startsWith('/me ')) {

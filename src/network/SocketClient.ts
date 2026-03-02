@@ -73,6 +73,7 @@ export class SocketClient {
       'inventory_update',
       'loot_session_start', 'loot_item_result', 'loot_session_end',
       'ability_update',
+      'register_result',
       'zone_transfer', 'village_state', 'village_placement_mode',
       'error',
       'pong',
@@ -238,6 +239,10 @@ export class SocketClient {
 
   sendSlotPassiveAbility(slotNumber: number, nodeId: string): void {
     this._send('slot_passive_ability', { slotNumber, nodeId });
+  }
+
+  sendRegisterAccount(username: string, email: string, password: string): void {
+    this._send('register_account', { username, email, password });
   }
 
   sendZoneTransferReady(): void {

@@ -30,6 +30,7 @@ import type {
   ZoneTransferPayload,
   VillagePlacementModePayload,
   VillageStatePayload,
+  RegisterResultPayload,
 } from './Protocol';
 
 /**
@@ -44,6 +45,7 @@ export class MessageRouter {
   private lootResultListeners   = new Set<(p: LootItemResultPayload) => void>();
   private lootEndListeners      = new Set<(p: LootSessionEndPayload) => void>();
   private abilityUpdateListeners = new Set<(p: AbilityUpdatePayload) => void>();
+  private registerResultListeners = new Set<(p: RegisterResultPayload) => void>();
   private villagePlacementListeners = new Set<(p: VillagePlacementModePayload) => void>();
   private villageStateListeners    = new Set<(p: VillageStatePayload) => void>();
 
@@ -74,6 +76,11 @@ export class MessageRouter {
   onAbilityUpdate(fn: (p: AbilityUpdatePayload) => void): () => void {
     this.abilityUpdateListeners.add(fn);
     return () => this.abilityUpdateListeners.delete(fn);
+  }
+
+  onRegisterResult(fn: (p: RegisterResultPayload) => void): () => void {
+    this.registerResultListeners.add(fn);
+    return () => this.registerResultListeners.delete(fn);
   }
 
   onVillagePlacementMode(fn: (p: VillagePlacementModePayload) => void): () => void {
@@ -133,7 +140,7 @@ export class MessageRouter {
     s.on('world_entry', (p) => {
       const payload = p as WorldEntryPayload;
       this.world.applyZone(payload.zone);
-      this.player.applyWorldEntry(payload.character, payload.abilityManifest);
+      this.player.applyWorldEntry(payload.character, payload.abilityManifest, payload.isGuest);
       this.entities.applyWorldEntry(payload.entities, payload.character.id);
       // setPhase last — listeners will find world.zone and player.position ready
       this.session.setPhase('in_world');
@@ -317,6 +324,15 @@ export class MessageRouter {
       // Surface success/error message in chat (same pattern as command_response)
       if (payload.message) this.world.pushMessage('system', payload.message);
       this.abilityUpdateListeners.forEach(fn => fn(payload));
+    });
+
+    s.on('register_result', (p) => {
+      const payload = p as RegisterResultPayload;
+      if (payload.success && payload.username) {
+        this.player.setRegistered(payload.username);
+        this.world.pushMessage('system', `Account registered! Welcome, ${payload.username}. Your character is now permanent.`);
+      }
+      this.registerResultListeners.forEach(fn => fn(payload));
     });
 
     // ── Zone transfer (village system) ────────────────────────────────────

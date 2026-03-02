@@ -218,6 +218,22 @@ export interface WorldEntryPayload {
   exits: Exit[];
   /** Static ability node definitions — used to render the ability tree. */
   abilityManifest: AbilityNodeSummary[];
+  /** True for guest (ephemeral) sessions — shows /register prompt in UI. */
+  isGuest?: boolean;
+}
+
+// ── Guest Registration ────────────────────────────────────────────────────────
+
+export interface RegisterAccountPayload {
+  username: string;
+  email: string;
+  password: string;
+}
+
+export interface RegisterResultPayload {
+  success: boolean;
+  username?: string;
+  error?: string;
 }
 
 // ── State Updates ─────────────────────────────────────────────────────────────

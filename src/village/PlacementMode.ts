@@ -66,7 +66,7 @@ export class PlacementMode {
     this._onKeyDown   = (e) => this._handleKeyDown(e);
 
     this.canvas.addEventListener('mousemove', this._onMouseMove);
-    this.canvas.addEventListener('click', this._onClick);
+    this.canvas.addEventListener('click', this._onClick, true); // capture phase — fire before ClickMoveController
     window.addEventListener('keydown', this._onKeyDown);
   }
 
@@ -84,7 +84,7 @@ export class PlacementMode {
     this._hideOverlay();
 
     if (this._onMouseMove) this.canvas.removeEventListener('mousemove', this._onMouseMove);
-    if (this._onClick)     this.canvas.removeEventListener('click', this._onClick);
+    if (this._onClick)     this.canvas.removeEventListener('click', this._onClick, true);
     if (this._onKeyDown)   window.removeEventListener('keydown', this._onKeyDown);
 
     this._onMouseMove = null;
@@ -122,8 +122,12 @@ export class PlacementMode {
     }
   }
 
-  private _handleClick(_e: MouseEvent): void {
+  private _handleClick(e: MouseEvent): void {
     if (!this.ghostMesh || !this.payload) return;
+
+    // Stop the click from reaching ClickMoveController (which would move the player)
+    e.stopImmediatePropagation();
+    e.preventDefault();
 
     const pos = this.ghostMesh.position;
     this.socket.sendVillagePlaceConfirm(

@@ -26,6 +26,7 @@ import { LoginScreen }        from '@/ui/LoginScreen';
 import { CharacterSelect }    from '@/ui/CharacterSelect';
 import { UIScaleWidget }      from '@/ui/UIScaleWidget';
 import { VillagePanel }       from '@/ui/VillagePanel';
+import { RegistrationModal }  from '@/ui/RegistrationModal';
 import { CorpseSystem }       from '@/entities/CorpseSystem';
 import { PlacementMode }      from '@/village/PlacementMode';
 
@@ -74,8 +75,9 @@ export class App {
   private actionBar:       ActionBar       | null = null;
   private minimap:         Minimap         | null = null;
   private scaleWidget:     UIScaleWidget   | null = null;
-  private villagePanel:    VillagePanel    | null = null;
-  private placementMode:   PlacementMode   | null = null;
+  private villagePanel:      VillagePanel      | null = null;
+  private registrationModal: RegistrationModal  | null = null;
+  private placementMode:     PlacementMode      | null = null;
 
   // ── Loop ──────────────────────────────────────────────────────────────────
   private rafId: number = 0;
@@ -251,6 +253,7 @@ export class App {
     this.actionBar?.dispose();
     this.minimap?.dispose();
     this.villagePanel?.dispose();
+    this.registrationModal?.dispose();
     this.placementMode?.dispose();
   }
 
@@ -382,6 +385,11 @@ export class App {
     }
     if (!this.lootWindow) {
       this.lootWindow = new LootWindow(this.uiRoot, this.socket, this.router);
+    }
+    if (!this.registrationModal) {
+      this.registrationModal = new RegistrationModal(this.uiRoot, this.player, this.socket, this.router);
+      // Wire /register in chat to open this modal
+      this.chatPanel!.setRegisterCallback(() => this.registrationModal!.show());
     }
     if (!this.abilityWindow) {
       this.abilityWindow = new AbilityWindow(this.uiRoot, this.player, this.socket, this.router);

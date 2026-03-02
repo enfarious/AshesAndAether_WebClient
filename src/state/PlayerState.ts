@@ -41,6 +41,7 @@ export class PlayerState {
   private _abilityPoints: number  = 0;
   private _statPoints:    number  = 0;
   private _isAlive:       boolean = true;
+  private _isGuest:       boolean = false;
   private _heading:  number  = 0;
   private _speed:    MovementSpeed = 'stop';
   /** Actual server movement speed in metres/second (from entity updates). */
@@ -117,6 +118,7 @@ export class PlayerState {
   get abilityPoints(): number  { return this._abilityPoints; }
   get statPoints():    number  { return this._statPoints; }
   get isAlive():       boolean { return this._isAlive; }
+  get isGuest():       boolean { return this._isGuest; }
   get position(): Vector3 { return this._position; }
   get heading():  number  { return this._heading; }
   get speed():    MovementSpeed { return this._speed; }
@@ -159,12 +161,18 @@ export class PlayerState {
   /** Called by WASDController every frame movement keys are held. */
   setLocalPosition(pos: Vector3): void { this._localPos = { ...pos }; }
 
+  /** Called after successful guest registration to clear ephemeral status. */
+  setRegistered(username: string): void {
+    this._isGuest = false;
+    this._name    = username;
+  }
+
   /** Called by WASDController when movement keys are released. */
   clearLocalPosition(): void { this._localPos = null; }
 
   // ── Mutations ─────────────────────────────────────────────────────────────
 
-  applyWorldEntry(character: CharacterState, abilityManifest?: AbilityNodeSummary[]): void {
+  applyWorldEntry(character: CharacterState, abilityManifest?: AbilityNodeSummary[], isGuest?: boolean): void {
     this._id            = character.id;
     this._name          = character.name;
     this._level         = character.level;
@@ -172,6 +180,7 @@ export class PlayerState {
     this._abilityPoints = character.abilityPoints ?? 0;
     this._statPoints    = character.statPoints    ?? 0;
     this._isAlive       = character.isAlive;
+    this._isGuest       = isGuest ?? false;
     this._position = { ...character.position };
     this._heading  = character.heading;
     this._speed    = character.currentSpeed ?? 'stop';

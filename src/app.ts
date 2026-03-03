@@ -27,6 +27,7 @@ import { LoginScreen }        from '@/ui/LoginScreen';
 import { CharacterSelect }    from '@/ui/CharacterSelect';
 import { UIScaleWidget }      from '@/ui/UIScaleWidget';
 import { VillagePanel }       from '@/ui/VillagePanel';
+import { MarketPanel }        from '@/ui/MarketPanel';
 import { RegistrationModal }  from '@/ui/RegistrationModal';
 import { CorpseSystem }       from '@/entities/CorpseSystem';
 import { PlacementMode }      from '@/village/PlacementMode';
@@ -78,6 +79,7 @@ export class App {
   private minimap:         Minimap         | null = null;
   private scaleWidget:     UIScaleWidget   | null = null;
   private villagePanel:      VillagePanel      | null = null;
+  private marketPanel:       MarketPanel       | null = null;
   private registrationModal: RegistrationModal  | null = null;
   private placementMode:     PlacementMode      | null = null;
 
@@ -256,6 +258,7 @@ export class App {
     this.actionBar?.dispose();
     this.minimap?.dispose();
     this.villagePanel?.dispose();
+    this.marketPanel?.dispose();
     this.registrationModal?.dispose();
     this.placementMode?.dispose();
   }
@@ -417,6 +420,11 @@ export class App {
     }
     if (!this.minimap) {
       this.minimap = new Minimap(this.uiRoot, this.player, this.entities, this.world);
+    }
+    if (!this.marketPanel) {
+      this.marketPanel = new MarketPanel(this.uiRoot, this.player, this.socket, this.router);
+      this.wasd.setMarketToggle(() => this.marketPanel!.toggle());
+      this.targetWindow!.setMarketToggle(() => this.marketPanel!.show());
     }
     if (!this.villagePanel) {
       this.villagePanel = new VillagePanel(this.uiRoot, this.world, this.player, this.socket);

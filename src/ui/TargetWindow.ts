@@ -34,6 +34,9 @@ export class TargetWindow {
 
   // ── Action definitions ────────────────────────────────────────────────────
 
+  private _marketToggle: (() => void) | null = null;
+  setMarketToggle(fn: () => void): void { this._marketToggle = fn; }
+
   private readonly _menu: MenuItem[] = [
     {
       // Attack — mobs, wildlife, and any entity explicitly flagged hostile.
@@ -72,6 +75,12 @@ export class TargetWindow {
       visible:  e => e.type === 'player',
       disabled: e => this.player.partyMembers.some(m => m.id === e.id),
       execute:  e => this.socket.sendCommand(`/party invite ${e.name}`),
+    },
+    {
+      // Market — opens market panel when targeting a market stall structure.
+      label:   'Market',
+      visible: e => e.type === 'structure' && /market\s*stall/i.test(e.name),
+      execute: _e => this._marketToggle?.(),
     },
     {
       // Examine — always available.

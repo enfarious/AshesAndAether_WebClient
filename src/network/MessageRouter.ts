@@ -32,6 +32,7 @@ import type {
   VillageStatePayload,
   RegisterResultPayload,
   ExaminePeekPayload,
+  MarketDataPayload,
 } from './Protocol';
 
 /**
@@ -50,6 +51,7 @@ export class MessageRouter {
   private villagePlacementListeners = new Set<(p: VillagePlacementModePayload) => void>();
   private villageStateListeners    = new Set<(p: VillageStatePayload) => void>();
   private examineListeners         = new Set<(p: ExaminePeekPayload) => void>();
+  private marketListeners          = new Set<(p: MarketDataPayload) => void>();
 
   constructor(
     private readonly socket:   SocketClient,
@@ -98,6 +100,11 @@ export class MessageRouter {
   onExamine(fn: (p: ExaminePeekPayload) => void): () => void {
     this.examineListeners.add(fn);
     return () => this.examineListeners.delete(fn);
+  }
+
+  onMarketData(fn: (p: MarketDataPayload) => void): () => void {
+    this.marketListeners.add(fn);
+    return () => this.marketListeners.delete(fn);
   }
 
   mount(): void {
@@ -302,6 +309,11 @@ export class MessageRouter {
       if (payload.success && cmdData?.type === 'look' && cmdData.target) {
         this.examineListeners.forEach(fn => fn(cmdData.target as ExaminePeekPayload));
         return; // rich UI handles it — don't also dump text to chat
+      }
+
+      // Dispatch structured market data to MarketPanel (don't suppress chat — MUD clients still see text).
+      if (cmdData?.type?.startsWith('market_')) {
+        this.marketListeners.forEach(fn => fn(cmdData as MarketDataPayload));
       }
 
       // Show the human-readable result (success message or error string) in chat.

@@ -42,12 +42,14 @@ export class WASDController {
   private characterSheetToggle: (() => void) | null = null;
   private partyToggle:          (() => void) | null = null;
   private abilitySlotCallback:  ((slotIndex: number) => void) | null = null;
+  private marketToggle:         (() => void) | null = null;
 
   setInventoryToggle(fn: () => void):      void { this.inventoryToggle      = fn; }
   setAbilityToggle(fn: () => void):        void { this.abilityToggle        = fn; }
   setCharacterSheetToggle(fn: () => void): void { this.characterSheetToggle = fn; }
   setPartyToggle(fn: () => void):          void { this.partyToggle          = fn; }
   setAbilitySlotCallback(fn: (slotIndex: number) => void): void { this.abilitySlotCallback = fn; }
+  setMarketToggle(fn: () => void):         void { this.marketToggle         = fn; }
 
   constructor(
     private readonly camera: OrbitCamera,
@@ -222,6 +224,13 @@ export class WASDController {
     // L — toggle target lock-on
     if (e.key.toLowerCase() === 'l') {
       this.player.toggleTargetLock();
+      return;
+    }
+
+    // Ctrl+M — toggle market panel
+    if (e.ctrlKey && e.key.toLowerCase() === 'm') {
+      e.preventDefault();
+      this.marketToggle?.();
       return;
     }
 

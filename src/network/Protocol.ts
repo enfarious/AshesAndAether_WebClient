@@ -459,6 +459,44 @@ export interface CommandResponsePayload {
   timestamp:  number;
 }
 
+// ── Market data (structured command_response.data payloads) ──────────────────
+
+export interface MarketSearchResult {
+  orderId:      string;
+  itemName:     string;
+  quantity:     number;
+  pricePerUnit: number;
+  scope:        'REGIONAL' | 'WORLD';
+  regionName:   string;
+}
+
+export interface MarketOrderInfo {
+  orderId:        string;
+  itemName:       string;
+  quantity:       number;
+  filledQuantity: number;
+  pricePerUnit:   number;
+  scope:          'REGIONAL' | 'WORLD';
+  status:         string;
+}
+
+export interface MarketStallInfo {
+  name:         string;
+  owner:        string;
+  region:       string;
+  stallType:    string;
+  activeOrders: number;
+}
+
+export type MarketDataPayload =
+  | { type: 'market_search';  results: MarketSearchResult[] }
+  | { type: 'market_orders';  orders: MarketOrderInfo[] }
+  | { type: 'market_wallet';  balance: number }
+  | { type: 'market_stall';   stall: MarketStallInfo }
+  | { type: 'market_list';    success: boolean }
+  | { type: 'market_buy';     success: boolean }
+  | { type: 'market_cancel';  success: boolean };
+
 // ── Examine / Peek ───────────────────────────────────────────────────────────
 
 export interface ExaminePeekPayload {

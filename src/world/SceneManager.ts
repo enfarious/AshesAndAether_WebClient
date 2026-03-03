@@ -28,6 +28,10 @@ export class SceneManager {
     duration: number;
   } | null = null;
 
+  /** Current weather/lighting modifiers — set by applyZone / transitionZone. */
+  private _weather  = 'clear';
+  private _lighting = 'normal';
+
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({
       canvas,
@@ -90,7 +94,10 @@ export class SceneManager {
    */
   applyZone(zone: ZoneInfo): void {
     this.envTransition = null;
-    this._applyPreset(resolveEnvironment(zone));
+    this._weather  = zone.weather  ?? 'clear';
+    this._lighting = zone.lighting ?? 'normal';
+    const tod = zone.timeOfDayValue ?? 0.5;
+    this._applyPreset(_resolvePresetForTod(tod, this._weather, this._lighting));
   }
 
   /**
@@ -98,7 +105,10 @@ export class SceneManager {
    * @param durationSecs  Seconds to complete the fade (default 20 s).
    */
   transitionZone(zone: ZoneInfo, durationSecs = 20): void {
-    const to = resolveEnvironment(zone);
+    this._weather  = zone.weather  ?? 'clear';
+    this._lighting = zone.lighting ?? 'normal';
+    const tod = zone.timeOfDayValue ?? 0.5;
+    const to = _resolvePresetForTod(tod, this._weather, this._lighting);
     // If we are mid-transition, start the new fade from wherever we currently are.
     const from = this._capturePreset();
     this.envTransition = { from, to, elapsed: 0, duration: durationSecs };
@@ -115,13 +125,18 @@ export class SceneManager {
    * @param focusPoint    World-space player position — shadow frustum follows this.
    */
   tick(dt: number, timeOfDay?: number, focusPoint?: THREE.Vector3): void {
-    // Environment crossfade
+    // Weather / zone crossfade takes priority while active
     if (this.envTransition) {
       const tr = this.envTransition;
       tr.elapsed = Math.min(tr.elapsed + dt, tr.duration);
       const t = _easeInOut(tr.elapsed / tr.duration);
       this._applyLerped(tr.from, tr.to, t);
       if (tr.elapsed >= tr.duration) this.envTransition = null;
+    } else if (timeOfDay !== undefined) {
+      // Continuous TOD-driven lighting — derive the preset from the current
+      // time-of-day float every frame so lighting never freezes between
+      // server bucket broadcasts.
+      this._applyPreset(_resolvePresetForTod(timeOfDay, this._weather, this._lighting));
     }
 
     // Sun orbit — move the directional light based on time of day
@@ -307,88 +322,140 @@ interface EnvPreset {
   exposure:         number;
 }
 
-function resolveEnvironment(zone: ZoneInfo): EnvPreset {
-  // Derive tod from float when available; only override string if they agree
-  // (or if no string was sent). Protects against stale server default floats.
-  let tod = zone.timeOfDay ?? 'day';
-  if (zone.timeOfDayValue !== undefined) {
-    const t = zone.timeOfDayValue;
-    const floatTod = (t >= 0.167 && t < 0.25)  ? 'dawn'
-                   : (t >= 0.25  && t < 0.75)  ? 'day'
-                   : (t >= 0.75  && t < 0.833) ? 'dusk'
-                   : 'night';
-    if (!zone.timeOfDay || floatTod === zone.timeOfDay) {
-      tod = floatTod;
+// ── Base TOD presets ─────────────────────────────────────────────────────────
+
+const PRESET_NIGHT: EnvPreset = {
+  skyColor: 0x0a1020, fogColor: 0x101828, fogDensity: 0.00035,
+  hemiSkyColor: 0x2a4060, hemiGroundColor: 0x141418, hemiIntensity: 1.3,
+  ambientColor: 0x263850, ambientIntensity: 0.90,
+  sunColor: 0x5070c0, sunIntensity: 0.75,
+  fillColor: 0x182040, fillIntensity: 0.35,
+  exposure: 1.0,
+};
+
+const PRESET_DAWN: EnvPreset = {
+  skyColor: 0x251810, fogColor: 0x3a2010, fogDensity: 0.00030,
+  hemiSkyColor: 0xd08050, hemiGroundColor: 0x301808, hemiIntensity: 1.0,
+  ambientColor: 0x806040, ambientIntensity: 0.6,
+  sunColor: 0xff9040, sunIntensity: 1.1,
+  fillColor: 0x302050, fillIntensity: 0.35,
+  exposure: 1.0,
+};
+
+const PRESET_DAY: EnvPreset = {
+  skyColor: 0x4a6a90, fogColor: 0x7090b8, fogDensity: 0.00022,
+  hemiSkyColor: 0xb0c8e8, hemiGroundColor: 0x304820, hemiIntensity: 1.2,
+  ambientColor: 0x90a0b0, ambientIntensity: 0.5,
+  sunColor: 0xffffff, sunIntensity: 1.3,
+  fillColor: 0x3050a0, fillIntensity: 0.35,
+  exposure: 1.0,
+};
+
+const PRESET_DUSK: EnvPreset = {
+  skyColor: 0x251810, fogColor: 0x3a2010, fogDensity: 0.00030,
+  hemiSkyColor: 0xd08050, hemiGroundColor: 0x301808, hemiIntensity: 1.0,
+  ambientColor: 0x806040, ambientIntensity: 0.6,
+  sunColor: 0xff9040, sunIntensity: 1.1,
+  fillColor: 0x302050, fillIntensity: 0.35,
+  exposure: 1.0,
+};
+
+/**
+ * Anchor points — the preset is "purest" at these TOD values.
+ * Between anchors every EnvPreset field is linearly interpolated.
+ *
+ *  midnight(0.0) → dawn(0.208) → noon(0.5) → dusk(0.792) → midnight(1.0)
+ */
+const TOD_ANCHORS = [
+  { t: 0.0,   p: PRESET_NIGHT },
+  { t: 0.208, p: PRESET_DAWN  },   // midpoint of dawn bucket  (0.167–0.25)
+  { t: 0.5,   p: PRESET_DAY   },   // noon — full daylight
+  { t: 0.792, p: PRESET_DUSK  },   // midpoint of dusk bucket  (0.75–0.833)
+  { t: 1.0,   p: PRESET_NIGHT },   // wraps back to midnight
+];
+
+/** Linearly interpolate every field of two EnvPresets at position t ∈ [0,1]. */
+function _lerpPreset(a: EnvPreset, b: EnvPreset, t: number): EnvPreset {
+  const lc = (c1: number, c2: number): number =>
+    new THREE.Color(c1).lerp(new THREE.Color(c2), t).getHex();
+  const ln = (v1: number, v2: number): number => v1 + (v2 - v1) * t;
+
+  return {
+    skyColor:         lc(a.skyColor,        b.skyColor),
+    fogColor:         lc(a.fogColor,        b.fogColor),
+    fogDensity:       ln(a.fogDensity,      b.fogDensity),
+    hemiSkyColor:     lc(a.hemiSkyColor,    b.hemiSkyColor),
+    hemiGroundColor:  lc(a.hemiGroundColor, b.hemiGroundColor),
+    hemiIntensity:    ln(a.hemiIntensity,   b.hemiIntensity),
+    ambientColor:     lc(a.ambientColor,    b.ambientColor),
+    ambientIntensity: ln(a.ambientIntensity, b.ambientIntensity),
+    sunColor:         lc(a.sunColor,        b.sunColor),
+    sunIntensity:     ln(a.sunIntensity,    b.sunIntensity),
+    fillColor:        lc(a.fillColor,       b.fillColor),
+    fillIntensity:    ln(a.fillIntensity,   b.fillIntensity),
+    exposure:         ln(a.exposure,        b.exposure),
+  };
+}
+
+/** Apply weather + zone-lighting modifiers to a base preset (returns a copy). */
+function _applyModifiers(preset: EnvPreset, weather: string, lighting: string): EnvPreset {
+  const p = { ...preset };
+
+  if (weather === 'fog' || weather === 'mist') {
+    p.fogDensity      *= 5;
+    p.fogColor         = 0x909aaa;
+    p.sunIntensity    *= 0.4;
+    p.hemiIntensity   *= 0.7;
+    p.exposure        *= 0.9;
+  } else if (weather === 'rain' || weather === 'storm') {
+    p.fogDensity      *= 3;
+    p.skyColor         = 0x141820;
+    p.sunIntensity    *= 0.3;
+    p.hemiIntensity   *= 0.6;
+    p.ambientIntensity *= 0.7;
+  } else if (weather === 'cloudy') {
+    p.fogDensity      *= 1.8;
+    p.sunIntensity    *= 0.7;
+    p.hemiIntensity   *= 0.85;
+    p.exposure        *= 0.95;
+  }
+
+  if (lighting === 'dark') {
+    p.sunIntensity     = Math.max(p.sunIntensity * 0.5, 0.3);
+    p.hemiIntensity    = Math.max(p.hemiIntensity * 0.6, 0.5);
+    p.ambientIntensity = Math.max(p.ambientIntensity * 0.6, 0.3);
+    p.exposure         = Math.max(p.exposure * 0.75, 0.8);
+  } else if (lighting === 'dim') {
+    p.sunIntensity     = Math.max(p.sunIntensity * 0.75, 0.5);
+    p.hemiIntensity    = Math.max(p.hemiIntensity * 0.8, 0.7);
+    p.ambientIntensity = Math.max(p.ambientIntensity * 0.8, 0.4);
+    p.exposure         = Math.max(p.exposure * 0.9, 0.9);
+  }
+
+  return p;
+}
+
+/**
+ * Resolve a continuous EnvPreset for any TOD float by interpolating between
+ * adjacent anchor presets, then applying weather/lighting modifiers.
+ */
+function _resolvePresetForTod(tod: number, weather: string, lighting: string): EnvPreset {
+  // Wrap to [0, 1)
+  tod = ((tod % 1) + 1) % 1;
+
+  // Find surrounding anchors
+  let lo = TOD_ANCHORS[0]!;
+  let hi = TOD_ANCHORS[1]!;
+  for (let i = 0; i < TOD_ANCHORS.length - 1; i++) {
+    if (tod >= TOD_ANCHORS[i]!.t && tod < TOD_ANCHORS[i + 1]!.t) {
+      lo = TOD_ANCHORS[i]!;
+      hi = TOD_ANCHORS[i + 1]!;
+      break;
     }
-    // else: float and string disagree → trust string (stale gateway fallback)
-  }
-  const wx  = zone.weather   ?? 'clear';
-  const lit = zone.lighting  ?? 'normal';
-
-  let preset: EnvPreset;
-
-  if (tod === 'night') {
-    preset = {
-      skyColor: 0x0a1020, fogColor: 0x101828, fogDensity: 0.00035,
-      hemiSkyColor: 0x2a4060, hemiGroundColor: 0x141418, hemiIntensity: 1.3,
-      ambientColor: 0x263850, ambientIntensity: 0.90,
-      sunColor: 0x5070c0, sunIntensity: 0.75,
-      fillColor: 0x182040, fillIntensity: 0.35,
-      exposure: 1.0,
-    };
-  } else if (tod === 'dusk' || tod === 'dawn') {
-    preset = {
-      skyColor: 0x251810, fogColor: 0x3a2010, fogDensity: 0.00030,
-      hemiSkyColor: 0xd08050, hemiGroundColor: 0x301808, hemiIntensity: 1.0,
-      ambientColor: 0x806040, ambientIntensity: 0.6,
-      sunColor: 0xff9040, sunIntensity: 1.1,
-      fillColor: 0x302050, fillIntensity: 0.35,
-      exposure: 1.0,
-    };
-  } else {
-    // day
-    preset = {
-      skyColor: 0x4a6a90, fogColor: 0x7090b8, fogDensity: 0.00022,
-      hemiSkyColor: 0xb0c8e8, hemiGroundColor: 0x304820, hemiIntensity: 1.2,
-      ambientColor: 0x90a0b0, ambientIntensity: 0.5,
-      sunColor: 0xffffff, sunIntensity: 1.3,
-      fillColor: 0x3050a0, fillIntensity: 0.35,
-      exposure: 1.0,
-    };
   }
 
-  // Weather modifiers
-  if (wx === 'fog' || wx === 'mist') {
-    preset.fogDensity      *= 5;
-    preset.fogColor         = 0x909aaa;
-    preset.sunIntensity    *= 0.4;
-    preset.hemiIntensity   *= 0.7;
-    preset.exposure        *= 0.9;
-  } else if (wx === 'rain' || wx === 'storm') {
-    preset.fogDensity      *= 3;
-    preset.skyColor         = 0x141820;
-    preset.sunIntensity    *= 0.3;
-    preset.hemiIntensity   *= 0.6;
-    preset.ambientIntensity *= 0.7;
-  } else if (wx === 'cloudy') {
-    preset.fogDensity      *= 1.8;
-    preset.sunIntensity    *= 0.7;
-    preset.hemiIntensity   *= 0.85;
-    preset.exposure        *= 0.95;
-  }
+  const range = hi.t - lo.t;
+  const t = range > 0 ? (tod - lo.t) / range : 0;
 
-  // Lighting — zone-level modifier (dungeons, special areas)
-  if (lit === 'dark') {
-    preset.sunIntensity     = Math.max(preset.sunIntensity * 0.5, 0.3);
-    preset.hemiIntensity    = Math.max(preset.hemiIntensity * 0.6, 0.5);
-    preset.ambientIntensity = Math.max(preset.ambientIntensity * 0.6, 0.3);
-    preset.exposure         = Math.max(preset.exposure * 0.75, 0.8);
-  } else if (lit === 'dim') {
-    preset.sunIntensity     = Math.max(preset.sunIntensity * 0.75, 0.5);
-    preset.hemiIntensity    = Math.max(preset.hemiIntensity * 0.8, 0.7);
-    preset.ambientIntensity = Math.max(preset.ambientIntensity * 0.8, 0.4);
-    preset.exposure         = Math.max(preset.exposure * 0.9, 0.9);
-  }
-
-  return preset;
+  return _applyModifiers(_lerpPreset(lo.p, hi.p, t), weather, lighting);
 }

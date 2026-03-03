@@ -30,8 +30,11 @@ import { CharacterSelect }    from '@/ui/CharacterSelect';
 import { UIScaleWidget }      from '@/ui/UIScaleWidget';
 import { VillagePanel }       from '@/ui/VillagePanel';
 import { MarketPanel }        from '@/ui/MarketPanel';
+import { WorldMapPanel }      from '@/ui/WorldMapPanel';
 import { RegistrationModal }  from '@/ui/RegistrationModal';
 import { CorpseSystem }       from '@/entities/CorpseSystem';
+import { CorruptionMiasma }  from '@/entities/CorruptionMiasma';
+import { WardBeaconManager } from '@/entities/WardBeacon';
 import { PlacementMode }      from '@/village/PlacementMode';
 
 /**
@@ -60,6 +63,8 @@ export class App {
   private factory: EntityFactory;
   private corpses: CorpseSystem;
   private worldRoot: THREE.Group | null = null;
+  private miasma:    CorruptionMiasma | null = null;
+  private beacons:   WardBeaconManager | null = null;
 
   // ── Input ─────────────────────────────────────────────────────────────────
   private clickMove: ClickMoveController;
@@ -85,7 +90,13 @@ export class App {
   private villagePanel:      VillagePanel      | null = null;
   private marketPanel:       MarketPanel       | null = null;
   private registrationModal: RegistrationModal  | null = null;
+  private worldMapPanel:     WorldMapPanel      | null = null;
   private placementMode:     PlacementMode      | null = null;
+
+  // ── Environment tracking ─────────────────────────────────────────────────
+  private _lastWeather  = '';
+  private _lastLighting = '';
+  private _hasEnteredZone = false;
 
   // ── Loop ──────────────────────────────────────────────────────────────────
   private rafId: number = 0;
@@ -142,13 +153,28 @@ export class App {
     });
 
     this.world.onZoneChange(() => {
-      if (this.world.zone) {
-        // Server-pushed time/weather updates during gameplay → smooth crossfade.
-        // The initial world_entry also fires this; starting from the default
-        // scene colours and fading into the zone preset looks like a natural
-        // world-materialisation effect, so a short transition is fine there too.
+      if (!this.world.zone) return;
+      const wx  = this.world.zone.weather  ?? 'clear';
+      const lit = this.world.zone.lighting ?? 'normal';
+
+      if (!this._hasEnteredZone) {
+        // First zone entry — short fade from default scene to current TOD preset.
+        this.scene.transitionZone(this.world.zone, 2);
+        this._hasEnteredZone = true;
+      } else if (wx !== this._lastWeather || lit !== this._lastLighting) {
+        // Weather or lighting changed — smooth crossfade.
         this.scene.transitionZone(this.world.zone, 20);
       }
+      // TOD-only updates need no transition — tick() drives lighting continuously.
+
+      // Let miasma recapture fog baseline after scene transition starts
+      if (this.miasma) {
+        // Delay recapture so SceneManager applies the new preset first
+        setTimeout(() => this.miasma?.recaptureFogBaseline(), 100);
+      }
+
+      this._lastWeather  = wx;
+      this._lastLighting = lit;
     });
 
     // ── XP gain / level-up notifications ──────────────────────────────────
@@ -244,6 +270,8 @@ export class App {
     this.wasd.dispose();
     this.camInput.dispose();
     this.camera.dispose();
+    this.miasma?.dispose();
+    this.beacons?.dispose();
     this.corpses.dispose();
     this.factory.dispose();
     this.scene.dispose();
@@ -264,6 +292,7 @@ export class App {
     this.minimap?.dispose();
     this.villagePanel?.dispose();
     this.marketPanel?.dispose();
+    this.worldMapPanel?.dispose();
     this.registrationModal?.dispose();
     this.placementMode?.dispose();
   }
@@ -301,6 +330,14 @@ export class App {
     // Tick action bar cooldowns
     this.actionBar?.tick(dt);
 
+    // Tick corruption miasma (particles + fog based on distance from anchors)
+    if (this.miasma && playerEntity) {
+      this.miasma.update(dt, playerEntity.cameraTarget);
+    }
+
+    // Tick ward beacon animations (ring spin + pulse)
+    this.beacons?.update(dt);
+
     this.scene.render(this.camera.getCamera());
   };
 
@@ -336,11 +373,20 @@ export class App {
         this.loading.show();
         this.loading.setStatus('Entering world…');
         this.loading.setProgress(0);
+        this._hasEnteredZone = false;
         break;
 
       case 'in_world':
         this.loading.hide();
         this._showGameUI();
+        // Create corruption miasma on first world entry
+        if (!this.miasma) {
+          this.miasma = new CorruptionMiasma(this.scene.scene);
+        }
+        // Create ward beacons above civic anchors
+        if (!this.beacons) {
+          this.beacons = new WardBeaconManager(this.scene.scene);
+        }
         // Snap camera to player position on world entry
         this.camera.snapToTarget(
           new THREE.Vector3(this.player.position.x, this.player.position.y, this.player.position.z)
@@ -435,6 +481,10 @@ export class App {
       this.wasd.setMarketToggle(() => this.marketPanel!.toggle());
       this.targetWindow!.setMarketToggle(() => this.marketPanel!.show());
     }
+    if (!this.worldMapPanel) {
+      this.worldMapPanel = new WorldMapPanel(this.uiRoot);
+      this.wasd.setWorldMapToggle(() => this.worldMapPanel!.toggle());
+    }
     // Tab targeting
     if (!this.tabTarget) {
       this.tabTarget = new TabTargetService(
@@ -518,6 +568,10 @@ export class App {
         this.camera.setDistance(targetDist);
         console.log(`[App] Camera distance set to ${targetDist}m`);
       }
+
+      // Terrain is now in the scene — reposition beacons onto it.
+      // (Initial beacon raycast fires before GLBs load and misses.)
+      this.beacons?.repositionOnTerrain();
     } catch (err) {
       console.error('[App] Zone asset load failed:', err);
     }

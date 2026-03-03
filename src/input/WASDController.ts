@@ -43,6 +43,7 @@ export class WASDController {
   private partyToggle:          (() => void) | null = null;
   private abilitySlotCallback:  ((slotIndex: number) => void) | null = null;
   private marketToggle:         (() => void) | null = null;
+  private worldMapToggle:       (() => void) | null = null;
   private tabTargetNext:            (() => void) | null = null;
   private tabTargetPrev:            (() => void) | null = null;
   private partyTargetSlotCallback:  ((slot: number) => void) | null = null;
@@ -55,6 +56,7 @@ export class WASDController {
   setPartyToggle(fn: () => void):          void { this.partyToggle          = fn; }
   setAbilitySlotCallback(fn: (slotIndex: number) => void): void { this.abilitySlotCallback = fn; }
   setMarketToggle(fn: () => void):         void { this.marketToggle         = fn; }
+  setWorldMapToggle(fn: () => void):       void { this.worldMapToggle       = fn; }
   setTabTargetNext(fn: () => void):        void { this.tabTargetNext        = fn; }
   setTabTargetPrev(fn: () => void):        void { this.tabTargetPrev        = fn; }
   setPartyTargetSlotCallback(fn: (slot: number) => void): void { this.partyTargetSlotCallback = fn; }
@@ -267,6 +269,12 @@ export class WASDController {
     if (e.ctrlKey && e.key.toLowerCase() === 'm') {
       e.preventDefault();
       this.marketToggle?.();
+      return;
+    }
+
+    // M — toggle world map (plain M without Ctrl)
+    if (e.key.toLowerCase() === 'm' && !e.ctrlKey) {
+      this.worldMapToggle?.();
       return;
     }
 

@@ -32,7 +32,8 @@
       "Bash(xargs grep -l \"clearTarget\\\\|setTarget\")",
       "Bash(xargs grep -l \"currentAction\\\\|onEntity\")",
       "Bash(npx ts-node prisma/seed-flora.ts)",
-      "Bash(npx ts-node prisma/seed-wildlife.ts)"
+      "Bash(npx ts-node prisma/seed-wildlife.ts)",
+      "Bash(npx ts-node prisma/check-abilities.ts)"
     ]
   }
 }

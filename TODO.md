@@ -18,7 +18,7 @@ Server sends `corruption_update` events and corruption data in CharacterState.
 Benefits at higher corruption: cacheDetectionBonus, hazardResistBonus, deadSystemInterface.
 - Needs: corruption meter/indicator on HUD, benefit descriptions, state transitions
 
-### Status Effects / Buffs & Debuffs
+### Status Effects / Buffs & Debuffs - Done for now
 Server sends effect id/name/duration in state_update payloads.
 No buff/debuff icons displayed anywhere — important for combat readability.
 - Needs: icon strip near action bar or player frame

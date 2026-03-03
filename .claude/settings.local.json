@@ -30,7 +30,9 @@
       "Bash(python -c \"import sys,json; data=json.load\\(sys.stdin\\); print\\(data[0][''text'']\\)\")",
       "Bash(npx tsc --noEmit --pretty)",
       "Bash(xargs grep -l \"clearTarget\\\\|setTarget\")",
-      "Bash(xargs grep -l \"currentAction\\\\|onEntity\")"
+      "Bash(xargs grep -l \"currentAction\\\\|onEntity\")",
+      "Bash(npx ts-node prisma/seed-flora.ts)",
+      "Bash(npx ts-node prisma/seed-wildlife.ts)"
     ]
   }
 }

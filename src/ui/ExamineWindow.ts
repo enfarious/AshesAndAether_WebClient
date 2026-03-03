@@ -82,6 +82,10 @@ export class ExamineWindow {
     if (!d.isAlive)  this._addTag(statusEl, 'Dead', 'dead');
     if (d.inCombat)  this._addTag(statusEl, 'In Combat', 'combat');
     if (d.notorious) this._addTag(statusEl, 'Notorious', 'notorious');
+    if (d.growthStage) {
+      const label = d.growthStage.charAt(0).toUpperCase() + d.growthStage.slice(1);
+      this._addTag(statusEl, label, 'growth');
+    }
 
     // Health bar
     const hpRow = this.root.querySelector<HTMLElement>('#ew-hp-row')!;
@@ -121,6 +125,7 @@ export class ExamineWindow {
       case 'mob':       return 'Monster';
       case 'wildlife':  return 'Wildlife';
       case 'structure': return 'Structure';
+      case 'plant':     return 'Flora';
       default:          return type;
     }
   }
@@ -206,6 +211,7 @@ export class ExamineWindow {
         .ew-type-mob       { color: #e89090; border: 1px solid rgba(232,144,144,0.35); }
         .ew-type-wildlife  { color: #b8d0a0; border: 1px solid rgba(184,208,160,0.35); }
         .ew-type-structure { color: #c0b898; border: 1px solid rgba(192,184,152,0.35); }
+        .ew-type-plant     { color: #55cc33; border: 1px solid rgba(85,204,51,0.35); }
 
         .ew-close {
           flex-shrink: 0;
@@ -264,6 +270,7 @@ export class ExamineWindow {
         .ew-tag-dead     { color: #999; border: 1px solid rgba(150,150,150,0.3); }
         .ew-tag-combat   { color: #e8a060; border: 1px solid rgba(232,160,96,0.35); }
         .ew-tag-notorious { color: #e8d060; border: 1px solid rgba(232,208,96,0.35); }
+        .ew-tag-growth    { color: #78be46; border: 1px solid rgba(120,190,70,0.35); }
 
         /* ── HP bar ── */
 

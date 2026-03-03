@@ -42,7 +42,7 @@ Buy/sell/search/cancel orders, 2% listing fee, regional & world scope.
 Complete WalletService for gold tracking.
 - Needs: market window, order list, buy/sell dialogs, wallet/gold display
 
-### Harvesting / Foraging - In Progress
+### Harvesting / Foraging - Done for now
 12+ plant species with growth stages. `/harvest` command exists server-side.
 Plants render as entities but no interaction prompt.
 - Needs: harvest interaction when clicking/targeting a plant, gather progress

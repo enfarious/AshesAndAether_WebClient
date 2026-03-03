@@ -37,6 +37,9 @@ export class TargetWindow {
   private _marketToggle: (() => void) | null = null;
   setMarketToggle(fn: () => void): void { this._marketToggle = fn; }
 
+  /** Brief client-side spam guard after clicking Harvest. */
+  private _harvestCooldown = false;
+
   private readonly _menu: MenuItem[] = [
     {
       // Attack — mobs, wildlife, and any entity explicitly flagged hostile.
@@ -81,6 +84,21 @@ export class TargetWindow {
       label:   'Market',
       visible: e => e.type === 'structure' && /market\s*stall/i.test(e.name),
       execute: _e => this._marketToggle?.(),
+    },
+    {
+      // Harvest — plants only (interactive + alive).
+      label:    'Harvest',
+      visible:  e => e.type === 'plant' && e.interactive !== false && e.isAlive !== false,
+      disabled: () => this._harvestCooldown,
+      execute:  e => {
+        this.socket.sendCommand(`/harvest ${e.id}`);
+        this._harvestCooldown = true;
+        setTimeout(() => {
+          this._harvestCooldown = false;
+          this._menuKey = '';  // force rebuild to re-enable
+          this._refresh();
+        }, 2000);
+      },
     },
     {
       // Examine — always available.

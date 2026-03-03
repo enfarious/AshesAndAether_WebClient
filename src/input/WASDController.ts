@@ -43,6 +43,11 @@ export class WASDController {
   private partyToggle:          (() => void) | null = null;
   private abilitySlotCallback:  ((slotIndex: number) => void) | null = null;
   private marketToggle:         (() => void) | null = null;
+  private tabTargetNext:            (() => void) | null = null;
+  private tabTargetPrev:            (() => void) | null = null;
+  private partyTargetSlotCallback:  ((slot: number) => void) | null = null;
+  private partyTargetNext:          (() => void) | null = null;
+  private partyTargetPrev:          (() => void) | null = null;
 
   setInventoryToggle(fn: () => void):      void { this.inventoryToggle      = fn; }
   setAbilityToggle(fn: () => void):        void { this.abilityToggle        = fn; }
@@ -50,6 +55,11 @@ export class WASDController {
   setPartyToggle(fn: () => void):          void { this.partyToggle          = fn; }
   setAbilitySlotCallback(fn: (slotIndex: number) => void): void { this.abilitySlotCallback = fn; }
   setMarketToggle(fn: () => void):         void { this.marketToggle         = fn; }
+  setTabTargetNext(fn: () => void):        void { this.tabTargetNext        = fn; }
+  setTabTargetPrev(fn: () => void):        void { this.tabTargetPrev        = fn; }
+  setPartyTargetSlotCallback(fn: (slot: number) => void): void { this.partyTargetSlotCallback = fn; }
+  setPartyTargetNext(fn: () => void):      void { this.partyTargetNext      = fn; }
+  setPartyTargetPrev(fn: () => void):      void { this.partyTargetPrev      = fn; }
 
   constructor(
     private readonly camera: OrbitCamera,
@@ -189,6 +199,32 @@ export class WASDController {
     const key = e.key.toLowerCase();
     if (key.startsWith('arrow') || key === '=' || key === '+' || key === '-') {
       e.preventDefault();
+    }
+
+    // Tab / Shift+Tab — cycle targets
+    if (key === 'tab') {
+      e.preventDefault();
+      if (e.shiftKey) this.tabTargetPrev?.();
+      else            this.tabTargetNext?.();
+      return;
+    }
+
+    // F1-F8 — target party member by slot
+    if (key.startsWith('f') && key.length <= 2) {
+      const fNum = parseInt(key.slice(1), 10);
+      if (fNum >= 1 && fNum <= 8) {
+        e.preventDefault();
+        this.partyTargetSlotCallback?.(fNum - 1);
+        return;
+      }
+    }
+
+    // Ctrl+ArrowUp / Ctrl+ArrowDown — cycle party targets
+    if (e.ctrlKey && (key === 'arrowup' || key === 'arrowdown')) {
+      e.preventDefault();
+      if (key === 'arrowup') this.partyTargetPrev?.();
+      else                   this.partyTargetNext?.();
+      return;
     }
 
     // H — respawn when dead

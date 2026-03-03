@@ -33,6 +33,7 @@ import type {
   RegisterResultPayload,
   ExaminePeekPayload,
   MarketDataPayload,
+  HarvestResultPayload,
 } from './Protocol';
 
 /**
@@ -51,6 +52,7 @@ export class MessageRouter {
   private villagePlacementListeners = new Set<(p: VillagePlacementModePayload) => void>();
   private villageStateListeners    = new Set<(p: VillageStatePayload) => void>();
   private examineListeners         = new Set<(p: ExaminePeekPayload) => void>();
+  private harvestListeners         = new Set<(p: HarvestResultPayload) => void>();
   private marketListeners          = new Set<(p: MarketDataPayload) => void>();
 
   constructor(
@@ -100,6 +102,11 @@ export class MessageRouter {
   onExamine(fn: (p: ExaminePeekPayload) => void): () => void {
     this.examineListeners.add(fn);
     return () => this.examineListeners.delete(fn);
+  }
+
+  onHarvest(fn: (p: HarvestResultPayload) => void): () => void {
+    this.harvestListeners.add(fn);
+    return () => this.harvestListeners.delete(fn);
   }
 
   onMarketData(fn: (p: MarketDataPayload) => void): () => void {
@@ -309,6 +316,11 @@ export class MessageRouter {
       if (payload.success && cmdData?.type === 'look' && cmdData.target) {
         this.examineListeners.forEach(fn => fn(cmdData.target as ExaminePeekPayload));
         return; // rich UI handles it — don't also dump text to chat
+      }
+
+      // Dispatch structured harvest data to HarvestToast (still show text in chat too).
+      if (payload.success && cmdData?.type === 'harvest') {
+        this.harvestListeners.forEach(fn => fn(cmdData as unknown as HarvestResultPayload));
       }
 
       // Dispatch structured market data to MarketPanel (don't suppress chat — MUD clients still see text).

@@ -459,6 +459,13 @@ export interface CommandResponsePayload {
   timestamp:  number;
 }
 
+// ── Harvest ──────────────────────────────────────────────────────────────────
+
+export interface HarvestResultPayload {
+  plantName: string;
+  items:     { name: string; quantity: number }[];
+}
+
 // ── Market data (structured command_response.data payloads) ──────────────────
 
 export interface MarketSearchResult {
@@ -502,7 +509,7 @@ export type MarketDataPayload =
 export interface ExaminePeekPayload {
   id:          string;
   name:        string;
-  entityType:  'player' | 'npc' | 'companion' | 'mob' | 'wildlife' | 'structure';
+  entityType:  'player' | 'npc' | 'companion' | 'mob' | 'wildlife' | 'structure' | 'plant';
   isAlive:     boolean;
   inCombat:    boolean;
   range:       number;
@@ -513,6 +520,8 @@ export interface ExaminePeekPayload {
   faction?:    string;
   notorious?:  boolean;
   tag?:        string;
+  // Plant
+  growthStage?: string;
 }
 
 // ── Error ─────────────────────────────────────────────────────────────────────

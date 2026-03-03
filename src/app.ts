@@ -12,12 +12,14 @@ import { OrbitCamera }        from '@/camera/OrbitCamera';
 import { CameraInput }        from '@/camera/CameraInput';
 import { ClickMoveController } from '@/input/ClickMoveController';
 import { WASDController }      from '@/input/WASDController';
+import { TabTargetService }    from '@/input/TabTargetService';
 import { HUD }                from '@/ui/HUD';
 import { ChatPanel }          from '@/ui/ChatPanel';
 import { TargetWindow }       from '@/ui/TargetWindow';
 import { InventoryWindow }    from '@/ui/InventoryWindow';
 import { LootWindow }         from '@/ui/LootWindow';
 import { ExamineWindow }      from '@/ui/ExamineWindow';
+import { HarvestToast }       from '@/ui/HarvestToast';
 import { AbilityWindow }      from '@/ui/AbilityWindow';
 import { CharacterSheet }    from '@/ui/CharacterSheet';
 import { PartyWindow }       from '@/ui/PartyWindow';
@@ -62,6 +64,7 @@ export class App {
   // ── Input ─────────────────────────────────────────────────────────────────
   private clickMove: ClickMoveController;
   private wasd:      WASDController;
+  private tabTarget: TabTargetService | null = null;
 
   // ── UI ────────────────────────────────────────────────────────────────────
   private loginScreen:     LoginScreen     | null = null;
@@ -72,6 +75,7 @@ export class App {
   private inventoryWindow: InventoryWindow | null = null;
   private lootWindow:      LootWindow      | null = null;
   private examineWindow:   ExamineWindow   | null = null;
+  private harvestToast:    HarvestToast    | null = null;
   private abilityWindow:   AbilityWindow   | null = null;
   private characterSheet:  CharacterSheet  | null = null;
   private partyWindow:     PartyWindow     | null = null;
@@ -252,6 +256,7 @@ export class App {
     this.inventoryWindow?.dispose();
     this.lootWindow?.dispose();
     this.examineWindow?.dispose();
+    this.harvestToast?.dispose();
     this.abilityWindow?.dispose();
     this.characterSheet?.dispose();
     this.partyWindow?.dispose();
@@ -396,6 +401,10 @@ export class App {
       this.examineWindow = new ExamineWindow(this.uiRoot);
       this.router.onExamine(p => this.examineWindow!.show(p));
     }
+    if (!this.harvestToast) {
+      this.harvestToast = new HarvestToast(this.uiRoot);
+      this.router.onHarvest(p => this.harvestToast!.show(p));
+    }
     if (!this.registrationModal) {
       this.registrationModal = new RegistrationModal(this.uiRoot, this.player, this.socket, this.router);
       // Wire /register in chat to open this modal
@@ -425,6 +434,18 @@ export class App {
       this.marketPanel = new MarketPanel(this.uiRoot, this.player, this.socket, this.router);
       this.wasd.setMarketToggle(() => this.marketPanel!.toggle());
       this.targetWindow!.setMarketToggle(() => this.marketPanel!.show());
+    }
+    // Tab targeting
+    if (!this.tabTarget) {
+      this.tabTarget = new TabTargetService(
+        this.entities, this.player,
+        () => this.player.localPosition ?? this.player.position,
+      );
+      this.wasd.setTabTargetNext(() => this.tabTarget!.cycleTarget(1));
+      this.wasd.setTabTargetPrev(() => this.tabTarget!.cycleTarget(-1));
+      this.wasd.setPartyTargetSlotCallback(slot => this.tabTarget!.targetPartySlot(slot));
+      this.wasd.setPartyTargetNext(() => this.tabTarget!.cyclePartyTarget(1));
+      this.wasd.setPartyTargetPrev(() => this.tabTarget!.cyclePartyTarget(-1));
     }
     if (!this.villagePanel) {
       this.villagePanel = new VillagePanel(this.uiRoot, this.world, this.player, this.socket);

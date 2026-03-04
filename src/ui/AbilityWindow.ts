@@ -1,17 +1,17 @@
 /**
- * AbilityWindow — ability tree, loadout, and unlock interface.
+ * AbilityWindow -- ability tree, loadout, and unlock interface.
  *
- * Two tabs:  Active (36 nodes, T1–T4)  |  Passive (30 nodes, T1–T3)
+ * Two tabs:  Active (36 nodes, T1-T4)  |  Passive (30 nodes, T1-T3)
  *
- * Layout: 6 sector columns × tier rows, each cell = one node button.
- * Below the grid: 8 loadout slots (slot 8 is the capstone slot).
+ * Layout: SVG radial web -- 6 sector wedges, concentric tier rings.
+ * Below the web: 8 loadout slots (slot 8 is the capstone slot).
  *
  * Interactions
- *   • Hover node        → tooltip with name / effect / cost
- *   • Click locked node → if affordable & adjacent: confirm-unlock inline
- *   • Click unlocked node → assign to selected loadout slot (or first empty)
- *   • Click loadout slot  → select that slot for assignment  (glow)
- *   • Right-click slot    → clear that slot
+ *   - Hover node        -> tooltip with name / effect / cost
+ *   - Click locked node -> if affordable & adjacent: confirm-unlock inline
+ *   - Click unlocked node -> assign to selected loadout slot (or first empty)
+ *   - Click loadout slot  -> select that slot for assignment  (glow)
+ *   - Right-click slot    -> clear that slot
  *
  * Press K (or Escape) to close.
  */
@@ -40,27 +40,51 @@ const SECTOR_HUE: Record<Sector, string> = {
   support: '175',  // teal
 };
 
-/** Row layout for active web (sector × row → nodeId suffix). */
-const ACTIVE_ROWS: { label: string; suffix: string }[] = [
-  { label: 'T1', suffix: 't1'  },
-  { label: 'T2', suffix: 't2a' },
-  { label: 'T2', suffix: 't2b' },
-  { label: 'T3', suffix: 't3a' },
-  { label: 'T3', suffix: 't3b' },
-  { label: 'T4', suffix: 't4'  },
-];
-
-/** Row layout for passive web. */
-const PASSIVE_ROWS: { label: string; suffix: string }[] = [
-  { label: 'T1', suffix: 't1'  },
-  { label: 'T2', suffix: 't2a' },
-  { label: 'T2', suffix: 't2b' },
-  { label: 'T3', suffix: 't3a' },
-  { label: 'T3', suffix: 't3b' },
-];
-
 const ACTIVE_SLOT_COUNT  = 8;
 const PASSIVE_SLOT_COUNT = 8;
+
+// ── Radial layout constants ──────────────────────────────────────────────────
+
+const SVG_SIZE = 560;
+const CX = SVG_SIZE / 2;
+const CY = SVG_SIZE / 2;
+
+/** Tier radii (pixels from centre). */
+const TIER_RADIUS: Record<number, number> = { 1: 80, 2: 140, 3: 200, 4: 260 };
+
+/** Sector base angles (0 deg = top, clockwise). */
+const SECTOR_ANGLE: Record<string, number> = {
+  tank: 0, phys: 60, control: 120, magic: 180, healer: 240, support: 300,
+};
+
+/** Variant offsets within a sector wedge. */
+const VARIANT_OFFSET: Record<string, number> = { '': 0, 'a': -15, 'b': 15 };
+
+/** Active-web row suffixes. */
+const ACTIVE_SUFFIXES = ['t1', 't2a', 't2b', 't3a', 't3b', 't4'];
+/** Passive-web row suffixes. */
+const PASSIVE_SUFFIXES = ['t1', 't2a', 't2b', 't3a', 't3b'];
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function parseNodeId(id: string): { web: string; sector: string; tier: number; suffix: string } {
+  const parts  = id.split('_');
+  const web    = parts[0] ?? '';
+  const sector = parts[1] ?? '';
+  const suffix = parts[2] ?? 't1'; // "t1", "t2a", "t2b", "t3a", "t3b", "t4"
+  const tier   = parseInt(suffix.charAt(1), 10);
+  return { web, sector, tier, suffix };
+}
+
+function nodePosition(sector: string, tier: number, suffix: string): { x: number; y: number } {
+  const variant  = suffix.replace(/^t\d/, ''); // extract 'a', 'b', or ''
+  const angleDeg = (SECTOR_ANGLE[sector] ?? 0) + (VARIANT_OFFSET[variant] ?? 0) - 90; // -90 so 0 deg = top
+  const angleRad = (angleDeg * Math.PI) / 180;
+  const r        = TIER_RADIUS[tier] ?? 140;
+  return { x: CX + r * Math.cos(angleRad), y: CY + r * Math.sin(angleRad) };
+}
 
 // ── AbilityWindow ─────────────────────────────────────────────────────────────
 
@@ -75,11 +99,20 @@ export class AbilityWindow {
   /** Pending unlock confirmation: nodeId to confirm. */
   private pendingUnlock: string | null = null;
 
-  // Cached maps from nodeId → button element (re-built on full refresh)
-  private nodeButtons  = new Map<string, HTMLButtonElement>();
+  // Cached maps from nodeId -> SVG <g> element (re-built on full refresh)
+  private nodeGroups   = new Map<string, SVGGElement>();
   private slotButtons: { active: HTMLButtonElement[]; passive: HTMLButtonElement[] } = {
     active: [], passive: [],
   };
+
+  // Zoom / pan state for the radial web
+  private _svgEl: SVGSVGElement | null = null;
+  private _zoomLevel = 1;
+  private _viewBoxX = 0;
+  private _viewBoxY = 0;
+  private _viewBoxW = SVG_SIZE;
+  private _viewBoxH = SVG_SIZE;
+  private _dragState: { startX: number; startY: number; vbX: number; vbY: number } | null = null;
 
   constructor(
     private readonly mountEl: HTMLElement,
@@ -140,8 +173,8 @@ export class AbilityWindow {
         transform: translate(-50%, -50%);
         display: flex;
         flex-direction: column;
-        width: 760px;
-        max-height: 90vh;
+        width: 640px;
+        max-height: 94vh;
         background: rgba(8, 6, 4, 0.94);
         border: 1px solid rgba(200, 145, 60, 0.35);
         z-index: 800;
@@ -182,6 +215,25 @@ export class AbilityWindow {
       }
       #ability-window .aw-close:hover { color: rgba(212, 201, 184, 0.9); }
 
+      /* ── Respec button ── */
+      #ability-window .aw-respec-btn {
+        font-family: var(--font-mono);
+        font-size: 9px;
+        background: none;
+        border: 1px solid rgba(200, 98, 42, 0.25);
+        color: rgba(200, 98, 42, 0.65);
+        cursor: pointer;
+        padding: 2px 8px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        transition: color 0.12s, border-color 0.12s;
+        margin-left: 10px;
+      }
+      #ability-window .aw-respec-btn:hover {
+        color: rgba(200, 98, 42, 0.9);
+        border-color: rgba(200, 98, 42, 0.5);
+      }
+
       /* ── Tabs ── */
       #ability-window .aw-tabs {
         display: flex;
@@ -216,71 +268,49 @@ export class AbilityWindow {
         min-height: 0;
       }
 
-      /* ── Sector header row ── */
-      #ability-window .aw-grid-wrap {
-        display: grid;
-        grid-template-columns: 28px repeat(6, 1fr);
-        gap: 4px 6px;
+      /* ── SVG radial web ── */
+      #ability-window .aw-svg-wrap {
+        width: 560px;
+        height: 560px;
+        margin: 0 auto;
+        overflow: hidden;
       }
-      #ability-window .aw-tier-lbl {
-        font-size: 9px;
-        color: rgba(212, 201, 184, 0.25);
-        display: flex;
-        align-items: center;
-        justify-content: flex-end;
-        padding-right: 4px;
-        letter-spacing: 0.06em;
+      #ability-window .aw-svg-wrap svg {
+        width: 100%;
+        height: 100%;
       }
-      #ability-window .aw-col-head {
+      #ability-window .aw-svg-name {
+        font-family: var(--font-mono);
+        font-size: 8px;
+        fill: currentColor;
+        pointer-events: none;
+      }
+      #ability-window .aw-svg-cost {
+        font-family: var(--font-mono);
+        font-size: 7px;
+        fill: currentColor;
+        opacity: 0.75;
+        pointer-events: none;
+      }
+      #ability-window .aw-svg-badge {
+        font-family: var(--font-mono);
+        font-size: 7px;
+        fill: currentColor;
+        opacity: 0.85;
+        pointer-events: none;
+      }
+      #ability-window .aw-sector-label {
+        font-family: var(--font-mono);
         font-size: 9px;
         letter-spacing: 0.08em;
         text-transform: uppercase;
-        text-align: center;
-        padding: 2px 0 4px;
+        text-anchor: middle;
+        pointer-events: none;
       }
-      #ability-window .aw-gap-row {
-        grid-column: 1 / -1;
-        height: 4px;
+      #ability-window .aw-edge {
+        stroke-width: 1.5;
+        pointer-events: none;
       }
-
-      /* ── Node buttons ── */
-      #ability-window .aw-node {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        height: 46px;
-        padding: 3px 4px;
-        border: 1px solid;
-        cursor: default;
-        font-family: var(--font-mono);
-        text-align: center;
-        position: relative;
-        transition: filter 0.12s, border-color 0.12s;
-        overflow: hidden;
-      }
-      #ability-window .aw-node-name {
-        font-size: 9.5px;
-        letter-spacing: 0.04em;
-        line-height: 1.2;
-        max-width: 100%;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      #ability-window .aw-node-cost {
-        font-size: 8.5px;
-        margin-top: 2px;
-        letter-spacing: 0.04em;
-      }
-      #ability-window .aw-node-slot {
-        position: absolute;
-        top: 2px; right: 3px;
-        font-size: 8px;
-        opacity: 0.7;
-      }
-
-      /* State variants are applied inline via JS for per-sector colour */
 
       /* ── Loadout row ── */
       #ability-window .aw-loadout {
@@ -400,47 +430,47 @@ export class AbilityWindow {
         position: fixed;
         pointer-events: none;
         z-index: 900;
-        max-width: 240px;
+        max-width: 290px;
         background: rgba(8, 6, 4, 0.96);
         border: 1px solid rgba(200, 145, 60, 0.3);
-        padding: 8px 10px;
+        padding: 10px 12px;
         font-family: var(--font-mono);
         display: none;
       }
       #ability-tooltip .att-name {
-        font-size: 12px;
+        font-size: 15px;
         color: rgba(212, 201, 184, 0.9);
-        margin-bottom: 4px;
-      }
-      #ability-tooltip .att-meta {
-        font-size: 9.5px;
-        color: rgba(212, 201, 184, 0.4);
-        letter-spacing: 0.06em;
-        margin-bottom: 4px;
-      }
-      #ability-tooltip .att-desc {
-        font-size: 10px;
-        color: rgba(212, 201, 184, 0.65);
-        line-height: 1.4;
         margin-bottom: 5px;
       }
+      #ability-tooltip .att-meta {
+        font-size: 11px;
+        color: rgba(212, 201, 184, 0.45);
+        letter-spacing: 0.06em;
+        margin-bottom: 5px;
+      }
+      #ability-tooltip .att-desc {
+        font-size: 12px;
+        color: rgba(212, 201, 184, 0.65);
+        line-height: 1.45;
+        margin-bottom: 6px;
+      }
       #ability-tooltip .att-effect {
-        font-size: 9.5px;
+        font-size: 11.5px;
         color: rgba(200, 145, 60, 0.75);
-        line-height: 1.4;
-        margin-bottom: 4px;
+        line-height: 1.45;
+        margin-bottom: 5px;
       }
       #ability-tooltip .att-cost-row {
-        font-size: 9.5px;
+        font-size: 11.5px;
         display: flex;
         gap: 8px;
         flex-wrap: wrap;
       }
       #ability-tooltip .att-cost-row span {
-        color: rgba(212, 201, 184, 0.5);
+        color: rgba(212, 201, 184, 0.55);
       }
       #ability-tooltip .att-cost-row .highlight {
-        color: rgba(200, 145, 60, 0.85);
+        color: rgba(200, 145, 60, 0.9);
       }
     `;
     document.head.appendChild(style);
@@ -471,8 +501,20 @@ export class AbilityWindow {
 
     const closeBtn = document.createElement('button');
     closeBtn.className = 'aw-close';
-    closeBtn.textContent = '×';
+    closeBtn.textContent = '\u00d7';
     closeBtn.addEventListener('click', () => this.hide());
+
+    // Respec button (inserted before close)
+    const respecBtn = document.createElement('button');
+    respecBtn.className = 'aw-respec-btn';
+    respecBtn.textContent = 'Respec';
+    respecBtn.addEventListener('click', () => {
+      if (confirm('Reset all abilities and refund AP? (1 hour cooldown)')) {
+        this.socket.sendRespecAbilities();
+      }
+    });
+    header.appendChild(respecBtn);
+
     header.appendChild(closeBtn);
     this.root.appendChild(header);
 
@@ -510,6 +552,12 @@ export class AbilityWindow {
     this.activeTab    = tab;
     this.selectedSlot = null;
     this.pendingUnlock = null;
+    // Reset zoom when switching tabs
+    this._zoomLevel = 1;
+    this._viewBoxX = 0;
+    this._viewBoxY = 0;
+    this._viewBoxW = SVG_SIZE;
+    this._viewBoxH = SVG_SIZE;
     tabA.className = tab === 'active'  ? 'aw-tab active' : 'aw-tab';
     tabP.className = tab === 'passive' ? 'aw-tab active' : 'aw-tab';
     this._refresh();
@@ -531,12 +579,11 @@ export class AbilityWindow {
     if (!content) return;
 
     content.innerHTML = '';
-    this.nodeButtons.clear();
+    this.nodeGroups.clear();
     this.slotButtons.active  = [];
     this.slotButtons.passive = [];
 
     const web       = this.activeTab;
-    const rows      = web === 'active' ? ACTIVE_ROWS : PASSIVE_ROWS;
     const manifest  = this._manifestMap();
     const unlocked  = web === 'active'
       ? new Set(this.player.unlockedActiveNodes)
@@ -544,48 +591,72 @@ export class AbilityWindow {
     const loadout   = web === 'active' ? this.player.activeLoadout : this.player.passiveLoadout;
     const slotCount = web === 'active' ? ACTIVE_SLOT_COUNT : PASSIVE_SLOT_COUNT;
 
-    // ── Grid ─────────────────────────────────────────────────────────────────
-    const grid = document.createElement('div');
-    grid.className = 'aw-grid-wrap';
+    // ── Radial SVG web ────────────────────────────────────────────────────────
+    const svgWrap = document.createElement('div');
+    svgWrap.className = 'aw-svg-wrap';
 
-    // Column headers (empty tier-label cell + 6 sector headers)
-    const emptyHead = document.createElement('div');
-    grid.appendChild(emptyHead);
+    const svg = this._buildRadialWeb(web, manifest, unlocked, loadout);
+    svgWrap.appendChild(svg);
 
-    for (const sector of SECTORS) {
-      const h = document.createElement('div');
-      h.className = 'aw-col-head';
-      h.style.color = `hsla(${SECTOR_HUE[sector]}, 55%, 62%, 0.65)`;
-      h.textContent = SECTOR_LABEL[sector];
-      grid.appendChild(h);
-    }
+    // Apply persisted zoom state & attach zoom/pan handlers
+    this._svgEl = svg;
+    svg.setAttribute('viewBox', `${this._viewBoxX} ${this._viewBoxY} ${this._viewBoxW} ${this._viewBoxH}`);
 
-    // Node rows
-    let prevLabel = '';
-    for (const row of rows) {
-      // Thin gap between tier groups (T2→T3 etc.)
-      if (row.label !== prevLabel && prevLabel !== '') {
-        const gap = document.createElement('div');
-        gap.className = 'aw-gap-row';
-        grid.appendChild(gap);
-      }
-      prevLabel = row.label;
+    // Wheel zoom (centred on cursor)
+    svgWrap.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const factor  = e.deltaY > 0 ? 1.12 : 0.88;          // scroll-down = zoom out
+      const newZoom = Math.min(3, Math.max(0.5, this._zoomLevel / factor));
 
-      const tierLbl = document.createElement('div');
-      tierLbl.className = 'aw-tier-lbl';
-      tierLbl.textContent = row.label;
-      grid.appendChild(tierLbl);
+      const rect = svgWrap.getBoundingClientRect();
+      // Mouse position in viewBox coords
+      const mx = ((e.clientX - rect.left) / rect.width)  * this._viewBoxW + this._viewBoxX;
+      const my = ((e.clientY - rect.top)  / rect.height) * this._viewBoxH + this._viewBoxY;
 
-      for (const sector of SECTORS) {
-        const nodeId = `${web}_${sector}_${row.suffix}`;
-        const node   = manifest.get(nodeId);
-        const btn    = this._buildNodeButton(nodeId, node, unlocked, loadout, manifest);
-        this.nodeButtons.set(nodeId, btn);
-        grid.appendChild(btn);
-      }
-    }
+      const newW = SVG_SIZE / newZoom;
+      const newH = SVG_SIZE / newZoom;
 
-    content.appendChild(grid);
+      // Keep the cursor point stable
+      const fx = (e.clientX - rect.left) / rect.width;
+      const fy = (e.clientY - rect.top)  / rect.height;
+
+      this._viewBoxX = mx - fx * newW;
+      this._viewBoxY = my - fy * newH;
+      this._viewBoxW = newW;
+      this._viewBoxH = newH;
+      this._zoomLevel = newZoom;
+
+      this._svgEl?.setAttribute('viewBox',
+        `${this._viewBoxX} ${this._viewBoxY} ${this._viewBoxW} ${this._viewBoxH}`);
+      svgWrap.style.cursor = this._zoomLevel > 1.05 ? 'grab' : '';
+    }, { passive: false });
+
+    // Drag to pan (pointer capture keeps events on svgWrap even if cursor leaves)
+    svgWrap.addEventListener('pointerdown', (e) => {
+      if (this._zoomLevel <= 1.05) return;
+      svgWrap.setPointerCapture(e.pointerId);
+      this._dragState = {
+        startX: e.clientX, startY: e.clientY,
+        vbX: this._viewBoxX, vbY: this._viewBoxY,
+      };
+      svgWrap.style.cursor = 'grabbing';
+    });
+    svgWrap.addEventListener('pointermove', (e) => {
+      if (!this._dragState) return;
+      const rect = svgWrap.getBoundingClientRect();
+      const dx = (e.clientX - this._dragState.startX) / rect.width  * this._viewBoxW;
+      const dy = (e.clientY - this._dragState.startY) / rect.height * this._viewBoxH;
+      this._viewBoxX = this._dragState.vbX - dx;
+      this._viewBoxY = this._dragState.vbY - dy;
+      this._svgEl?.setAttribute('viewBox',
+        `${this._viewBoxX} ${this._viewBoxY} ${this._viewBoxW} ${this._viewBoxH}`);
+    });
+    svgWrap.addEventListener('pointerup', () => {
+      this._dragState = null;
+      svgWrap.style.cursor = this._zoomLevel > 1.05 ? 'grab' : '';
+    });
+
+    content.appendChild(svgWrap);
 
     // ── Confirm strip ─────────────────────────────────────────────────────────
     const confirmStrip = document.createElement('div');
@@ -633,7 +704,7 @@ export class AbilityWindow {
       } else {
         const empty = document.createElement('span');
         empty.className = 'aw-slot-empty';
-        empty.textContent = '·';
+        empty.textContent = '\u00b7';
         slotBtn.appendChild(empty);
       }
 
@@ -655,90 +726,241 @@ export class AbilityWindow {
     this._updateSlotHighlights();
   }
 
-  // ── Node button ───────────────────────────────────────────────────────────
+  // ── Radial SVG builder ─────────────────────────────────────────────────────
 
-  private _buildNodeButton(
-    nodeId:   string,
-    node:     AbilityNodeSummary | undefined,
+  private _buildRadialWeb(
+    web:      'active' | 'passive',
+    manifest: Map<string, AbilityNodeSummary>,
     unlocked: Set<string>,
     loadout:  (string | null)[],
-    manifest: Map<string, AbilityNodeSummary>,
-  ): HTMLButtonElement {
-    const btn = document.createElement('button');
-    btn.className = 'aw-node';
+  ): SVGSVGElement {
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('viewBox', `0 0 ${SVG_SIZE} ${SVG_SIZE}`);
+    svg.setAttribute('width', String(SVG_SIZE));
+    svg.setAttribute('height', String(SVG_SIZE));
 
-    if (!node) {
-      // Placeholder for nodes not in manifest yet
-      btn.style.borderColor = 'rgba(212,201,184,0.06)';
-      btn.style.background  = 'rgba(0,0,0,0.2)';
-      btn.style.cursor      = 'default';
-      return btn;
-    }
+    const suffixes = web === 'active' ? ACTIVE_SUFFIXES : PASSIVE_SUFFIXES;
+    const maxTier  = web === 'active' ? 4 : 3;
 
-    const hue         = SECTOR_HUE[node.sector as Sector] ?? '36';
-    const isUnlocked  = unlocked.has(nodeId);
-    const slotIdx     = loadout.findIndex(s => s === nodeId);
-    const inSlot      = slotIdx !== -1;
-    const canAfford   = this.player.abilityPoints >= node.cost;
-    const isAdjacent  = this._isAdjacent(nodeId, unlocked, manifest);
-    const isTier1     = node.tier === 1;
-    const isAvailable = !isUnlocked && (isTier1 || isAdjacent) && canAfford;
-
-    // Visuals
-    if (isUnlocked) {
-      btn.style.borderColor = `hsla(${hue}, 55%, 55%, 0.7)`;
-      btn.style.background  = `hsla(${hue}, 45%, 14%, 0.6)`;
-      btn.style.cursor      = 'pointer';
-      btn.style.color       = `hsla(${hue}, 60%, 75%, 0.9)`;
-    } else if (isAvailable) {
-      btn.style.borderColor = `hsla(${hue}, 40%, 40%, 0.45)`;
-      btn.style.background  = `hsla(${hue}, 20%, 8%, 0.5)`;
-      btn.style.cursor      = 'pointer';
-      btn.style.color       = `hsla(${hue}, 40%, 55%, 0.65)`;
-    } else {
-      btn.style.borderColor = 'rgba(212,201,184,0.08)';
-      btn.style.background  = 'rgba(8,6,4,0.4)';
-      btn.style.cursor      = 'default';
-      btn.style.color       = 'rgba(212,201,184,0.2)';
-    }
-
-    // Slot badge
-    if (inSlot) {
-      const badge = document.createElement('span');
-      badge.className   = 'aw-node-slot';
-      badge.textContent = String(slotIdx + 1);
-      badge.style.color = `hsla(${hue}, 60%, 70%, 0.7)`;
-      btn.appendChild(badge);
-    }
-
-    const nameLbl = document.createElement('span');
-    nameLbl.className   = 'aw-node-name';
-    nameLbl.textContent = node.name;
-    btn.appendChild(nameLbl);
-
-    const costLbl = document.createElement('span');
-    costLbl.className   = 'aw-node-cost';
-    costLbl.textContent = `${node.cost} AP`;
-    costLbl.style.color = isUnlocked
-      ? `hsla(${hue}, 40%, 50%, 0.45)`
-      : canAfford ? `hsla(${hue}, 50%, 60%, 0.6)` : 'rgba(212,201,184,0.18)';
-    btn.appendChild(costLbl);
-
-    // Tooltip
-    btn.addEventListener('mouseenter', (e) => this._showTooltip(e, node, isUnlocked, isAvailable));
-    btn.addEventListener('mousemove',  (e) => this._positionTooltip(e));
-    btn.addEventListener('mouseleave', ()  => this._hideTooltip());
-
-    // Click
-    btn.addEventListener('click', () => {
-      if (isUnlocked) {
-        this._assignToLoadout(nodeId, this.activeTab);
-      } else if (isAvailable) {
-        this._requestUnlock(nodeId);
+    // Collect all node IDs for this web
+    const nodeIds: string[] = [];
+    for (const sector of SECTORS) {
+      for (const suf of suffixes) {
+        nodeIds.push(`${web}_${sector}_${suf}`);
       }
-    });
+    }
 
-    return btn;
+    // Pre-compute positions
+    const positions = new Map<string, { x: number; y: number }>();
+    for (const id of nodeIds) {
+      const { sector, tier, suffix } = parseNodeId(id);
+      positions.set(id, nodePosition(sector, tier, suffix));
+    }
+
+    // ── 1. Background tier rings ──────────────────────────────────────────────
+    for (let t = 1; t <= maxTier; t++) {
+      const ring = document.createElementNS(SVG_NS, 'circle');
+      ring.setAttribute('cx', String(CX));
+      ring.setAttribute('cy', String(CY));
+      ring.setAttribute('r', String(TIER_RADIUS[t]));
+      ring.setAttribute('stroke', 'rgba(200,145,60,0.12)');
+      ring.setAttribute('fill', 'none');
+      ring.setAttribute('stroke-width', '1');
+      svg.appendChild(ring);
+    }
+
+    // ── 2. Sector divider lines ───────────────────────────────────────────────
+    // Dividers sit at the midpoints between sector centres: 30, 90, 150, 210, 270, 330 deg
+    const outerR = (TIER_RADIUS[maxTier] ?? 200) + 30;
+    for (let i = 0; i < 6; i++) {
+      const angleDeg = 30 + i * 60 - 90; // -90 to rotate so 0=top
+      const angleRad = (angleDeg * Math.PI) / 180;
+      const line = document.createElementNS(SVG_NS, 'line');
+      line.setAttribute('x1', String(CX));
+      line.setAttribute('y1', String(CY));
+      line.setAttribute('x2', String(CX + outerR * Math.cos(angleRad)));
+      line.setAttribute('y2', String(CY + outerR * Math.sin(angleRad)));
+      line.setAttribute('stroke', 'rgba(200,145,60,0.09)');
+      line.setAttribute('stroke-width', '1');
+      svg.appendChild(line);
+    }
+
+    // ── 3. Sector labels ──────────────────────────────────────────────────────
+    const labelR = (TIER_RADIUS[maxTier] ?? 200) + 22;
+    for (const sector of SECTORS) {
+      const angleDeg = (SECTOR_ANGLE[sector] ?? 0) - 90;
+      const angleRad = (angleDeg * Math.PI) / 180;
+      const lx = CX + labelR * Math.cos(angleRad);
+      const ly = CY + labelR * Math.sin(angleRad);
+
+      const text = document.createElementNS(SVG_NS, 'text');
+      text.setAttribute('x', String(lx));
+      text.setAttribute('y', String(ly));
+      text.setAttribute('class', 'aw-sector-label');
+      text.setAttribute('dominant-baseline', 'central');
+      text.setAttribute('fill', `hsla(${SECTOR_HUE[sector]}, 55%, 65%, 0.75)`);
+      text.textContent = SECTOR_LABEL[sector];
+      svg.appendChild(text);
+    }
+
+    // ── 4. Edge connections ───────────────────────────────────────────────────
+    // Deduplicate edges: sort pair alphabetically
+    const drawnEdges = new Set<string>();
+    for (const id of nodeIds) {
+      const node = manifest.get(id);
+      if (!node) continue;
+      const posA = positions.get(id);
+      if (!posA) continue;
+
+      for (const adjId of node.adjacentTo) {
+        const posB = positions.get(adjId);
+        if (!posB) continue; // adjacent node might be in the other web
+
+        const edgeKey = id < adjId ? `${id}|${adjId}` : `${adjId}|${id}`;
+        if (drawnEdges.has(edgeKey)) continue;
+        drawnEdges.add(edgeKey);
+
+        const aUnlocked = unlocked.has(id);
+        const bUnlocked = unlocked.has(adjId);
+
+        let strokeColor: string;
+        if (aUnlocked && bUnlocked) {
+          strokeColor = 'rgba(200,145,60,0.6)';
+        } else if (aUnlocked || bUnlocked) {
+          strokeColor = 'rgba(200,145,60,0.3)';
+        } else {
+          strokeColor = 'rgba(212,201,184,0.12)';
+        }
+
+        const line = document.createElementNS(SVG_NS, 'line');
+        line.setAttribute('x1', String(posA.x));
+        line.setAttribute('y1', String(posA.y));
+        line.setAttribute('x2', String(posB.x));
+        line.setAttribute('y2', String(posB.y));
+        line.setAttribute('class', 'aw-edge');
+        line.setAttribute('stroke', strokeColor);
+        svg.appendChild(line);
+      }
+    }
+
+    // ── 5. Node circles ───────────────────────────────────────────────────────
+    for (const id of nodeIds) {
+      const node = manifest.get(id);
+      const pos  = positions.get(id)!;
+      const { tier } = parseNodeId(id);
+
+      const g = document.createElementNS(SVG_NS, 'g');
+      g.setAttribute('data-node-id', id);
+      g.setAttribute('style', 'cursor:pointer');
+      g.setAttribute('transform', `translate(${pos.x},${pos.y})`);
+
+      // Node radius: T1 and T4 are bigger
+      const r = (tier === 1 || tier === 4) ? 22 : 18;
+
+      const circle = document.createElementNS(SVG_NS, 'circle');
+      circle.setAttribute('cx', '0');
+      circle.setAttribute('cy', '0');
+      circle.setAttribute('r', String(r));
+
+      if (!node) {
+        // Placeholder for nodes not in manifest
+        circle.setAttribute('fill', 'rgba(0,0,0,0.2)');
+        circle.setAttribute('stroke', 'rgba(212,201,184,0.06)');
+        circle.setAttribute('stroke-width', '1');
+        g.appendChild(circle);
+        svg.appendChild(g);
+        continue;
+      }
+
+      const hue         = SECTOR_HUE[node.sector as Sector] ?? '36';
+      const isUnlocked  = unlocked.has(id);
+      const slotIdx     = loadout.findIndex(s => s === id);
+      const inSlot      = slotIdx !== -1;
+      const canAfford   = this.player.abilityPoints >= node.cost;
+      const isAdjacent  = this._isAdjacent(id, unlocked, manifest);
+      const isTier1     = node.tier === 1;
+      const isAvailable = !isUnlocked && (isTier1 || isAdjacent) && canAfford;
+
+      // Circle styling
+      if (isUnlocked) {
+        circle.setAttribute('fill', `hsla(${hue},50%,18%,0.85)`);
+        circle.setAttribute('stroke', `hsla(${hue},60%,62%,0.9)`);
+        circle.setAttribute('stroke-width', '2');
+        g.setAttribute('style', 'cursor:pointer');
+      } else if (isAvailable) {
+        circle.setAttribute('fill', `hsla(${hue},25%,12%,0.65)`);
+        circle.setAttribute('stroke', `hsla(${hue},45%,48%,0.65)`);
+        circle.setAttribute('stroke-width', '1.5');
+        g.setAttribute('style', 'cursor:pointer');
+      } else {
+        circle.setAttribute('fill', 'rgba(20,16,12,0.5)');
+        circle.setAttribute('stroke', 'rgba(212,201,184,0.16)');
+        circle.setAttribute('stroke-width', '1');
+        g.setAttribute('style', 'cursor:default');
+      }
+      g.appendChild(circle);
+
+      // Text colour
+      let textColor: string;
+      if (isUnlocked) {
+        textColor = `hsla(${hue},65%,80%,0.95)`;
+      } else if (isAvailable) {
+        textColor = `hsla(${hue},50%,62%,0.8)`;
+      } else {
+        textColor = 'rgba(212,201,184,0.35)';
+      }
+
+      // Name text
+      const nameText = document.createElementNS(SVG_NS, 'text');
+      nameText.setAttribute('y', '-3');
+      nameText.setAttribute('text-anchor', 'middle');
+      nameText.setAttribute('dominant-baseline', 'auto');
+      nameText.setAttribute('class', 'aw-svg-name');
+      nameText.setAttribute('fill', textColor);
+      nameText.textContent = node.name;
+      g.appendChild(nameText);
+
+      // Cost text
+      const costColor = isUnlocked
+        ? `hsla(${hue},45%,55%,0.55)`
+        : canAfford ? `hsla(${hue},55%,65%,0.75)` : 'rgba(212,201,184,0.3)';
+      const costText = document.createElementNS(SVG_NS, 'text');
+      costText.setAttribute('y', '8');
+      costText.setAttribute('text-anchor', 'middle');
+      costText.setAttribute('dominant-baseline', 'auto');
+      costText.setAttribute('class', 'aw-svg-cost');
+      costText.setAttribute('fill', costColor);
+      costText.textContent = `${node.cost} AP`;
+      g.appendChild(costText);
+
+      // Slot badge
+      if (inSlot) {
+        const badge = document.createElementNS(SVG_NS, 'text');
+        badge.setAttribute('x', String(r - 8));
+        badge.setAttribute('y', String(-(r - 8)));
+        badge.setAttribute('class', 'aw-svg-badge');
+        badge.setAttribute('fill', `hsla(${hue},65%,75%,0.85)`);
+        badge.textContent = String(slotIdx + 1);
+        g.appendChild(badge);
+      }
+
+      // Events -- attach to the <g> group
+      g.addEventListener('mouseenter', (e) => this._showTooltip(e as MouseEvent, node, isUnlocked, isAvailable));
+      g.addEventListener('mousemove',  (e) => this._positionTooltip(e as MouseEvent));
+      g.addEventListener('mouseleave', ()  => this._hideTooltip());
+      g.addEventListener('click', () => {
+        if (isUnlocked) {
+          this._assignToLoadout(id, this.activeTab);
+        } else if (isAvailable) {
+          this._requestUnlock(id);
+        }
+      });
+
+      this.nodeGroups.set(id, g);
+      svg.appendChild(g);
+    }
+
+    return svg;
   }
 
   // ── Adjacency check ───────────────────────────────────────────────────────
@@ -797,7 +1019,7 @@ export class AbilityWindow {
 
   // ── Loadout management ────────────────────────────────────────────────────
 
-  private _onSlotClick(slotNum: number, web: 'active' | 'passive'): void {
+  private _onSlotClick(slotNum: number, _web: 'active' | 'passive'): void {
     if (this.selectedSlot === slotNum) {
       // Deselect
       this.selectedSlot = null;
@@ -831,7 +1053,7 @@ export class AbilityWindow {
           if (!loadout[i]) { found = i + 1; break; }
         }
         if (found === -1) {
-          // All slots full — do nothing (user should select a slot manually)
+          // All slots full -- do nothing (user should select a slot manually)
           return;
         }
         targetSlot = found;
@@ -886,7 +1108,7 @@ export class AbilityWindow {
     meta.className = 'att-meta';
     const webLabel  = node.web.charAt(0).toUpperCase() + node.web.slice(1);
     const sectLabel = SECTOR_LABEL[node.sector as Sector] ?? node.sector;
-    meta.textContent = `T${node.tier} · ${webLabel} · ${sectLabel}`;
+    meta.textContent = `T${node.tier} \u00b7 ${webLabel} \u00b7 ${sectLabel}`;
     o.appendChild(meta);
 
     const desc = document.createElement('div');
@@ -904,7 +1126,7 @@ export class AbilityWindow {
     if (node.statBonuses && Object.keys(node.statBonuses).length) {
       const bonusLines = Object.entries(node.statBonuses)
         .map(([k, v]) => `+${v} ${k.replace(/([A-Z])/g, ' $1').toLowerCase()}`)
-        .join(' · ');
+        .join(' \u00b7 ');
       const eff = document.createElement('div');
       eff.className = 'att-effect';
       eff.textContent = bonusLines;
@@ -949,12 +1171,12 @@ export class AbilityWindow {
 
     if (isUnlocked) {
       const st = document.createElement('div');
-      st.style.cssText = 'margin-top:5px;font-size:9px;color:rgba(140,200,100,0.6);';
-      st.textContent = '✓ Unlocked';
+      st.style.cssText = 'margin-top:6px;font-size:11px;color:rgba(140,200,100,0.6);';
+      st.textContent = '\u2713 Unlocked';
       o.appendChild(st);
     } else if (!isAvailable) {
       const st = document.createElement('div');
-      st.style.cssText = 'margin-top:5px;font-size:9px;color:rgba(212,201,184,0.25);';
+      st.style.cssText = 'margin-top:6px;font-size:11px;color:rgba(212,201,184,0.3);';
       st.textContent = this.player.abilityPoints < node.cost
         ? 'Not enough AP'
         : 'Prerequisites not met';

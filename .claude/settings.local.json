@@ -33,7 +33,21 @@
       "Bash(xargs grep -l \"currentAction\\\\|onEntity\")",
       "Bash(npx ts-node prisma/seed-flora.ts)",
       "Bash(npx ts-node prisma/seed-wildlife.ts)",
-      "Bash(npx ts-node prisma/check-abilities.ts)"
+      "Bash(npx ts-node prisma/check-abilities.ts)",
+      "Bash(npx ts-node -e \":*)",
+      "Bash(npx ts-node prisma/check-enfarious.ts)",
+      "Bash(npx ts-node prisma/grant-ap.ts enfarious 10)",
+      "Bash(npx ts-node -e \"const{PrismaClient}=require\\(''@prisma/client''\\);const p=new PrismaClient\\(\\);p.character.findFirst\\({where:{name:''enfarious''},select:{name:true,level:true,statPoints:true,abilityPoints:true}}\\).then\\(\\(r:any\\)=>{console.log\\(JSON.stringify\\(r\\)\\);p.$disconnect\\(\\)}\\)\")",
+      "Bash(npx ts-node prisma/check-char.ts enfarious)",
+      "Bash(py --version)",
+      "Bash(node --version)",
+      "Bash(py -c \":*)",
+      "Bash(ls F:/Projects/AshesAndAether/AshesAndAether_Server/src/combat/*.ts)",
+      "Bash(ls F:/Projects/AshesAndAether/AshesAndAether_Server/src/guild/*.ts)",
+      "Bash(xargs grep -l \"editor\")",
+      "Bash(xargs grep -l \"triggerNPCResponses\\\\|broadcastNPCMessage\")",
+      "Bash(find \"F:/Projects/AshesAndAether/AshesAndAether_Server\" -name \"schema.prisma\" -exec cat {} ;)",
+      "Bash(find \"F:\\\\Projects\\\\AshesAndAether\\\\AshesAndAether_Server\\\\src\" -name \"*.ts\" -exec grep -l \"combatSettings\\\\|setArchetype\\\\|updateArchetype\" {} ;)"
     ]
   }
 }

@@ -1,5 +1,6 @@
 import type { PlayerState }  from '@/state/PlayerState';
 import type { DerivedStats } from '@/network/Protocol';
+import type { SocketClient } from '@/network/SocketClient';
 
 /**
  * CharacterSheet — display-only panel showing core attributes, derived stats,
@@ -78,9 +79,14 @@ export class CharacterSheet {
   private visible  = false;
   private cleanup: (() => void)[] = [];
 
+  // Dirty-check cache — only rebuild when stat-relevant data changes
+  private _lastCoreKey    = '';
+  private _lastDerivedKey = '';
+
   constructor(
     private readonly uiRoot:  HTMLElement,
     private readonly player:  PlayerState,
+    private readonly socket:  SocketClient,
   ) {
     this.root = this._build();
     uiRoot.appendChild(this.root);
@@ -148,7 +154,7 @@ export class CharacterSheet {
         /* Panel */
         #cs-panel {
           position: relative;
-          width: min(440px, 94vw);
+          width: min(500px, 94vw);
           max-height: 80vh;
           overflow: hidden;
           display: flex;
@@ -172,11 +178,11 @@ export class CharacterSheet {
           align-items: center;
           justify-content: space-between;
           padding: 10px 16px 8px;
-          border-bottom: 1px solid rgba(200,98,42,0.15);
+          border-bottom: 1px solid rgba(200,98,42,0.25);
         }
         #cs-title {
           font-family: var(--font-display, serif);
-          font-size: 13px;
+          font-size: 16px;
           color: rgba(200,145,60,0.90);
           letter-spacing: 0.18em;
           text-transform: uppercase;
@@ -213,13 +219,13 @@ export class CharacterSheet {
         }
         #cs-name {
           font-family: var(--font-display, serif);
-          font-size: 15px;
+          font-size: 18px;
           color: rgba(212,201,184,0.95);
           letter-spacing: 0.06em;
         }
         #cs-level {
           font-family: var(--font-mono, monospace);
-          font-size: 11px;
+          font-size: 13px;
           color: rgba(200,145,60,0.70);
         }
 
@@ -239,23 +245,23 @@ export class CharacterSheet {
         }
         #cs-xp-label {
           font-family: var(--font-mono, monospace);
-          font-size: 9px;
-          color: rgba(180,160,130,0.50);
+          font-size: 11px;
+          color: rgba(180,160,130,0.65);
           margin-bottom: 14px;
         }
 
         /* Section divider */
         .cs-divider {
           height: 1px;
-          background: rgba(200,98,42,0.12);
+          background: rgba(200,98,42,0.22);
           margin: 12px 0;
         }
 
         /* Section label */
         .cs-section-label {
           font-family: var(--font-mono, monospace);
-          font-size: 9px;
-          color: rgba(150,120,80,0.65);
+          font-size: 11px;
+          color: rgba(150,120,80,0.80);
           letter-spacing: 0.14em;
           text-transform: uppercase;
           margin-bottom: 6px;
@@ -276,8 +282,8 @@ export class CharacterSheet {
         }
         .cs-core-label {
           font-family: var(--font-mono, monospace);
-          font-size: 10px;
-          color: rgba(180,160,130,0.65);
+          font-size: 12px;
+          color: rgba(180,160,130,0.80);
         }
         .cs-core-abbr {
           color: rgba(200,145,60,0.80);
@@ -285,21 +291,57 @@ export class CharacterSheet {
         }
         .cs-core-value {
           font-family: var(--font-mono, monospace);
-          font-size: 12px;
+          font-size: 14px;
           color: rgba(230,200,140,0.95);
           min-width: 24px;
           text-align: right;
         }
 
+        /* Core stat allocation button */
+        .cs-core-btn {
+          font-family: var(--font-mono, monospace);
+          font-size: 11px;
+          background: rgba(200, 145, 60, 0.15);
+          border: 1px solid rgba(200, 145, 60, 0.35);
+          color: rgba(200, 145, 60, 0.85);
+          cursor: pointer;
+          padding: 0 5px;
+          line-height: 1.4;
+          margin-left: 6px;
+          transition: background 0.12s;
+        }
+        .cs-core-btn:hover {
+          background: rgba(200, 145, 60, 0.3);
+        }
+
         /* Stat points */
         #cs-stat-points {
           font-family: var(--font-mono, monospace);
-          font-size: 10px;
-          color: rgba(150,120,80,0.45);
+          font-size: 12px;
+          color: rgba(150,120,80,0.60);
           margin-bottom: 2px;
         }
         #cs-stat-points.cs-has-points {
           color: rgba(200,145,60,0.85);
+        }
+
+        /* Respec button */
+        .cs-respec-btn {
+          font-family: var(--font-mono, monospace);
+          font-size: 10px;
+          background: none;
+          border: 1px solid rgba(200, 98, 42, 0.25);
+          color: rgba(200, 98, 42, 0.65);
+          cursor: pointer;
+          padding: 3px 10px;
+          margin-top: 4px;
+          letter-spacing: 0.06em;
+          text-transform: uppercase;
+          transition: color 0.12s, border-color 0.12s;
+        }
+        .cs-respec-btn:hover {
+          color: rgba(200, 98, 42, 0.9);
+          border-color: rgba(200, 98, 42, 0.5);
         }
 
         /* Derived stat rows */
@@ -311,12 +353,12 @@ export class CharacterSheet {
         }
         .cs-derived-label {
           font-family: var(--font-mono, monospace);
-          font-size: 10px;
-          color: rgba(180,160,130,0.60);
+          font-size: 12px;
+          color: rgba(180,160,130,0.78);
         }
         .cs-derived-value {
           font-family: var(--font-mono, monospace);
-          font-size: 11px;
+          font-size: 13px;
           color: rgba(212,201,184,0.85);
           min-width: 50px;
           text-align: right;
@@ -344,6 +386,7 @@ export class CharacterSheet {
           <div class="cs-section-label">Core Attributes</div>
           <div id="cs-core-grid"></div>
           <div id="cs-stat-points"></div>
+          <button id="cs-respec-stats" class="cs-respec-btn" style="display:none;">Respec Stats</button>
 
           <div class="cs-divider"></div>
 
@@ -356,6 +399,11 @@ export class CharacterSheet {
     // Event listeners
     el.querySelector('#cs-backdrop')?.addEventListener('click', () => this.hide());
     el.querySelector('#cs-close-btn')?.addEventListener('click', () => this.hide());
+    el.querySelector('#cs-respec-stats')?.addEventListener('click', () => {
+      if (confirm('Reset all stats to base values? (1 hour cooldown)')) {
+        this.socket.sendRespecStats();
+      }
+    });
 
     return el;
   }
@@ -378,8 +426,12 @@ export class CharacterSheet {
     this._setText('#cs-xp-label',
       `${xpCurrent.toLocaleString()} / ${xpNeeded.toLocaleString()} XP`);
 
-    // Core stats
-    this._renderCoreStats();
+    // Core stats — only rebuild when stat values or statPoints change
+    const coreKey = JSON.stringify(p.coreStats) + '|' + p.statPoints;
+    if (coreKey !== this._lastCoreKey) {
+      this._lastCoreKey = coreKey;
+      this._renderCoreStats();
+    }
 
     // Stat points
     const sp = p.statPoints;
@@ -389,8 +441,18 @@ export class CharacterSheet {
       spEl.classList.toggle('cs-has-points', sp > 0);
     }
 
-    // Derived stats
-    this._renderDerivedStats();
+    // Respec button — always visible (server enforces cooldown)
+    const respecEl = this.root.querySelector<HTMLElement>('#cs-respec-stats');
+    if (respecEl) {
+      respecEl.style.display = '';
+    }
+
+    // Derived stats — only rebuild when derivedStats change
+    const derivedKey = JSON.stringify(p.derivedStats);
+    if (derivedKey !== this._lastDerivedKey) {
+      this._lastDerivedKey = derivedKey;
+      this._renderDerivedStats();
+    }
   }
 
   private _renderCoreStats(): void {
@@ -399,6 +461,7 @@ export class CharacterSheet {
     grid.innerHTML = '';
 
     const core = this.player.coreStats;
+    const hasPoints = this.player.statPoints > 0;
     const order: (keyof typeof CORE_STAT_ABBR)[] = [
       'strength', 'vitality', 'dexterity', 'agility', 'intelligence', 'wisdom',
     ];
@@ -413,6 +476,17 @@ export class CharacterSheet {
         </span>
         <span class="cs-core-value">${value}</span>
       `;
+
+      if (hasPoints) {
+        const btn = document.createElement('button');
+        btn.className = 'cs-core-btn';
+        btn.textContent = '+';
+        btn.addEventListener('click', () => {
+          this.socket.sendAllocateStat(key);
+        });
+        row.appendChild(btn);
+      }
+
       grid.appendChild(row);
     }
   }

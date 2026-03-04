@@ -146,7 +146,7 @@ export class ExamineWindow {
         #examine-window {
           position: fixed;
           bottom: 80px;
-          left: 18px;
+          right: 18px;
           width: 260px;
           pointer-events: auto;
           user-select: none;
@@ -155,7 +155,7 @@ export class ExamineWindow {
         }
 
         #examine-window.ew-hidden {
-          transform: translateX(calc(-100% - 24px));
+          transform: translateX(calc(100% + 24px));
           opacity: 0;
           pointer-events: none;
         }

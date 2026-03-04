@@ -20,8 +20,10 @@ import { InventoryWindow }    from '@/ui/InventoryWindow';
 import { LootWindow }         from '@/ui/LootWindow';
 import { ExamineWindow }      from '@/ui/ExamineWindow';
 import { HarvestToast }       from '@/ui/HarvestToast';
+import { BeaconToast }        from '@/ui/BeaconToast';
 import { AbilityWindow }      from '@/ui/AbilityWindow';
 import { CharacterSheet }    from '@/ui/CharacterSheet';
+import { ScriptEditor }      from '@/ui/ScriptEditor';
 import { PartyWindow }       from '@/ui/PartyWindow';
 import { ActionBar }          from '@/ui/ActionBar';
 import { Minimap }            from '@/ui/Minimap';
@@ -31,6 +33,9 @@ import { UIScaleWidget }      from '@/ui/UIScaleWidget';
 import { VillagePanel }       from '@/ui/VillagePanel';
 import { MarketPanel }        from '@/ui/MarketPanel';
 import { WorldMapPanel }      from '@/ui/WorldMapPanel';
+import { GuildPanel }         from '@/ui/GuildPanel';
+import { CompanionPanel }     from '@/ui/CompanionPanel';
+import { SystemMenu }         from '@/ui/SystemMenu';
 import { RegistrationModal }  from '@/ui/RegistrationModal';
 import { CorpseSystem }       from '@/entities/CorpseSystem';
 import { CorruptionMiasma }  from '@/entities/CorruptionMiasma';
@@ -80,7 +85,9 @@ export class App {
   private inventoryWindow: InventoryWindow | null = null;
   private lootWindow:      LootWindow      | null = null;
   private examineWindow:   ExamineWindow   | null = null;
+  private scriptEditor:    ScriptEditor    | null = null;
   private harvestToast:    HarvestToast    | null = null;
+  private beaconToast:     BeaconToast     | null = null;
   private abilityWindow:   AbilityWindow   | null = null;
   private characterSheet:  CharacterSheet  | null = null;
   private partyWindow:     PartyWindow     | null = null;
@@ -91,6 +98,9 @@ export class App {
   private marketPanel:       MarketPanel       | null = null;
   private registrationModal: RegistrationModal  | null = null;
   private worldMapPanel:     WorldMapPanel      | null = null;
+  private guildPanel:        GuildPanel         | null = null;
+  private companionPanel:    CompanionPanel     | null = null;
+  private systemMenu:        SystemMenu         | null = null;
   private placementMode:     PlacementMode      | null = null;
 
   // ── Environment tracking ─────────────────────────────────────────────────
@@ -284,6 +294,7 @@ export class App {
     this.inventoryWindow?.dispose();
     this.lootWindow?.dispose();
     this.examineWindow?.dispose();
+    this.scriptEditor?.dispose();
     this.harvestToast?.dispose();
     this.abilityWindow?.dispose();
     this.characterSheet?.dispose();
@@ -293,6 +304,9 @@ export class App {
     this.villagePanel?.dispose();
     this.marketPanel?.dispose();
     this.worldMapPanel?.dispose();
+    this.guildPanel?.dispose();
+    this.companionPanel?.dispose();
+    this.systemMenu?.dispose();
     this.registrationModal?.dispose();
     this.placementMode?.dispose();
   }
@@ -358,6 +372,9 @@ export class App {
     this.actionBar?.hide();
     this.minimap?.hide();
     this.villagePanel?.hide();
+    this.guildPanel?.hide();
+    this.companionPanel?.hide();
+    this.systemMenu?.hide();
     this.placementMode?.exit();
 
     switch (phase) {
@@ -430,7 +447,7 @@ export class App {
       this.hud = new HUD(this.uiRoot, this.player, this.socket, this.world);
     }
     if (!this.chatPanel) {
-      this.chatPanel = new ChatPanel(this.uiRoot, this.world, this.socket);
+      this.chatPanel = new ChatPanel(this.uiRoot, this.world, this.socket, this.player);
     }
     if (!this.targetWindow) {
       this.targetWindow = new TargetWindow(this.uiRoot, this.player, this.entities, this.socket);
@@ -447,9 +464,19 @@ export class App {
       this.examineWindow = new ExamineWindow(this.uiRoot);
       this.router.onExamine(p => this.examineWindow!.show(p));
     }
+    if (!this.scriptEditor) {
+      this.scriptEditor = new ScriptEditor(this.uiRoot, this.socket);
+      this.router.onEditorOpen(p => this.scriptEditor!.open(p));
+      this.router.onEditorResult(p => this.scriptEditor!.handleResult(p));
+    }
     if (!this.harvestToast) {
       this.harvestToast = new HarvestToast(this.uiRoot);
       this.router.onHarvest(p => this.harvestToast!.show(p));
+    }
+    if (!this.beaconToast) {
+      this.beaconToast = new BeaconToast(this.uiRoot);
+      this.router.onBeaconAlert(p => this.beaconToast!.show(p));
+      this.router.onLibraryAssault(p => this.beaconToast!.showLibraryAssault(p));
     }
     if (!this.registrationModal) {
       this.registrationModal = new RegistrationModal(this.uiRoot, this.player, this.socket, this.router);
@@ -462,7 +489,7 @@ export class App {
       this.wasd.setAbilityToggle(() => this.abilityWindow!.toggle());
     }
     if (!this.characterSheet) {
-      this.characterSheet = new CharacterSheet(this.uiRoot, this.player);
+      this.characterSheet = new CharacterSheet(this.uiRoot, this.player, this.socket);
       this.wasd.setCharacterSheetToggle(() => this.characterSheet!.toggle());
     }
     if (!this.actionBar) {
@@ -484,6 +511,27 @@ export class App {
     if (!this.worldMapPanel) {
       this.worldMapPanel = new WorldMapPanel(this.uiRoot);
       this.wasd.setWorldMapToggle(() => this.worldMapPanel!.toggle());
+    }
+    if (!this.guildPanel) {
+      this.guildPanel = new GuildPanel(this.uiRoot, this.player, this.socket, this.router);
+      this.wasd.setGuildToggle(() => this.guildPanel!.toggle());
+    }
+    if (!this.companionPanel) {
+      this.companionPanel = new CompanionPanel(this.uiRoot, this.player, this.socket, this.router);
+      this.wasd.setCompanionToggle(() => this.companionPanel!.toggle());
+    }
+    if (!this.systemMenu) {
+      this.systemMenu = new SystemMenu(this.uiRoot);
+      this.systemMenu.setCallbacks({
+        character:  () => this.characterSheet?.toggle(),
+        inventory:  () => this.inventoryWindow?.toggle(),
+        abilities:  () => this.abilityWindow?.toggle(),
+        companion:  () => this.companionPanel?.toggle(),
+        guild:      () => this.guildPanel?.toggle(),
+        party:      () => this.partyWindow?.toggle(),
+        map:        () => this.worldMapPanel?.toggle(),
+        market:     () => this.marketPanel?.toggle(),
+      });
     }
     // Tab targeting
     if (!this.tabTarget) {
@@ -511,6 +559,7 @@ export class App {
     this.minimap.show();
     this.chatPanel.show();
     this.targetWindow.show();
+    this.systemMenu!.show();
     // Show village panel if we're in a village zone
     if (this.world.isVillage) {
       this.villagePanel.show();

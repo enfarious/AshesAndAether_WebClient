@@ -15,6 +15,10 @@ import type {
   AbilityUpdatePayload,
   PartyMemberInfo,
   PartyAllyState,
+  GuildUpdatePayload,
+  GuildMemberInfo,
+  GuildMemberListPayload,
+  CompanionConfigPayload,
 } from '@/network/Protocol';
 
 type Listener = () => void;
@@ -93,6 +97,22 @@ export class PlayerState {
   /** Full node manifest sent once on world_entry. */
   private _abilityManifest:      AbilityNodeSummary[] = [];
 
+  // ── Guild ───────────────────────────────────────────────────────────────────
+  private _guildId:            string | null = null;
+  private _guildName:          string | null = null;
+  private _guildTag:           string | null = null;
+  private _guildDescription:   string | null = null;
+  private _guildMotto:         string | null = null;
+  private _guildMemberCount:   number  = 0;
+  private _guildMaxBeacons:    number  = 0;
+  private _guildLitBeacons:    number  = 0;
+  private _isGuildmaster:      boolean = false;
+  private _guildBonuses: { corruptionResistPercent: number; xpBonusPercent: number } | null = null;
+  private _guildMembers:       GuildMemberInfo[] = [];
+
+  // ── Companion ─────────────────────────────────────────────────────────────
+  private _companion: CompanionConfigPayload | null = null;
+
   // ── Party ──────────────────────────────────────────────────────────────────
   private _partyId:       string | null = null;
   private _partyLeaderId: string | null = null;
@@ -151,11 +171,25 @@ export class PlayerState {
   get specialLoadout():       string[]             { return this._specialLoadout; }
   get abilityManifest():      AbilityNodeSummary[] { return this._abilityManifest; }
 
+  get guildId():          string | null          { return this._guildId; }
+  get guildName():        string | null          { return this._guildName; }
+  get guildTag():         string | null          { return this._guildTag; }
+  get guildDescription(): string | null          { return this._guildDescription; }
+  get guildMotto():       string | null          { return this._guildMotto; }
+  get guildMemberCount(): number                 { return this._guildMemberCount; }
+  get guildMaxBeacons():  number                 { return this._guildMaxBeacons; }
+  get guildLitBeacons():  number                 { return this._guildLitBeacons; }
+  get isGuildmaster():    boolean                { return this._isGuildmaster; }
+  get guildBonuses(): { corruptionResistPercent: number; xpBonusPercent: number } | null { return this._guildBonuses; }
+  get guildMembers():     GuildMemberInfo[]      { return this._guildMembers; }
+
   get partyId():       string | null          { return this._partyId; }
   get partyLeaderId(): string | null          { return this._partyLeaderId; }
   get partyMembers():  PartyMemberInfo[]      { return this._partyMembers; }
   get partyAllies():   PartyAllyState[]       { return this._partyAllies; }
   get pendingInvite(): { fromName: string; expiresAt: number } | null { return this._pendingInvite; }
+
+  get companion(): CompanionConfigPayload | null { return this._companion; }
 
   /** Client-predicted position; null while stationary. */
   get localPosition(): Vector3 | null { return this._localPos; }
@@ -316,6 +350,46 @@ export class PlayerState {
     this._notify();
   }
 
+  // ── Guild mutations ────────────────────────────────────────────────────────
+
+  applyGuildUpdate(payload: GuildUpdatePayload): void {
+    if (payload.removed) {
+      this.clearGuild();
+      return;
+    }
+    if (payload.guildId)        this._guildId          = payload.guildId;
+    if (payload.name)           this._guildName        = payload.name;
+    if (payload.tag)            this._guildTag         = payload.tag;
+    if (payload.description !== undefined) this._guildDescription = payload.description;
+    if (payload.motto !== undefined)       this._guildMotto       = payload.motto;
+    if (payload.memberCount  !== undefined) this._guildMemberCount = payload.memberCount;
+    if (payload.maxBeacons   !== undefined) this._guildMaxBeacons  = payload.maxBeacons;
+    if (payload.litBeaconCount !== undefined) this._guildLitBeacons = payload.litBeaconCount;
+    if (payload.isGuildmaster !== undefined)  this._isGuildmaster   = payload.isGuildmaster;
+    if (payload.bonuses)       this._guildBonuses     = { ...payload.bonuses };
+    this._notify();
+  }
+
+  applyGuildMemberList(payload: GuildMemberListPayload): void {
+    this._guildMembers = payload.members;
+    this._notify();
+  }
+
+  clearGuild(): void {
+    this._guildId          = null;
+    this._guildName        = null;
+    this._guildTag         = null;
+    this._guildDescription = null;
+    this._guildMotto       = null;
+    this._guildMemberCount = 0;
+    this._guildMaxBeacons  = 0;
+    this._guildLitBeacons  = 0;
+    this._isGuildmaster    = false;
+    this._guildBonuses     = null;
+    this._guildMembers     = [];
+    this._notify();
+  }
+
   // ── Party mutations ────────────────────────────────────────────────────────
 
   applyPartyRoster(partyId: string, leaderId: string, members: PartyMemberInfo[]): void {
@@ -364,6 +438,18 @@ export class PlayerState {
     this._partyMembers  = [];
     this._partyAllies   = [];
     this._pendingInvite = null;
+    this._notify();
+  }
+
+  // ── Companion mutations ──────────────────────────────────────────────────
+
+  applyCompanionConfig(payload: CompanionConfigPayload): void {
+    this._companion = { ...payload };
+    this._notify();
+  }
+
+  clearCompanion(): void {
+    this._companion = null;
     this._notify();
   }
 

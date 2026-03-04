@@ -10,7 +10,7 @@ export type MovementSpeed     = 'walk' | 'jog' | 'run' | 'stop';
 export type CompassDirection  = 'N' | 'NE' | 'E' | 'SE' | 'S' | 'SW' | 'W' | 'NW';
 export type ContentRating     = 'T' | 'M' | 'AO';
 export type CorruptionState   = 'CLEAN' | 'STAINED' | 'WARPED' | 'LOST';
-export type CommunicationChannel = 'say' | 'shout' | 'emote' | 'cfh' | 'whisper' | 'party' | 'world';
+export type CommunicationChannel = 'say' | 'shout' | 'emote' | 'cfh' | 'whisper' | 'party' | 'guild' | 'world' | 'companion';
 export type InteractionAction = 'talk' | 'trade' | 'attack' | 'use' | 'examine';
 export type AnimationAction   =
   | 'idle' | 'sitting' | 'emoting'
@@ -287,10 +287,61 @@ export interface EventPayload {
   [key: string]: unknown;
 }
 
+// ── Companion Creation ────────────────────────────────────────────────────────
+
+export interface CompanionCreateData {
+  name: string;
+  personalityType?: string;
+  archetype?: string;
+  traits?: string[];
+  goals?: string[];
+  description?: string;
+  systemPrompt?: string;
+}
+
+// ── Companion Config ─────────────────────────────────────────────────────────
+
+export type CompanionArchetype = 'scrappy_fighter' | 'cautious_healer' | 'opportunist' | 'tank';
+export type PreferredRange     = 'melee' | 'close' | 'mid' | 'far';
+export type TargetPriority     = 'weakest' | 'nearest' | 'threatening_player';
+export type CombatStance       = 'aggressive' | 'cautious' | 'support';
+
+export interface CompanionCombatSettings {
+  preferredRange:   PreferredRange;
+  priority:         TargetPriority;
+  stance:           CombatStance;
+  abilityWeights:   Record<string, number>;
+  retreatThreshold: number;
+}
+
+export interface CompanionAbilityInfo {
+  id:          string;
+  name:        string;
+  description: string;
+  enabled:     boolean;
+  tags?:       string[];
+}
+
+export interface CompanionConfigPayload {
+  companionId:       string;
+  name:              string;
+  level:             number;
+  currentHealth:     number;
+  maxHealth:         number;
+  isAlive:           boolean;
+  archetype:         CompanionArchetype;
+  behaviorState:     string;
+  taskDescription:   string | null;
+  combatSettings:    CompanionCombatSettings;
+  abilities:         CompanionAbilityInfo[];
+  harvestsCompleted: number;
+  itemsGathered:     number;
+}
+
 // ── Communication ─────────────────────────────────────────────────────────────
 
 export interface CommunicationPayload {
-  channel: 'say' | 'shout' | 'emote' | 'cfh' | 'whisper' | 'party';
+  channel: CommunicationChannel;
   senderId: string;
   senderName: string;
   senderType?: 'player' | 'npc' | 'companion';
@@ -532,6 +583,22 @@ export interface ErrorPayload {
   severity: 'info' | 'warning' | 'error' | 'fatal';
 }
 
+// ── Stat Allocation / Respec Results ─────────────────────────────────
+
+export interface StatAllocateResultPayload {
+  success: boolean;
+  stat?:   string;
+  newValue?: number;
+  error?:  string;
+}
+
+export interface RespecResultPayload {
+  success: boolean;
+  type?:   'stats' | 'abilities';
+  message?: string;
+  error?:  string;
+}
+
 // ── Corruption ────────────────────────────────────────────────────────────────
 
 export interface CorruptionUpdatePayload {
@@ -615,4 +682,106 @@ export interface VillageStatePayload {
   maxStructures:   number;
   gridSize:        number;
   isOwner:         boolean;
+}
+
+// ── Guild ────────────────────────────────────────────────────────────────────
+
+export interface GuildUpdatePayload {
+  guildId?:       string;
+  name?:          string;
+  tag?:           string;
+  description?:   string;
+  motto?:         string;
+  memberCount?:   number;
+  maxBeacons?:    number;
+  litBeaconCount?: number;
+  isGuildmaster?:  boolean;
+  bonuses?: {
+    corruptionResistPercent: number;
+    xpBonusPercent: number;
+  };
+  /** Set when the player is removed from a guild (kicked/disbanded). */
+  removed?: boolean;
+  reason?:  'kicked' | 'disbanded';
+}
+
+export interface GuildMemberInfo {
+  characterId:   string;
+  characterName: string;
+  isGuildmaster: boolean;
+  isOnline:      boolean;
+  joinedAt:      number;
+}
+
+export interface GuildMemberListPayload {
+  guildId:  string;
+  guildTag: string;
+  members:  GuildMemberInfo[];
+}
+
+export interface GuildInvitePayload {
+  guildId:     string;
+  guildName:   string;
+  guildTag:    string;
+  inviterName: string;
+}
+
+export interface GuildChatPayload {
+  senderId:   string;
+  senderName: string;
+  message:    string;
+  timestamp:  number;
+}
+
+export interface GuildFoundingNarrativePayload {
+  step:       number;
+  totalSteps: number;
+  narrative:  string;
+}
+
+// ── Script Editor ────────────────────────────────────────────────────────────
+
+/** Server → Client: open (or revert/undo) the script editor modal. */
+export interface EditorOpenPayload {
+  editorId:   string;
+  objectId:   string;
+  objectName: string;
+  verb:       string;
+  source:     string;
+  language:   'lua';
+  readOnly:   boolean;
+  version:    number;
+  origin:     'edit' | 'ai' | 'template' | 'undo';
+}
+
+/** Server → Client: result of a save or compile operation. */
+export interface EditorResultPayload {
+  editorId: string;
+  success:  boolean;
+  version?: number;
+  errors:   Array<{ line?: number; col?: number; message: string }>;
+  warnings: Array<{ line?: number; message: string }>;
+}
+
+// ── Beacon & Library Alerts ───────────────────────────────────────────────────
+
+/** Server → Client: guild beacon fuel / state alert. */
+export interface BeaconAlertPayload {
+  alertType: 'LOW_FUEL' | 'CRITICAL_FUEL' | 'EXTINGUISHED' | 'RELIT';
+  beaconId:  string;
+  hoursRemaining?: number;
+  message:   string;
+  timestamp: number;
+}
+
+/** Server → Client: library assault start / resolved. */
+export interface LibraryAssaultPayload {
+  phase:        'started' | 'resolved';
+  libraryId:    string;
+  libraryName:  string;
+  assaultType:  string;
+  wasDefended?: boolean;
+  offlineHours?: number;
+  message:      string;
+  timestamp:    number;
 }

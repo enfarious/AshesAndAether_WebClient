@@ -25,6 +25,8 @@ import type {
   LootItemResultPayload,
   LootSessionEndPayload,
   AbilityUpdatePayload,
+  StatAllocateResultPayload,
+  RespecResultPayload,
   PartyMemberInfo,
   PartyAllyState,
   ZoneTransferPayload,
@@ -34,6 +36,16 @@ import type {
   ExaminePeekPayload,
   MarketDataPayload,
   HarvestResultPayload,
+  EditorOpenPayload,
+  EditorResultPayload,
+  GuildUpdatePayload,
+  GuildMemberListPayload,
+  GuildInvitePayload,
+  GuildChatPayload,
+  GuildFoundingNarrativePayload,
+  BeaconAlertPayload,
+  LibraryAssaultPayload,
+  CompanionConfigPayload,
 } from './Protocol';
 
 /**
@@ -54,6 +66,12 @@ export class MessageRouter {
   private examineListeners         = new Set<(p: ExaminePeekPayload) => void>();
   private harvestListeners         = new Set<(p: HarvestResultPayload) => void>();
   private marketListeners          = new Set<(p: MarketDataPayload) => void>();
+  private editorOpenListeners      = new Set<(p: EditorOpenPayload) => void>();
+  private editorResultListeners    = new Set<(p: EditorResultPayload) => void>();
+  private guildNarrativeListeners  = new Set<(p: GuildFoundingNarrativePayload) => void>();
+  private beaconAlertListeners     = new Set<(p: BeaconAlertPayload) => void>();
+  private libraryAssaultListeners  = new Set<(p: LibraryAssaultPayload) => void>();
+  private companionConfigListeners = new Set<(p: CompanionConfigPayload) => void>();
 
   constructor(
     private readonly socket:   SocketClient,
@@ -112,6 +130,36 @@ export class MessageRouter {
   onMarketData(fn: (p: MarketDataPayload) => void): () => void {
     this.marketListeners.add(fn);
     return () => this.marketListeners.delete(fn);
+  }
+
+  onEditorOpen(fn: (p: EditorOpenPayload) => void): () => void {
+    this.editorOpenListeners.add(fn);
+    return () => this.editorOpenListeners.delete(fn);
+  }
+
+  onEditorResult(fn: (p: EditorResultPayload) => void): () => void {
+    this.editorResultListeners.add(fn);
+    return () => this.editorResultListeners.delete(fn);
+  }
+
+  onGuildFoundingNarrative(fn: (p: GuildFoundingNarrativePayload) => void): () => void {
+    this.guildNarrativeListeners.add(fn);
+    return () => this.guildNarrativeListeners.delete(fn);
+  }
+
+  onBeaconAlert(fn: (p: BeaconAlertPayload) => void): () => void {
+    this.beaconAlertListeners.add(fn);
+    return () => this.beaconAlertListeners.delete(fn);
+  }
+
+  onLibraryAssault(fn: (p: LibraryAssaultPayload) => void): () => void {
+    this.libraryAssaultListeners.add(fn);
+    return () => this.libraryAssaultListeners.delete(fn);
+  }
+
+  onCompanionConfig(fn: (p: CompanionConfigPayload) => void): () => void {
+    this.companionConfigListeners.add(fn);
+    return () => this.companionConfigListeners.delete(fn);
   }
 
   mount(): void {
@@ -365,6 +413,22 @@ export class MessageRouter {
       this.abilityUpdateListeners.forEach(fn => fn(payload));
     });
 
+    s.on('stat_allocate_result', (p) => {
+      const payload = p as StatAllocateResultPayload;
+      if (!payload.success && payload.error) {
+        this.world.pushMessage('system', payload.error);
+      }
+    });
+
+    s.on('respec_result', (p) => {
+      const payload = p as RespecResultPayload;
+      if (payload.success && payload.message) {
+        this.world.pushMessage('system', payload.message);
+      } else if (!payload.success && payload.error) {
+        this.world.pushMessage('system', payload.error);
+      }
+    });
+
     s.on('register_result', (p) => {
       const payload = p as RegisterResultPayload;
       if (payload.success && payload.username) {
@@ -372,6 +436,72 @@ export class MessageRouter {
         this.world.pushMessage('system', `Account registered! Welcome, ${payload.username}. Your character is now permanent.`);
       }
       this.registerResultListeners.forEach(fn => fn(payload));
+    });
+
+    // ── Guild ─────────────────────────────────────────────────────────────
+    s.on('guild_update', (p) => {
+      const payload = p as GuildUpdatePayload;
+      this.player.applyGuildUpdate(payload);
+      if (payload.removed) {
+        const reason = payload.reason === 'kicked' ? 'You have been kicked from the guild.' : 'The guild has been disbanded.';
+        this.world.pushMessage('system', reason);
+      }
+    });
+
+    s.on('guild_member_list', (p) => {
+      this.player.applyGuildMemberList(p as GuildMemberListPayload);
+    });
+
+    s.on('guild_invite', (p) => {
+      const payload = p as GuildInvitePayload;
+      this.world.pushMessage('system',
+        `${payload.inviterName} invites you to join <${payload.guildName}> [${payload.guildTag}]. Type /guild accept or /guild decline.`);
+    });
+
+    s.on('guild_chat', (p) => {
+      const payload = p as GuildChatPayload;
+      this.world.onCommunication({
+        channel: 'guild',
+        senderId:   payload.senderId,
+        senderName: payload.senderName,
+        content:    payload.message,
+        timestamp:  payload.timestamp,
+      });
+    });
+
+    s.on('guild_founding_narrative', (p) => {
+      const payload = p as GuildFoundingNarrativePayload;
+      this.world.pushMessage('system', payload.narrative);
+      this.guildNarrativeListeners.forEach(fn => fn(payload));
+    });
+
+    // ── Companion config ────────────────────────────────────────────────
+    s.on('companion_config', (p) => {
+      const payload = p as CompanionConfigPayload;
+      this.player.applyCompanionConfig(payload);
+      this.companionConfigListeners.forEach(fn => fn(payload));
+    });
+
+    // ── Beacon & Library alerts ──────────────────────────────────────────
+    s.on('beacon_alert', (p) => {
+      const payload = p as BeaconAlertPayload;
+      this.world.pushMessage('event', payload.message);
+      this.beaconAlertListeners.forEach(fn => fn(payload));
+    });
+
+    s.on('library_assault', (p) => {
+      const payload = p as LibraryAssaultPayload;
+      this.world.pushMessage('event', payload.message);
+      this.libraryAssaultListeners.forEach(fn => fn(payload));
+    });
+
+    // ── Script editor ────────────────────────────────────────────────────
+    s.on('editor_open', (p) => {
+      this.editorOpenListeners.forEach(fn => fn(p as EditorOpenPayload));
+    });
+
+    s.on('editor_result', (p) => {
+      this.editorResultListeners.forEach(fn => fn(p as EditorResultPayload));
     });
 
     // ── Zone transfer (village system) ────────────────────────────────────
@@ -391,6 +521,13 @@ export class MessageRouter {
 
     s.on('village_placement_mode', (p) => {
       this.villagePlacementListeners.forEach(fn => fn(p as VillagePlacementModePayload));
+    });
+
+    // ── Logout (return to character select) ─────────────────────────────────
+    s.on('logout_success', () => {
+      console.log('[MessageRouter] logout_success — returning to character select');
+      this.entities.clear();
+      this.session.setPhase('character_select');
     });
 
     s.on('_connected', () => {

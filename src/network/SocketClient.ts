@@ -8,6 +8,7 @@ import type {
   CommunicationChannel,
   InteractionAction,
   EquipSlot,
+  CompanionCreateData,
 } from './Protocol';
 
 type RawListener = (payload: unknown) => void;
@@ -73,11 +74,17 @@ export class SocketClient {
       'inventory_update',
       'loot_session_start', 'loot_item_result', 'loot_session_end',
       'ability_update',
+      'stat_allocate_result', 'respec_result',
       'register_result',
       'zone_transfer', 'village_state', 'village_placement_mode',
+      'editor_open', 'editor_result',
+      'guild_update', 'guild_member_list', 'guild_invite', 'guild_chat', 'guild_founding_narrative',
+      'companion_config',
+      'beacon_alert', 'library_assault',
       'error',
       'pong',
       'command_response',
+      'logout_success',
       'dev_ack',
     ] as const;
 
@@ -128,14 +135,20 @@ export class SocketClient {
 
   // ── Emit methods ──────────────────────────────────────────────────────────
 
+  /** Request graceful logout — return to character select without disconnecting. */
+  sendLogout(): void {
+    this._send('logout', { timestamp: Date.now() });
+  }
+
   sendCharacterSelect(characterId: string): void {
     this._send('character_select', { characterId });
   }
 
-  sendCharacterCreate(name: string): void {
+  sendCharacterCreate(name: string, companion?: CompanionCreateData): void {
     this._send('character_create', {
       name,
       appearance: { description: 'TBD' },
+      ...(companion ? { companion } : {}),
     });
   }
 
@@ -241,6 +254,18 @@ export class SocketClient {
     this._send('slot_passive_ability', { slotNumber, nodeId });
   }
 
+  sendAllocateStat(stat: string): void {
+    this._send('allocate_stat', { stat });
+  }
+
+  sendRespecStats(): void {
+    this._send('respec_stats', {});
+  }
+
+  sendRespecAbilities(): void {
+    this._send('respec_abilities', {});
+  }
+
   sendRegisterAccount(username: string, email: string, password: string): void {
     this._send('register_account', { username, email, password });
   }
@@ -252,6 +277,54 @@ export class SocketClient {
   sendVillagePlaceConfirm(catalogId: string, posX: number, posZ: number, rotation: number): void {
     this._send('village_place_confirm', { catalogId, posX, posZ, rotation });
   }
+
+  sendEditorSave(editorId: string, source: string): void {
+    this._send('editor_save', { editorId, source });
+  }
+
+  sendEditorCompile(editorId: string, source: string): void {
+    this._send('editor_compile', { editorId, source });
+  }
+
+  sendEditorRevert(editorId: string): void {
+    this._send('editor_revert', { editorId });
+  }
+
+  sendEditorClose(editorId: string): void {
+    this._send('editor_close', { editorId });
+  }
+
+  // ── Companion management ─────────────────────────────────────────────────
+
+  sendCompanionRequestConfig(): void {
+    this.sendCommand('/companion config');
+  }
+
+  sendCompanionSetArchetype(archetype: string): void {
+    this.sendCommand(`/companion archetype ${archetype}`);
+  }
+
+  sendCompanionConfigure(settings: Record<string, unknown>): void {
+    const parts: string[] = [];
+    if (settings.stance)          parts.push(`stance=${settings.stance}`);
+    if (settings.preferredRange)  parts.push(`range=${settings.preferredRange}`);
+    if (settings.priority)        parts.push(`priority=${settings.priority}`);
+    if (settings.retreatThreshold !== undefined) parts.push(`retreat=${settings.retreatThreshold}`);
+    if (settings.abilityWeights) {
+      for (const [k, v] of Object.entries(settings.abilityWeights as Record<string, number>)) {
+        parts.push(`${k}=${v}`);
+      }
+    }
+    this.sendCommand(`/companion configure ${parts.join(' ')}`);
+  }
+
+  sendCompanionSetAbilities(abilityIds: string[]): void {
+    this.sendCommand(`/companion abilities ${abilityIds.join(',')}`);
+  }
+
+  sendCompanionFollow(): void { this.sendCommand('/companion follow'); }
+  sendCompanionDetach(): void { this.sendCommand('/companion detach'); }
+  sendCompanionRecall(): void { this.sendCommand('/companion recall'); }
 
   // ── Event bus ─────────────────────────────────────────────────────────────
 

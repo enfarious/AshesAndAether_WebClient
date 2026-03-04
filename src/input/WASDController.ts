@@ -44,6 +44,8 @@ export class WASDController {
   private abilitySlotCallback:  ((slotIndex: number) => void) | null = null;
   private marketToggle:         (() => void) | null = null;
   private worldMapToggle:       (() => void) | null = null;
+  private guildToggle:          (() => void) | null = null;
+  private companionToggle:      (() => void) | null = null;
   private tabTargetNext:            (() => void) | null = null;
   private tabTargetPrev:            (() => void) | null = null;
   private partyTargetSlotCallback:  ((slot: number) => void) | null = null;
@@ -57,6 +59,8 @@ export class WASDController {
   setAbilitySlotCallback(fn: (slotIndex: number) => void): void { this.abilitySlotCallback = fn; }
   setMarketToggle(fn: () => void):         void { this.marketToggle         = fn; }
   setWorldMapToggle(fn: () => void):       void { this.worldMapToggle       = fn; }
+  setGuildToggle(fn: () => void):          void { this.guildToggle          = fn; }
+  setCompanionToggle(fn: () => void):    void { this.companionToggle      = fn; }
   setTabTargetNext(fn: () => void):        void { this.tabTargetNext        = fn; }
   setTabTargetPrev(fn: () => void):        void { this.tabTargetPrev        = fn; }
   setPartyTargetSlotCallback(fn: (slot: number) => void): void { this.partyTargetSlotCallback = fn; }
@@ -262,6 +266,18 @@ export class WASDController {
     // L — toggle target lock-on
     if (e.key.toLowerCase() === 'l') {
       this.player.toggleTargetLock();
+      return;
+    }
+
+    // G — toggle guild panel
+    if (e.key.toLowerCase() === 'g') {
+      this.guildToggle?.();
+      return;
+    }
+
+    // N — toggle companion panel
+    if (e.key.toLowerCase() === 'n') {
+      this.companionToggle?.();
       return;
     }
 

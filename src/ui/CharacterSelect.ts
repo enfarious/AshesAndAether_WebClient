@@ -127,6 +127,13 @@ export class CharacterSelect {
           gap: 8px;
         }
 
+        .cs-create-fields {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+          flex: 1;
+        }
+
         .cs-create-input {
           flex: 1;
           background: rgba(30,24,18,0.8);
@@ -178,8 +185,12 @@ export class CharacterSelect {
         <div class="cs-list" id="cs-list"></div>
 
         <div id="cs-create-section" class="cs-create-row" style="display:none">
-          <input class="cs-create-input" id="cs-create-name" type="text"
-            placeholder="new character name" maxlength="32" />
+          <div class="cs-create-fields">
+            <input class="cs-create-input" id="cs-create-name" type="text"
+              placeholder="character name" maxlength="24" />
+            <input class="cs-create-input" id="cs-companion-name" type="text"
+              placeholder="companion name (optional)" maxlength="24" />
+          </div>
           <button class="cs-btn" id="cs-create-btn">CREATE</button>
         </div>
 
@@ -188,16 +199,19 @@ export class CharacterSelect {
     `;
 
     el.querySelector('#cs-create-btn')?.addEventListener('click', () => {
-      const input = el.querySelector<HTMLInputElement>('#cs-create-name')!;
-      const name  = input.value.trim();
+      const name = el.querySelector<HTMLInputElement>('#cs-create-name')!.value.trim();
       if (!name) return;
-      this.socket.sendCharacterCreate(name);
+      const companionName = el.querySelector<HTMLInputElement>('#cs-companion-name')!.value.trim();
+      const companion = companionName ? { name: companionName } : undefined;
+      this.socket.sendCharacterCreate(name, companion);
       this._setStatus('Creating character…');
     });
 
-    el.querySelector<HTMLInputElement>('#cs-create-name')?.addEventListener('keydown', (e) => {
+    const submitOnEnter = (e: KeyboardEvent) => {
       if (e.key === 'Enter') el.querySelector<HTMLButtonElement>('#cs-create-btn')?.click();
-    });
+    };
+    el.querySelector<HTMLInputElement>('#cs-create-name')?.addEventListener('keydown', submitOnEnter);
+    el.querySelector<HTMLInputElement>('#cs-companion-name')?.addEventListener('keydown', submitOnEnter);
 
     return el;
   }

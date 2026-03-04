@@ -362,15 +362,15 @@ export class MarketPanel {
         }
         .mp-title {
           font-family: var(--font-display, serif);
-          font-size: 13px;
-          color: rgba(200,145,60,0.90);
+          font-size: 16px;
+          color: rgba(200,145,60,0.95);
           letter-spacing: 0.18em;
           text-transform: uppercase;
         }
         .mp-gold {
           font-family: var(--font-mono);
-          font-size: 12px;
-          color: rgba(230,200,100,0.90);
+          font-size: 14px;
+          color: rgba(240,210,110,0.95);
           letter-spacing: 0.06em;
         }
         .mp-close-btn {
@@ -397,12 +397,12 @@ export class MarketPanel {
         }
         .mp-tab-btn {
           flex: 1;
-          padding: 8px 0;
+          padding: 10px 0;
           font-family: var(--font-mono);
-          font-size: 11px;
+          font-size: 13px;
           text-transform: uppercase;
           letter-spacing: 0.10em;
-          color: rgba(212,201,184,0.55);
+          color: rgba(212,201,184,0.65);
           background: transparent;
           border: none;
           border-bottom: 2px solid transparent;
@@ -410,11 +410,11 @@ export class MarketPanel {
           transition: color 0.15s, border-color 0.15s;
         }
         .mp-tab-btn:hover {
-          color: rgba(212,201,184,0.80);
+          color: rgba(212,201,184,0.90);
         }
         .mp-tab-btn.active {
-          color: rgba(200,145,60,0.95);
-          border-bottom-color: rgba(200,145,60,0.65);
+          color: rgba(200,145,60,1);
+          border-bottom-color: rgba(200,145,60,0.75);
         }
 
         /* Body */
@@ -430,38 +430,38 @@ export class MarketPanel {
         /* Shared components */
         .mp-input {
           font-family: var(--font-mono);
-          font-size: 11px;
-          color: rgba(212,201,184,0.90);
+          font-size: 13px;
+          color: rgba(220,210,195,0.95);
           background: rgba(14,10,6,0.8);
-          border: 1px solid rgba(200,145,60,0.25);
-          padding: 5px 8px;
+          border: 1px solid rgba(200,145,60,0.30);
+          padding: 6px 10px;
           outline: none;
           transition: border-color 0.15s;
         }
         .mp-input:focus {
-          border-color: rgba(200,145,60,0.55);
+          border-color: rgba(200,145,60,0.60);
         }
         .mp-input::placeholder {
-          color: rgba(150,120,80,0.45);
+          color: rgba(150,120,80,0.55);
         }
 
         .mp-select {
           font-family: var(--font-mono);
-          font-size: 11px;
-          color: rgba(212,201,184,0.90);
+          font-size: 13px;
+          color: rgba(220,210,195,0.95);
           background: rgba(14,10,6,0.8);
-          border: 1px solid rgba(200,145,60,0.25);
-          padding: 5px 6px;
+          border: 1px solid rgba(200,145,60,0.30);
+          padding: 6px 8px;
           outline: none;
         }
 
         .mp-btn {
           font-family: var(--font-mono);
-          font-size: 10px;
-          color: rgba(212,201,184,0.80);
+          font-size: 12px;
+          color: rgba(220,210,195,0.90);
           background: rgba(30,20,10,0.6);
-          border: 1px solid rgba(200,145,60,0.25);
-          padding: 5px 12px;
+          border: 1px solid rgba(200,145,60,0.30);
+          padding: 6px 14px;
           cursor: pointer;
           letter-spacing: 0.06em;
           text-transform: uppercase;
@@ -470,21 +470,21 @@ export class MarketPanel {
         }
         .mp-btn:hover {
           background: rgba(80,40,10,0.5);
-          color: rgba(230,200,140,1);
-          border-color: rgba(200,145,60,0.5);
+          color: rgba(240,220,160,1);
+          border-color: rgba(200,145,60,0.6);
         }
         .mp-btn-sm {
-          padding: 3px 8px;
-          font-size: 9px;
+          padding: 4px 10px;
+          font-size: 11px;
         }
         .mp-btn-danger {
-          color: rgba(200,100,80,0.80);
-          border-color: rgba(180,60,40,0.30);
+          color: rgba(220,110,90,0.90);
+          border-color: rgba(180,60,40,0.35);
         }
         .mp-btn-danger:hover {
           background: rgba(80,20,10,0.5);
-          color: rgba(240,140,120,1);
-          border-color: rgba(200,80,60,0.5);
+          color: rgba(250,150,130,1);
+          border-color: rgba(200,80,60,0.6);
         }
 
         /* Search row */
@@ -502,35 +502,35 @@ export class MarketPanel {
           width: 100%;
           border-collapse: collapse;
           font-family: var(--font-mono);
-          font-size: 11px;
+          font-size: 13px;
         }
         .mp-table th {
           text-align: left;
-          font-size: 9px;
-          color: rgba(150,120,80,0.7);
+          font-size: 11px;
+          color: rgba(180,150,100,0.85);
           text-transform: uppercase;
           letter-spacing: 0.10em;
-          padding: 4px 6px;
-          border-bottom: 1px solid rgba(200,145,60,0.15);
+          padding: 6px 8px;
+          border-bottom: 1px solid rgba(200,145,60,0.20);
         }
         .mp-table td {
-          padding: 5px 6px;
-          color: rgba(212,201,184,0.82);
-          border-bottom: 1px solid rgba(200,145,60,0.06);
+          padding: 7px 8px;
+          color: rgba(220,210,195,0.90);
+          border-bottom: 1px solid rgba(200,145,60,0.08);
           vertical-align: middle;
         }
         .mp-table tr:hover td {
-          background: rgba(200,145,60,0.06);
+          background: rgba(200,145,60,0.08);
         }
 
         /* Price input inside table */
         .mp-price-input {
-          width: 60px;
+          width: 70px;
           text-align: right;
         }
         .mp-scope-select {
-          font-size: 10px;
-          padding: 3px 4px;
+          font-size: 12px;
+          padding: 4px 6px;
         }
 
         /* Empty state */
@@ -538,8 +538,8 @@ export class MarketPanel {
           text-align: center;
           padding: 32px 10px;
           font-family: var(--font-body, serif);
-          font-size: 12px;
-          color: rgba(150,120,80,0.55);
+          font-size: 14px;
+          color: rgba(180,150,100,0.65);
           font-style: italic;
         }
 

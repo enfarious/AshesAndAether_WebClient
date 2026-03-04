@@ -1,5 +1,6 @@
 import type { WorldState, ChatEntry } from '@/state/WorldState';
 import type { SocketClient } from '@/network/SocketClient';
+import type { PlayerState } from '@/state/PlayerState';
 
 /**
  * ChatPanel — scrolling chat log with a text input for /say, /shout, /emote etc.
@@ -19,6 +20,7 @@ export class ChatPanel {
     private readonly uiRoot: HTMLElement,
     private readonly world:  WorldState,
     private readonly socket: SocketClient,
+    private readonly player: PlayerState,
   ) {
     this.root  = document.createElement('div');
     this.log   = document.createElement('div');
@@ -94,11 +96,13 @@ export class ChatPanel {
       .chat-line.shout  { color: #e08040; }
       .chat-line.emote  { color: #90a870; font-style: italic; }
       .chat-line.party  { color: #70a0d0; }
+      .chat-line.guild  { color: #60c890; }
       .chat-line.world  { color: #c090d0; }
       .chat-line.event  { color: #a09070; font-style: italic; }
       .chat-line.cfh    { color: #e04040; }
       .chat-line.whisper { color: #d0a0d0; font-style: italic; }
-      .chat-line.system  { color: #7090a8; font-style: italic; }
+      .chat-line.system    { color: #7090a8; font-style: italic; }
+      .chat-line.companion { color: #50c8c8; }
 
       #chat-input {
         background: var(--ui-bg);
@@ -126,7 +130,7 @@ export class ChatPanel {
 
     this.input.id          = 'chat-input';
     this.input.type        = 'text';
-    this.input.placeholder = 'say, /shout, /emote, /p, /w, /r…';
+    this.input.placeholder = 'say, /shout, /emote, /p, /w, /r, /cc…';
     this.input.maxLength   = 512;
     this.input.addEventListener('keydown', this._onInputKey);
 
@@ -136,11 +140,15 @@ export class ChatPanel {
 
   private _onInputKey = (e: KeyboardEvent): void => {
     if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
       this.input.value = '';
       this.input.blur();
       return;
     }
     if (e.key !== 'Enter') return;
+    e.preventDefault();
+    e.stopPropagation();
     const text = this.input.value.trim();
     this.input.value = '';
     this.input.blur(); // return focus to game so WASD resumes
@@ -181,6 +189,35 @@ export class ChatPanel {
       this.registerCallback?.();
       return;
     }
+
+    // /logout — graceful return to character select (keep socket alive)
+    if (text === '/logout') {
+      this.world.pushMessage('system', 'Returning to character select…');
+      this.socket.sendLogout();
+      return;
+    }
+
+    // /quit — disconnect entirely (standalone client exit)
+    if (text === '/quit' || text === '/exit') {
+      this.world.pushMessage('system', 'Disconnecting…');
+      this.socket.sendLogout();
+      // Give the server a moment to clean up, then hard disconnect.
+      setTimeout(() => this.socket.disconnect(), 500);
+      return;
+    }
+
+    // /cc <message> — companion chat (private, with placeholder expansion)
+    if (text.startsWith('/cc ')) {
+      const raw = text.slice(4).trim();
+      if (!raw) {
+        this.world.pushMessage('system', 'Usage: /cc <message>  —  placeholders: <t> target, <n> your name');
+        return;
+      }
+      const expanded = this._expandPlaceholders(raw);
+      this.socket.sendChat('companion', expanded);
+      return;
+    }
+
     if (text.startsWith('/shout ')) {
       this.socket.sendChat('shout', text.slice(7));
     } else if (text.startsWith('/emote ') || text.startsWith('/me ')) {
@@ -213,6 +250,13 @@ export class ChatPanel {
     } else {
       this.socket.sendChat('say', text);
     }
+  }
+
+  /** Replace <t>, <n> etc. with live game-state values. */
+  private _expandPlaceholders(text: string): string {
+    return text
+      .replace(/<t>/gi, this.player.targetName ?? 'no target')
+      .replace(/<n>/gi, this.player.name || 'unknown');
   }
 
   private _appendEntry(entry: ChatEntry): void {

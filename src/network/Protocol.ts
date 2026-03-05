@@ -266,6 +266,7 @@ export interface StateUpdatePayload {
     inCombat?: boolean;
     autoAttackTarget?: string;
     specialCharges?: Record<string, number>;
+    enmityList?: EnmityEntry[];
   };
   allies?: Array<{
     entityId: string;
@@ -646,6 +647,16 @@ export interface LootSessionEndPayload {
   sessionId: string;
 }
 
+// ── Enmity ───────────────────────────────────────────────────────────────────
+
+export type EnmityLevel = 'red' | 'yellow' | 'blue';
+
+export interface EnmityEntry {
+  entityId: string;
+  name:     string;
+  level:    EnmityLevel;
+}
+
 // ── Village / Plot System ────────────────────────────────────────────────────
 
 export interface ZoneTransferPayload {
@@ -682,6 +693,21 @@ export interface VillageStatePayload {
   maxStructures:   number;
   gridSize:        number;
   isOwner:         boolean;
+}
+
+export interface VillageCatalogEntry {
+  name:           string;
+  displayName:    string;
+  description:    string;
+  category:       string;
+  sizeX:          number;
+  sizeZ:          number;
+  goldCost:       number;
+  maxPerVillage:  number;
+}
+
+export interface VillageCatalogPayload {
+  structures: VillageCatalogEntry[];
 }
 
 // ── Guild ────────────────────────────────────────────────────────────────────

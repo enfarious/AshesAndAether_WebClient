@@ -19,6 +19,7 @@ import type {
   GuildMemberInfo,
   GuildMemberListPayload,
   CompanionConfigPayload,
+  EnmityEntry,
 } from '@/network/Protocol';
 
 type Listener = () => void;
@@ -110,6 +111,9 @@ export class PlayerState {
   private _guildBonuses: { corruptionResistPercent: number; xpBonusPercent: number } | null = null;
   private _guildMembers:       GuildMemberInfo[] = [];
 
+  // ── Enmity ──────────────────────────────────────────────────────────────────
+  private _enmityList: EnmityEntry[] = [];
+
   // ── Companion ─────────────────────────────────────────────────────────────
   private _companion: CompanionConfigPayload | null = null;
 
@@ -188,6 +192,8 @@ export class PlayerState {
   get partyMembers():  PartyMemberInfo[]      { return this._partyMembers; }
   get partyAllies():   PartyAllyState[]       { return this._partyAllies; }
   get pendingInvite(): { fromName: string; expiresAt: number } | null { return this._pendingInvite; }
+
+  get enmityList(): EnmityEntry[] { return this._enmityList; }
 
   get companion(): CompanionConfigPayload | null { return this._companion; }
 
@@ -287,6 +293,7 @@ export class PlayerState {
     inCombat?:         boolean;
     autoAttackTarget?: string;
     specialCharges?:   Record<string, number>;
+    enmityList?:       EnmityEntry[];
   }): void {
     if (combat.atb        !== undefined) this._combat.atb              = combat.atb;
     if (combat.autoAttack !== undefined) this._combat.autoAttack       = combat.autoAttack;
@@ -296,10 +303,12 @@ export class PlayerState {
         this._combat.atb        = null;
         this._combat.autoAttack = null;
         this._combat.autoAttackTarget = null;
+        this._enmityList = [];
       }
     }
     if (combat.autoAttackTarget !== undefined) this._combat.autoAttackTarget = combat.autoAttackTarget;
     if (combat.specialCharges)  this._combat.specialCharges = { ...combat.specialCharges };
+    if (combat.enmityList)      this._enmityList = combat.enmityList;
     this._notify();
   }
 

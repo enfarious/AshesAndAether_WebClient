@@ -46,6 +46,7 @@ import type {
   BeaconAlertPayload,
   LibraryAssaultPayload,
   CompanionConfigPayload,
+  VillageCatalogPayload,
 } from './Protocol';
 
 /**
@@ -72,6 +73,7 @@ export class MessageRouter {
   private beaconAlertListeners     = new Set<(p: BeaconAlertPayload) => void>();
   private libraryAssaultListeners  = new Set<(p: LibraryAssaultPayload) => void>();
   private companionConfigListeners = new Set<(p: CompanionConfigPayload) => void>();
+  private villageCatalogListeners  = new Set<(p: VillageCatalogPayload) => void>();
 
   constructor(
     private readonly socket:   SocketClient,
@@ -160,6 +162,11 @@ export class MessageRouter {
   onCompanionConfig(fn: (p: CompanionConfigPayload) => void): () => void {
     this.companionConfigListeners.add(fn);
     return () => this.companionConfigListeners.delete(fn);
+  }
+
+  onVillageCatalog(fn: (p: VillageCatalogPayload) => void): () => void {
+    this.villageCatalogListeners.add(fn);
+    return () => this.villageCatalogListeners.delete(fn);
   }
 
   mount(): void {
@@ -521,6 +528,10 @@ export class MessageRouter {
 
     s.on('village_placement_mode', (p) => {
       this.villagePlacementListeners.forEach(fn => fn(p as VillagePlacementModePayload));
+    });
+
+    s.on('village_catalog', (p) => {
+      this.villageCatalogListeners.forEach(fn => fn(p as VillageCatalogPayload));
     });
 
     // ── Logout (return to character select) ─────────────────────────────────

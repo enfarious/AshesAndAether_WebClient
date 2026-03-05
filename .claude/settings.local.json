@@ -47,7 +47,13 @@
       "Bash(xargs grep -l \"editor\")",
       "Bash(xargs grep -l \"triggerNPCResponses\\\\|broadcastNPCMessage\")",
       "Bash(find \"F:/Projects/AshesAndAether/AshesAndAether_Server\" -name \"schema.prisma\" -exec cat {} ;)",
-      "Bash(find \"F:\\\\Projects\\\\AshesAndAether\\\\AshesAndAether_Server\\\\src\" -name \"*.ts\" -exec grep -l \"combatSettings\\\\|setArchetype\\\\|updateArchetype\" {} ;)"
+      "Bash(find \"F:\\\\Projects\\\\AshesAndAether\\\\AshesAndAether_Server\\\\src\" -name \"*.ts\" -exec grep -l \"combatSettings\\\\|setArchetype\\\\|updateArchetype\" {} ;)",
+      "Bash(xargs grep -l \"PLAYER_COMMAND\")",
+      "Bash(awk 'NR>=53 && NR<=100')",
+      "Bash(find \"F:\\\\Projects\\\\AshesAndAether\\\\AshesAndAether_Server\\\\src\" -type f -name \"*.ts\" -exec grep -l \"market:commands\\\\|MarketBridge\\\\|market service\" {} ;)",
+      "Bash(ls -la /F/Projects/AshesAndAether/AshesAndAether_Server/*.ts)",
+      "Bash(git checkout -- src/market/MarketBridge.ts)",
+      "Bash(xargs grep -l \"market:commands\")"
     ]
   }
 }

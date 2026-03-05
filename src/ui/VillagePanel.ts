@@ -13,6 +13,7 @@ export class VillagePanel {
   private nameEl: HTMLElement | null = null;
   private visible = false;
   private cleanup: (() => void)[] = [];
+  private onPlaceClick: (() => void) | null = null;
 
   constructor(
     private readonly uiRoot: HTMLElement,
@@ -39,6 +40,10 @@ export class VillagePanel {
     this.visible = false;
     this.root.classList.remove('vp-visible');
     this.root.style.display = 'none';
+  }
+
+  setPlaceCallback(fn: () => void): void {
+    this.onPlaceClick = fn;
   }
 
   dispose(): void {
@@ -140,7 +145,11 @@ export class VillagePanel {
     });
 
     el.querySelector('.vp-place-btn')?.addEventListener('click', () => {
-      this.socket.sendCommand('/village catalog');
+      if (this.onPlaceClick) {
+        this.onPlaceClick();
+      } else {
+        this.socket.sendCommand('/village catalog');
+      }
     });
 
     return el;

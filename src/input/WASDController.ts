@@ -46,6 +46,7 @@ export class WASDController {
   private worldMapToggle:       (() => void) | null = null;
   private guildToggle:          (() => void) | null = null;
   private companionToggle:      (() => void) | null = null;
+  private buildToggle:              (() => void) | null = null;
   private tabTargetNext:            (() => void) | null = null;
   private tabTargetPrev:            (() => void) | null = null;
   private partyTargetSlotCallback:  ((slot: number) => void) | null = null;
@@ -61,6 +62,7 @@ export class WASDController {
   setWorldMapToggle(fn: () => void):       void { this.worldMapToggle       = fn; }
   setGuildToggle(fn: () => void):          void { this.guildToggle          = fn; }
   setCompanionToggle(fn: () => void):    void { this.companionToggle      = fn; }
+  setBuildToggle(fn: () => void):       void { this.buildToggle          = fn; }
   setTabTargetNext(fn: () => void):        void { this.tabTargetNext        = fn; }
   setTabTargetPrev(fn: () => void):        void { this.tabTargetPrev        = fn; }
   setPartyTargetSlotCallback(fn: (slot: number) => void): void { this.partyTargetSlotCallback = fn; }
@@ -278,6 +280,12 @@ export class WASDController {
     // N — toggle companion panel
     if (e.key.toLowerCase() === 'n') {
       this.companionToggle?.();
+      return;
+    }
+
+    // B — toggle build panel (village owner only — checked in app.ts callback)
+    if (e.key.toLowerCase() === 'b') {
+      this.buildToggle?.();
       return;
     }
 

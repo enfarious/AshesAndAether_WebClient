@@ -76,7 +76,7 @@ export class SocketClient {
       'ability_update',
       'stat_allocate_result', 'respec_result',
       'register_result',
-      'zone_transfer', 'village_state', 'village_placement_mode',
+      'zone_transfer', 'village_state', 'village_placement_mode', 'village_catalog',
       'editor_open', 'editor_result',
       'guild_update', 'guild_member_list', 'guild_invite', 'guild_chat', 'guild_founding_narrative',
       'companion_config',

@@ -36,6 +36,8 @@ import { WorldMapPanel }      from '@/ui/WorldMapPanel';
 import { GuildPanel }         from '@/ui/GuildPanel';
 import { CompanionPanel }     from '@/ui/CompanionPanel';
 import { SystemMenu }         from '@/ui/SystemMenu';
+import { EnmityPanel }        from '@/ui/EnmityPanel';
+import { BuildPanel }         from '@/ui/BuildPanel';
 import { RegistrationModal }  from '@/ui/RegistrationModal';
 import { CorpseSystem }       from '@/entities/CorpseSystem';
 import { CorruptionMiasma }  from '@/entities/CorruptionMiasma';
@@ -101,6 +103,8 @@ export class App {
   private guildPanel:        GuildPanel         | null = null;
   private companionPanel:    CompanionPanel     | null = null;
   private systemMenu:        SystemMenu         | null = null;
+  private enmityPanel:       EnmityPanel        | null = null;
+  private buildPanel:        BuildPanel         | null = null;
   private placementMode:     PlacementMode      | null = null;
 
   // ── Environment tracking ─────────────────────────────────────────────────
@@ -306,6 +310,8 @@ export class App {
     this.worldMapPanel?.dispose();
     this.guildPanel?.dispose();
     this.companionPanel?.dispose();
+    this.enmityPanel?.dispose();
+    this.buildPanel?.dispose();
     this.systemMenu?.dispose();
     this.registrationModal?.dispose();
     this.placementMode?.dispose();
@@ -374,6 +380,8 @@ export class App {
     this.villagePanel?.hide();
     this.guildPanel?.hide();
     this.companionPanel?.hide();
+    this.enmityPanel?.hide();
+    this.buildPanel?.hide();
     this.systemMenu?.hide();
     this.placementMode?.exit();
 
@@ -520,6 +528,23 @@ export class App {
       this.companionPanel = new CompanionPanel(this.uiRoot, this.player, this.socket, this.router);
       this.wasd.setCompanionToggle(() => this.companionPanel!.toggle());
     }
+    if (!this.enmityPanel) {
+      this.enmityPanel = new EnmityPanel(this.uiRoot, this.player);
+      this.enmityPanel.setTargetCallback((entityId) => {
+        const entity = this.entities.get(entityId);
+        this.player.setTarget(entityId, entity?.name ?? null);
+      });
+      this.enmityPanel.show();
+    }
+    if (!this.buildPanel) {
+      this.buildPanel = new BuildPanel(this.uiRoot, this.socket, this.router);
+      // B key — only toggle if in own village
+      this.wasd.setBuildToggle(() => {
+        if (this.world.isVillage && this.world.villageOwnerId === this.player.id) {
+          this.buildPanel!.toggle();
+        }
+      });
+    }
     if (!this.systemMenu) {
       this.systemMenu = new SystemMenu(this.uiRoot);
       this.systemMenu.setCallbacks({
@@ -547,6 +572,7 @@ export class App {
     }
     if (!this.villagePanel) {
       this.villagePanel = new VillagePanel(this.uiRoot, this.world, this.player, this.socket);
+      this.villagePanel.setPlaceCallback(() => this.buildPanel?.show());
     }
     if (!this.placementMode) {
       this.placementMode = new PlacementMode(

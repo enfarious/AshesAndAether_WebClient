@@ -1,5 +1,6 @@
 import type { SocketClient } from '@/network/SocketClient';
 import type { SessionState } from '@/state/SessionState';
+import { ClientConfig }      from '@/config/ClientConfig';
 
 /**
  * LoginScreen — guest or credentials auth flow.
@@ -40,8 +41,22 @@ export class LoginScreen {
     this.cleanup.push(unsub1, unsub2, unsub3);
   }
 
-  show(): void { this.root.style.display = ''; }
+  show(): void {
+    this.root.style.display = '';
+    // Reset button / status state so returning via /quit doesn't show stale disabled buttons.
+    this._setLoading(false);
+    this._setError('');
+    this._setStatus('');
+  }
   hide(): void { this.root.style.display = 'none'; }
+
+  /** Sync the server address field to the current ClientConfig value. */
+  syncServerField(): void {
+    const serverInput = this.root.querySelector<HTMLInputElement>('#login-server');
+    if (serverInput) {
+      serverInput.value = ClientConfig.serverUrl.replace(/^https?:\/\//, '');
+    }
+  }
 
   dispose(): void {
     this.cleanup.forEach(fn => fn());
@@ -171,6 +186,40 @@ export class LoginScreen {
           font-style: italic;
           min-height: 1.2em;
         }
+
+        .login-server {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          margin-top: 4px;
+        }
+
+        .login-server-lbl {
+          font-family: var(--font-mono);
+          font-size: 0.65rem;
+          letter-spacing: 0.1em;
+          color: rgba(90,82,72,0.7);
+          text-transform: uppercase;
+          white-space: nowrap;
+          user-select: none;
+        }
+
+        .login-server-input {
+          flex: 1;
+          background: rgba(30,24,18,0.5);
+          border: 1px solid rgba(200,98,42,0.12);
+          color: rgba(212,201,184,0.55);
+          font-family: var(--font-mono);
+          font-size: 12px;
+          padding: 4px 8px;
+          outline: none;
+          transition: border-color 0.2s, color 0.2s;
+        }
+
+        .login-server-input:focus {
+          border-color: rgba(200,98,42,0.35);
+          color: rgba(212,201,184,0.8);
+        }
       </style>
 
       <div class="login-box">
@@ -193,6 +242,12 @@ export class LoginScreen {
 
         <div class="login-error" id="login-error"></div>
         <div class="login-status" id="login-status"></div>
+
+        <div class="login-server">
+          <span class="login-server-lbl">Server</span>
+          <input class="login-server-input" id="login-server" type="text"
+                 placeholder="localhost:3100" spellcheck="false" autocomplete="off" />
+        </div>
       </div>
     `;
 
@@ -223,6 +278,21 @@ export class LoginScreen {
 
     passInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') submitBtn.click();
+    });
+
+    // Server address field — show current URL (strip http:// prefix for display)
+    const serverInput = el.querySelector<HTMLInputElement>('#login-server')!;
+    const currentUrl  = ClientConfig.serverUrl;
+    serverInput.value = currentUrl.replace(/^https?:\/\//, '');
+
+    // Persist on blur or Enter
+    const commitServer = () => {
+      const raw = serverInput.value.trim();
+      if (raw) ClientConfig.setServerUrl(raw);
+    };
+    serverInput.addEventListener('blur', commitServer);
+    serverInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { commitServer(); userInput.focus(); }
     });
 
     return el;

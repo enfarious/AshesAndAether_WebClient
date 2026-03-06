@@ -7,6 +7,15 @@ export type ClientType = 'text' | '2d' | '3d' | 'vr';
 export type AuthMethod  = 'guest' | 'credentials' | 'token' | 'airlock';
 export type MoveMethod  = 'heading' | 'position' | 'compass';
 export type MovementSpeed     = 'walk' | 'jog' | 'run' | 'stop';
+
+/** Mirrors server SPEED_MULTIPLIERS — applied to base movement speed. */
+export const SPEED_MULTIPLIERS: Record<MovementSpeed, number> = {
+  walk: 1.0,
+  jog:  2.0,
+  run:  3.5,
+  stop: 0.0,
+};
+
 export type CompassDirection  = 'N' | 'NE' | 'E' | 'SE' | 'S' | 'SW' | 'W' | 'NW';
 export type ContentRating     = 'T' | 'M' | 'AO';
 export type CorruptionState   = 'CLEAN' | 'STAINED' | 'WARPED' | 'LOST';
@@ -201,6 +210,10 @@ export interface Entity {
   movementDuration?: number;
   movementSpeed?: number;
   heading?: number;
+  /** GLB asset path for 3D model (e.g. "dungeon/Dungeon_Entrance_01.glb"). */
+  modelAsset?: string;
+  /** Uniform scale multiplier for the GLB model (default 1). */
+  modelScale?: number;
 }
 
 export interface Exit {

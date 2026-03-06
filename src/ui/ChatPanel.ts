@@ -13,8 +13,12 @@ export class ChatPanel {
   private input:    HTMLInputElement;
   private cleanup:  (() => void)[] = [];
   private registerCallback: (() => void) | null = null;
+  private quitCallback:     (() => void) | null = null;
+  private shutdownCallback: (() => void) | null = null;
 
   setRegisterCallback(fn: () => void): void { this.registerCallback = fn; }
+  setQuitCallback(fn: () => void): void     { this.quitCallback = fn; }
+  setShutdownCallback(fn: () => void): void { this.shutdownCallback = fn; }
 
   constructor(
     private readonly uiRoot: HTMLElement,
@@ -197,12 +201,17 @@ export class ChatPanel {
       return;
     }
 
-    // /quit — disconnect entirely (standalone client exit)
+    // /quit — return to login screen (switch accounts)
     if (text === '/quit' || text === '/exit') {
-      this.world.pushMessage('system', 'Disconnecting…');
-      this.socket.sendLogout();
-      // Give the server a moment to clean up, then hard disconnect.
-      setTimeout(() => this.socket.disconnect(), 500);
+      this.world.pushMessage('system', 'Returning to login…');
+      this.quitCallback?.();
+      return;
+    }
+
+    // /shutdown — close the client entirely
+    if (text === '/shutdown') {
+      this.world.pushMessage('system', 'Shutting down…');
+      this.shutdownCallback?.();
       return;
     }
 
@@ -214,11 +223,17 @@ export class ChatPanel {
         return;
       }
       const expanded = this._expandPlaceholders(raw);
+      // Echo locally so the player sees their own message in the chat log
+      this.world.pushMessage('companion', expanded, this.player.name);
       this.socket.sendChat('companion', expanded);
       return;
     }
 
-    if (text.startsWith('/shout ')) {
+    if (text.startsWith('/say ')) {
+      this.socket.sendChat('say', text.slice(5));
+    } else if (text.startsWith('/s ') && !text.startsWith('/shout')) {
+      this.socket.sendChat('say', text.slice(3));
+    } else if (text.startsWith('/shout ')) {
       this.socket.sendChat('shout', text.slice(7));
     } else if (text.startsWith('/emote ') || text.startsWith('/me ')) {
       this.socket.sendChat('emote', text.startsWith('/me ') ? text.slice(4) : text.slice(7));

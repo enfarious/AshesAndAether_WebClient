@@ -1,6 +1,7 @@
-import type { OrbitCamera }  from '@/camera/OrbitCamera';
-import type { SocketClient }  from '@/network/SocketClient';
-import type { PlayerState }   from '@/state/PlayerState';
+import type { OrbitCamera }    from '@/camera/OrbitCamera';
+import type { SocketClient }   from '@/network/SocketClient';
+import type { PlayerState }    from '@/state/PlayerState';
+import type { PlayerEntity }   from '@/entities/PlayerEntity';
 
 /**
  * WASDController — keyboard movement + camera rotation.
@@ -14,9 +15,9 @@ import type { PlayerState }   from '@/state/PlayerState';
  * act as heading changes + heartbeats.  The server keeps walking until it
  * receives an explicit stop or the heartbeat times out (~300 ms).
  *
- * The client runs parallel prediction so the player capsule moves without
- * waiting for server round-trips.  When keys are released a `stop` command
- * is sent and the entity smoothly reconciles to the server position.
+ * The client runs parallel prediction by calling PlayerEntity.drivePosition()
+ * directly each frame.  When keys are released, stopWASD() is called and the
+ * entity smoothly reconciles to the server position.
  *
  * Camera rotation runs every frame (dt-scaled) for fluid response.
  */
@@ -24,19 +25,24 @@ import type { PlayerState }   from '@/state/PlayerState';
 const QE_SPEED         = 1.8;   // camera yaw speed, radians / second
 const PITCH_SPEED      = 50;    // camera pitch speed, degrees / second
 const ZOOM_SPEED       = 30;    // camera zoom speed, units / second
-const FALLBACK_SPEED_MPS = 5;   // walk speed — undershoot so reconciliation only pulls forward
-const TELEPORT_SNAP_M  = 15;    // only hard-snap for teleport-scale corrections
-const RECONCILE_RATE   = 4.0;   // blend prediction toward server per second (higher = tighter)
+const FALLBACK_SPEED_MPS = 17.5; // conservative default: 5 m/s base x 3.5 run multiplier
 const HEADING_RESEND   = 3;     // degrees — resend heading if direction changed more than this
 const SEND_INTERVAL_MS = 100;   // min gap between heading sends (10 Hz)
 
 export class WASDController {
   private held              = new Set<string>();
   private lastSendAt        = 0;
-  private lastSentHeading   = -999; // impossible heading → forces first send
+  private lastSentHeading   = -999; // impossible heading -> forces first send
   private isMoving          = false;
+
   /** Client-predicted local position while movement keys are held. */
-  private _localPos: { x: number; y: number; z: number } | null = null;
+  private _localX: number | null = null;
+  private _localY: number | null = null;
+  private _localZ: number | null = null;
+
+  /** Direct reference to the player entity for driving position. */
+  private _playerEntity: PlayerEntity | null = null;
+
   private inventoryToggle:      (() => void) | null = null;
   private abilityToggle:        (() => void) | null = null;
   private characterSheetToggle: (() => void) | null = null;
@@ -52,6 +58,8 @@ export class WASDController {
   private partyTargetSlotCallback:  ((slot: number) => void) | null = null;
   private partyTargetNext:          (() => void) | null = null;
   private partyTargetPrev:          (() => void) | null = null;
+  private layoutEditToggle:         (() => void) | null = null;
+  private layoutEditActive:         (() => boolean) | null = null;
 
   setInventoryToggle(fn: () => void):      void { this.inventoryToggle      = fn; }
   setAbilityToggle(fn: () => void):        void { this.abilityToggle        = fn; }
@@ -68,6 +76,11 @@ export class WASDController {
   setPartyTargetSlotCallback(fn: (slot: number) => void): void { this.partyTargetSlotCallback = fn; }
   setPartyTargetNext(fn: () => void):      void { this.partyTargetNext      = fn; }
   setPartyTargetPrev(fn: () => void):      void { this.partyTargetPrev      = fn; }
+  setLayoutEditToggle(fn: () => void):     void { this.layoutEditToggle     = fn; }
+  setLayoutEditActive(fn: () => boolean):  void { this.layoutEditActive     = fn; }
+
+  /** Wire the player entity after EntityFactory creates it. */
+  setPlayerEntity(pe: PlayerEntity | null): void { this._playerEntity = pe; }
 
   constructor(
     private readonly camera: OrbitCamera,
@@ -81,6 +94,9 @@ export class WASDController {
   // ── Called once per frame from App._loop ───────────────────────────────────
 
   tick(dt: number): void {
+    // Suppress all movement / camera input while layout edit mode is active.
+    if (this.layoutEditActive?.()) return;
+
     // Q / E — smooth camera yaw (every frame, dt-scaled)
     if (this.held.has('q')) this.camera.addYaw(+QE_SPEED * dt);
     if (this.held.has('e')) this.camera.addYaw(-QE_SPEED * dt);
@@ -95,7 +111,21 @@ export class WASDController {
     if (this.held.has('=') || this.held.has('+')) this.camera.addZoom(+ZOOM_SPEED * dt);
     if (this.held.has('-'))                       this.camera.addZoom(-ZOOM_SPEED * dt);
 
-    // Build a [−1..1] input vector from held keys
+    // Gate on isAlive — stop movement if dead
+    if (!this.player.isAlive) {
+      if (this.isMoving) {
+        this.socket.sendMoveStop();
+        this.isMoving = false;
+        this.lastSentHeading = -999;
+      }
+      if (this._localX !== null) {
+        this._localX = this._localY = this._localZ = null;
+        this._playerEntity?.stopWASD();
+      }
+      return;
+    }
+
+    // Build a [-1..1] input vector from held keys
     const inputX = (this.held.has('d') ? 1 : 0) - (this.held.has('a') ? 1 : 0);
     const inputZ = (this.held.has('w') ? 1 : 0) - (this.held.has('s') ? 1 : 0);
 
@@ -106,23 +136,17 @@ export class WASDController {
         this.isMoving = false;
         this.lastSentHeading = -999;
       }
-      if (this._localPos !== null) {
-        this._localPos = null;
-        this.player.clearLocalPosition();
+      if (this._localX !== null) {
+        this._localX = this._localY = this._localZ = null;
+        this._playerEntity?.stopWASD();
       }
       return;
     }
 
-    // Rotate input by camera yaw → world-space XZ direction.
-    //
-    // Camera sits at offset (sin(yaw), _, cos(yaw)) * distance from the player
-    // so the "into screen / forward" direction is (-sin(yaw), 0, -cos(yaw)).
-    //
-    //   forward  (W)  = (-sin(yaw), 0, -cos(yaw))
-    //   right    (D)  = ( cos(yaw), 0, -sin(yaw))
-    //
-    // Combined: worldX = inputX*cos(yaw) - inputZ*sin(yaw)
-    //           worldZ = -inputX*sin(yaw) - inputZ*cos(yaw)
+    // Cancel any active click-move when WASD starts
+    this._playerEntity?.stopClickMove();
+
+    // Rotate input by camera yaw -> world-space XZ direction.
     const yaw    = this.camera.getYaw();
     const worldX =  inputX * Math.cos(yaw) - inputZ * Math.sin(yaw);
     const worldZ = -inputX * Math.sin(yaw) - inputZ * Math.cos(yaw);
@@ -134,46 +158,35 @@ export class WASDController {
     const normZ = worldZ / len;
 
     // ── Client-side prediction ───────────────────────────────────────────────
-    // Seed from server position on the first frame of each movement burst.
-    const serverPos = this.player.position;
-    if (!this._localPos) {
-      this._localPos = { x: serverPos.x, y: serverPos.y, z: serverPos.z };
+    // Seed from entity position on the first frame of each movement burst.
+    if (this._localX === null && this._playerEntity) {
+      const p = this._playerEntity.object3d.position;
+      this._localX = p.x;
+      this._localY = p.y;
+      this._localZ = p.z;
     }
 
-    // Advance local position at the server's actual speed this frame.
-    const speedMPS = this.player.movementSpeedMPS || FALLBACK_SPEED_MPS;
-    this._localPos.x += normX * speedMPS * dt;
-    this._localPos.z += normZ * speedMPS * dt;
+    if (this._localX !== null && this._localY !== null && this._localZ !== null) {
+      // Advance local position at the server's actual speed this frame.
+      const speedMPS = this.player.movementSpeedMPS || FALLBACK_SPEED_MPS;
+      this._localX += normX * speedMPS * dt;
+      this._localZ += normZ * speedMPS * dt;
+      // Y tracks server for terrain height
+      this._localY = this.player.position.y;
 
-    // Soft reconciliation: continuously blend prediction toward the
-    // server-authoritative position.  This keeps drift bounded without
-    // hard snaps — the prediction naturally tracks the server with a
-    // small latency-proportional lead.
-    const pull = Math.min(RECONCILE_RATE * dt, 1);
-    this._localPos.x += (serverPos.x - this._localPos.x) * pull;
-    this._localPos.z += (serverPos.z - this._localPos.z) * pull;
-    this._localPos.y  = serverPos.y;
-
-    // Hard snap only for true teleports (zone change, GM warp, etc.)
-    const drift = Math.hypot(this._localPos.x - serverPos.x, this._localPos.z - serverPos.z);
-    if (drift > TELEPORT_SNAP_M) {
-      this._localPos.x = serverPos.x;
-      this._localPos.z = serverPos.z;
+      // Drive the entity directly — no intermediary
+      this._playerEntity?.drivePosition(this._localX, this._localY, this._localZ);
     }
-
-    // Push the predicted position to PlayerState so EntityFactory can forward
-    // it to PlayerEntity before this frame's render.
-    this.player.setLocalPosition(this._localPos);
 
     // ── Continuous server send ──────────────────────────────────────────────────
     // Convert world direction to heading (degrees).  Server convention:
-    //   heading 0 = +Z (south), increases clockwise → atan2(X, Z).
+    //   heading 0 = +Z (south), increases clockwise -> atan2(X, Z).
     let headingDeg = Math.atan2(normX, normZ) * (180 / Math.PI);
     if (headingDeg < 0) headingDeg += 360;
 
     const now = Date.now();
     const headingDelta = Math.abs(headingDeg - this.lastSentHeading);
-    // Wrap-around-safe delta (e.g. 359° → 1° = 2°, not 358°)
+    // Wrap-around-safe delta (e.g. 359 -> 1 = 2, not 358)
     const wrappedDelta = Math.min(headingDelta, 360 - headingDelta);
 
     // Send immediately on start, on heading change, or every 100 ms as heartbeat
@@ -208,6 +221,16 @@ export class WASDController {
     if (key.startsWith('arrow') || key === '=' || key === '+' || key === '-') {
       e.preventDefault();
     }
+
+    // F10 — toggle layout editor
+    if (key === 'f10') {
+      e.preventDefault();
+      this.layoutEditToggle?.();
+      return;
+    }
+
+    // While layout edit is active, swallow all other game keys
+    if (this.layoutEditActive?.()) return;
 
     // Tab / Shift+Tab — cycle targets
     if (key === 'tab') {

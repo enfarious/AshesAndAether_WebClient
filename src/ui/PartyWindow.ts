@@ -35,6 +35,8 @@ export class PartyWindow {
     this._refresh();
   }
 
+  get isVisible(): boolean { return this._visible; }
+
   show(): void {
     this._userHidden = false;
     this._refresh();

@@ -135,6 +135,24 @@ export class SessionState {
     this._pendingCharacterError = null;
   }
 
+  /**
+   * Reset all auth/character state so the client can re-authenticate
+   * as a different account without a full page reload.
+   */
+  clearAuth(): void {
+    this._accountId             = null;
+    this._authToken             = null;
+    this._isEphemeral           = false;
+    this._ephemeralMessage      = null;
+    this._characters            = [];
+    this._canCreateCharacter    = false;
+    this._maxCharacters         = 0;
+    this._selectedCharacterId   = null;
+    this._pendingAuthConfirm    = null;
+    this._pendingCharacterConfirm = null;
+    this._pendingCharacterError = null;
+  }
+
   selectCharacter(id: string): void {
     this._selectedCharacterId = id;
     this.setPhase('loading_world');

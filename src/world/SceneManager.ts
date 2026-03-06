@@ -32,6 +32,9 @@ export class SceneManager {
   private _weather  = 'clear';
   private _lighting = 'normal';
 
+  /** Cached TOD value — skip _resolvePresetForTod when change is < threshold. */
+  private _lastTod = -1;
+
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({
       canvas,
@@ -48,7 +51,7 @@ export class SceneManager {
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x3a5070);
-    this.scene.fog = new THREE.FogExp2(0x6080a0, 0.00025);
+    this.scene.fog = new THREE.FogExp2(0x6080a0, 0.0014);
 
     // ── Lighting ──────────────────────────────────────────────────────────
     // Hemisphere: sky colour from above, ground bounce from below.
@@ -67,13 +70,13 @@ export class SceneManager {
     this.directionalLight = new THREE.DirectionalLight(0xffffff, 1.3);
     this.directionalLight.position.set(200, 400, 150);
     this.directionalLight.castShadow = true;
-    this.directionalLight.shadow.mapSize.set(2048, 2048);
+    this.directionalLight.shadow.mapSize.set(1024, 1024);
     this.directionalLight.shadow.camera.near = 1;
-    this.directionalLight.shadow.camera.far  = 2000;
-    this.directionalLight.shadow.camera.left   = -600;
-    this.directionalLight.shadow.camera.right  = 600;
-    this.directionalLight.shadow.camera.top    = 600;
-    this.directionalLight.shadow.camera.bottom = -600;
+    this.directionalLight.shadow.camera.far  = 1200;
+    this.directionalLight.shadow.camera.left   = -300;
+    this.directionalLight.shadow.camera.right  = 300;
+    this.directionalLight.shadow.camera.top    = 300;
+    this.directionalLight.shadow.camera.bottom = -300;
     this.directionalLight.shadow.bias = -0.0005;
     this.scene.add(this.directionalLight);
     this.scene.add(this.directionalLight.target);
@@ -133,16 +136,24 @@ export class SceneManager {
       this._applyLerped(tr.from, tr.to, t);
       if (tr.elapsed >= tr.duration) this.envTransition = null;
     } else if (timeOfDay !== undefined) {
-      // Continuous TOD-driven lighting — derive the preset from the current
-      // time-of-day float every frame so lighting never freezes between
-      // server bucket broadcasts.
-      this._applyPreset(_resolvePresetForTod(timeOfDay, this._weather, this._lighting));
+      // Continuous TOD-driven lighting.  Skip the (expensive) preset resolve
+      // + 12× Color allocations if the TOD hasn't moved meaningfully.
+      // 0.001 ≈ 1.4 real seconds on a 24-min day cycle — invisible to players.
+      if (Math.abs(timeOfDay - this._lastTod) > 0.001) {
+        this._lastTod = timeOfDay;
+        this._applyPreset(_resolvePresetForTod(timeOfDay, this._weather, this._lighting));
+      }
     }
 
     // Sun orbit — move the directional light based on time of day
     if (timeOfDay !== undefined) {
       this._updateSunPosition(timeOfDay, focusPoint);
     }
+  }
+
+  /** Normalized direction from the scene origin toward the sun/moon light. */
+  getSunDirection(): THREE.Vector3 {
+    return this.directionalLight.position.clone().normalize();
   }
 
   render(camera: THREE.Camera): void {
@@ -226,7 +237,7 @@ export class SceneManager {
 
   /** Write an EnvPreset directly to all lights / fog / renderer. */
   private _applyPreset(env: EnvPreset): void {
-    this.scene.background = new THREE.Color(env.skyColor);
+    (this.scene.background as THREE.Color).set(env.skyColor);
     (this.scene.fog as THREE.FogExp2).color.set(env.fogColor);
     (this.scene.fog as THREE.FogExp2).density = env.fogDensity;
 
@@ -265,16 +276,22 @@ export class SceneManager {
     };
   }
 
+  // Reusable Color objects to avoid per-frame allocations during transitions.
+  private static readonly _ca = new THREE.Color();
+  private static readonly _cb = new THREE.Color();
+
   /** Interpolate every field between two presets at position t ∈ [0, 1]. */
   private _applyLerped(from: EnvPreset, to: EnvPreset, t: number): void {
+    const ca = SceneManager._ca;
+    const cb = SceneManager._cb;
     const lc = (a: number, b: number): number => {
-      const ca = new THREE.Color(a);
-      const cb = new THREE.Color(b);
+      ca.set(a);
+      cb.set(b);
       return ca.lerp(cb, t).getHex();
     };
     const ln = (a: number, b: number): number => a + (b - a) * t;
 
-    this.scene.background = new THREE.Color(lc(from.skyColor, to.skyColor));
+    (this.scene.background as THREE.Color).set(lc(from.skyColor, to.skyColor));
 
     const fog = this.scene.fog as THREE.FogExp2;
     fog.color.set(lc(from.fogColor, to.fogColor));
@@ -325,7 +342,7 @@ interface EnvPreset {
 // ── Base TOD presets ─────────────────────────────────────────────────────────
 
 const PRESET_NIGHT: EnvPreset = {
-  skyColor: 0x0a1020, fogColor: 0x101828, fogDensity: 0.00035,
+  skyColor: 0x0a1020, fogColor: 0x101828, fogDensity: 0.0022,
   hemiSkyColor: 0x2a4060, hemiGroundColor: 0x141418, hemiIntensity: 1.3,
   ambientColor: 0x263850, ambientIntensity: 0.90,
   sunColor: 0x5070c0, sunIntensity: 0.75,
@@ -334,7 +351,7 @@ const PRESET_NIGHT: EnvPreset = {
 };
 
 const PRESET_DAWN: EnvPreset = {
-  skyColor: 0x251810, fogColor: 0x3a2010, fogDensity: 0.00030,
+  skyColor: 0x251810, fogColor: 0x3a2010, fogDensity: 0.0018,
   hemiSkyColor: 0xd08050, hemiGroundColor: 0x301808, hemiIntensity: 1.0,
   ambientColor: 0x806040, ambientIntensity: 0.6,
   sunColor: 0xff9040, sunIntensity: 1.1,
@@ -343,7 +360,7 @@ const PRESET_DAWN: EnvPreset = {
 };
 
 const PRESET_DAY: EnvPreset = {
-  skyColor: 0x4a6a90, fogColor: 0x7090b8, fogDensity: 0.00022,
+  skyColor: 0x4a6a90, fogColor: 0x7090b8, fogDensity: 0.0014,
   hemiSkyColor: 0xb0c8e8, hemiGroundColor: 0x304820, hemiIntensity: 1.2,
   ambientColor: 0x90a0b0, ambientIntensity: 0.5,
   sunColor: 0xffffff, sunIntensity: 1.3,
@@ -352,7 +369,7 @@ const PRESET_DAY: EnvPreset = {
 };
 
 const PRESET_DUSK: EnvPreset = {
-  skyColor: 0x251810, fogColor: 0x3a2010, fogDensity: 0.00030,
+  skyColor: 0x251810, fogColor: 0x3a2010, fogDensity: 0.0018,
   hemiSkyColor: 0xd08050, hemiGroundColor: 0x301808, hemiIntensity: 1.0,
   ambientColor: 0x806040, ambientIntensity: 0.6,
   sunColor: 0xff9040, sunIntensity: 1.1,
@@ -374,10 +391,16 @@ const TOD_ANCHORS = [
   { t: 1.0,   p: PRESET_NIGHT },   // wraps back to midnight
 ];
 
+// Reusable Color objects for _lerpPreset (module-level to avoid allocation).
+const _lpA = new THREE.Color();
+const _lpB = new THREE.Color();
+
 /** Linearly interpolate every field of two EnvPresets at position t ∈ [0,1]. */
 function _lerpPreset(a: EnvPreset, b: EnvPreset, t: number): EnvPreset {
-  const lc = (c1: number, c2: number): number =>
-    new THREE.Color(c1).lerp(new THREE.Color(c2), t).getHex();
+  const lc = (c1: number, c2: number): number => {
+    _lpA.set(c1); _lpB.set(c2);
+    return _lpA.lerp(_lpB, t).getHex();
+  };
   const ln = (v1: number, v2: number): number => v1 + (v2 - v1) * t;
 
   return {

@@ -194,7 +194,7 @@ export class WorldState {
       if (channelDelta.count   !== undefined) channel.count   = channelDelta.count;
       if (channelDelta.sample  !== undefined) channel.sample  = channelDelta.sample;
       if (channelDelta.lastSpeaker !== undefined) {
-        channel.lastSpeaker = channelDelta.lastSpeaker ?? undefined;
+        channel.lastSpeaker = channelDelta.lastSpeaker as string;
       }
 
       channel.entities = Array.from(entityMap.values());

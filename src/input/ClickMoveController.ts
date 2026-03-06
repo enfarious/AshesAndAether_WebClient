@@ -5,6 +5,8 @@ import type { PlayerState }      from '@/state/PlayerState';
 import type { EntityRegistry }   from '@/state/EntityRegistry';
 import type { OrbitCamera }      from '@/camera/OrbitCamera';
 import type { EntityFactory }    from '@/entities/EntityFactory';
+import { type PlayerEntity, PlayerMoveMode } from '@/entities/PlayerEntity';
+import { SPEED_MULTIPLIERS }     from '@/network/Protocol';
 
 /**
  * ClickMoveController — translates left-click into a move command.
@@ -22,6 +24,10 @@ import type { EntityFactory }    from '@/entities/EntityFactory';
 export class ClickMoveController {
   private raycaster = new THREE.Raycaster();
   private heightmap: HeightmapService | null = null;
+  private _playerEntity: PlayerEntity | null = null;
+
+  /** Wire the player entity after EntityFactory creates it. */
+  setPlayerEntity(pe: PlayerEntity | null): void { this._playerEntity = pe; }
 
   constructor(
     private readonly canvas:   HTMLElement,
@@ -74,10 +80,17 @@ export class ClickMoveController {
     if (!this.player.targetLocked) this.player.clearTarget();
 
     // ── 2. Terrain hit? ─────────────────────────────────────────────────────
+    // WASD has priority over click-to-move
+    if (this._playerEntity?.mode === PlayerMoveMode.WASD) return;
+
     if (this.heightmap) {
       const hit = this.heightmap.raycast(this.raycaster.ray);
       if (!hit) return;
       this.socket.sendMovePosition({ x: hit.x, y: hit.y, z: hit.z });
+      // Predict at the same speed the server will use: base × jog multiplier
+      // (sendMovePosition defaults to 'jog').
+      const speed = this.player.baseMovementSpeed * SPEED_MULTIPLIERS['jog'] || 5.0;
+      this._playerEntity?.startClickMove(new THREE.Vector3(hit.x, hit.y, hit.z), speed);
       return;
     }
 
@@ -86,6 +99,8 @@ export class ClickMoveController {
     const hit = new THREE.Vector3();
     if (this.raycaster.ray.intersectPlane(groundPlane, hit)) {
       this.socket.sendMovePosition({ x: hit.x, y: 0, z: hit.z });
+      const speed = this.player.baseMovementSpeed * SPEED_MULTIPLIERS['jog'] || 5.0;
+      this._playerEntity?.startClickMove(new THREE.Vector3(hit.x, 0, hit.z), speed);
     }
   };
 

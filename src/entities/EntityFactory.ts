@@ -5,6 +5,7 @@ import type { HeightmapService } from '@/world/HeightmapService';
 import { PlayerEntity } from './PlayerEntity';
 import { RemoteEntity } from './RemoteEntity';
 import type { EntityObject } from './EntityObject';
+import { ClientConfig } from '@/config/ClientConfig';
 import type { Entity } from '@/network/Protocol';
 
 /**
@@ -78,18 +79,32 @@ export class EntityFactory {
     }
   }
 
+  /** Draw distance² — entities beyond this are hidden AND unticked. */
+  private static readonly DRAW_DIST_SQ =
+    ClientConfig.drawDistance * ClientConfig.drawDistance;
+
   /** Called every frame — ticks all entity interpolators and the highlight ring. */
   update(dt: number): void {
-    // Feed client-side prediction into PlayerEntity BEFORE the entity tick so
-    // that update() consumes the predicted position on this same frame.
-    const localPos = this.playerState.localPosition;
-    if (this.player && localPos) {
-      this.player.setPredictedPosition(
-        new THREE.Vector3(localPos.x, localPos.y, localPos.z),
-      );
-    }
+    // Player position for distance culling
+    const px = this.playerState.position.x;
+    const pz = this.playerState.position.z;
 
     for (const obj of this.objects.values()) {
+      // Always tick the local player — skip distance check
+      if (obj === this.player) { obj.update(dt); continue; }
+
+      // Draw-distance culling: hide AND skip tick for distant entities.
+      // Visible entities get their interpolation updated; hidden ones sit
+      // at their last position and snap when the player approaches.
+      const ep = obj.object3d.position;
+      const dx = ep.x - px;
+      const dz = ep.z - pz;
+      const distSq = dx * dx + dz * dz;
+      if (distSq > EntityFactory.DRAW_DIST_SQ) {
+        if (obj.object3d.visible) obj.object3d.visible = false;
+        continue;
+      }
+      if (!obj.object3d.visible) obj.object3d.visible = true;
       obj.update(dt);
     }
     this._updateHighlight(dt);
@@ -115,6 +130,15 @@ export class EntityFactory {
   // ── Registry event handlers ───────────────────────────────────────────────
 
   private _onCreate(entity: Entity): void {
+    // Guard: if an object already exists for this ID, dispose the orphan first
+    // to prevent leaked Three.js objects accumulating in the scene graph.
+    const stale = this.objects.get(entity.id);
+    if (stale) {
+      stale.dispose();
+      this.objects.delete(entity.id);
+      if (stale === this.player) this.player = null;
+    }
+
     const isPlayer = entity.id === this.registry.playerId;
 
     // Snap non-player entities to client-side terrain elevation so they sit
@@ -138,7 +162,7 @@ export class EntityFactory {
         stamina:  { current: 0, max: 0 },
         mana:     { current: 0, max: 0 },
         isAlive:  entity.isAlive  ?? true,
-      } as Parameters<typeof PlayerEntity>[0];
+      } as unknown as ConstructorParameters<typeof PlayerEntity>[0];
 
       const pe = new PlayerEntity(cs, this.scene);
       this.player = pe;
@@ -158,12 +182,15 @@ export class EntityFactory {
     }
 
     if (entity.position) {
+      const isLocalPlayer = entity.id === this.registry.playerId;
       let y = entity.position.y;
       // Snap non-player entities to client terrain elevation
-      if (entity.id !== this.registry.playerId && this.heightmap) {
+      if (!isLocalPlayer && this.heightmap) {
         const elev = this.heightmap.getElevation(entity.position.x, entity.position.z);
         if (elev !== null) y = elev + EntityFactory.GROUND_CLEARANCE;
       }
+      // PlayerEntity.setTargetPosition() buffers internally via its mode
+      // check — safe to call even during WASD/CLICK_MOVE prediction.
       const pos = new THREE.Vector3(entity.position.x, y, entity.position.z);
       obj.setTargetPosition(pos, entity.heading, entity.movementDuration);
     }

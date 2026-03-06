@@ -25,6 +25,7 @@ export interface WorldManifest {
 export interface ZoneAssets {
   worldRoot:  THREE.Group;
   heightmap:  HeightmapService | null;
+  origin?:    { lat: number; lon: number } | undefined;
 }
 
 // ── Semantic material palette ─────────────────────────────────────────────────
@@ -136,7 +137,13 @@ export class AssetLoader {
     console.log(`[AssetLoader] WorldRoot: ${meshCount} meshes, ${vertCount.toLocaleString()} verts`);
 
     this._status('World assets ready');
-    return { worldRoot: root, heightmap };
+    return {
+      worldRoot: root,
+      heightmap,
+      origin: manifest.origin
+        ? { lat: originLat, lon: originLon }
+        : undefined,
+    };
   }
 
   // ── Manifest ──────────────────────────────────────────────────────────────
@@ -201,17 +208,30 @@ export class AssetLoader {
     let meshCount = 0;
     let vertCount = 0;
 
+    const isTerrain = mat === MAT['terrain'];
     gltf.scene.traverse(child => {
       if (!(child instanceof THREE.Mesh)) return;
       meshCount++;
-      vertCount += child.geometry.attributes['position']?.count ?? 0;
+      const verts = child.geometry.attributes['position']?.count ?? 0;
+      vertCount += verts;
 
       if (!child.geometry.attributes['normal']) {
         child.geometry.computeVertexNormals();
       }
-      child.material      = mat;
-      child.castShadow    = true;
-      child.receiveShadow = true;
+      child.material = mat;
+      // Terrain: receive only (flat ground self-shadow is invisible).
+      // Small meshes (< 50 verts — tiny props): neither cast nor receive.
+      // Everything else: cast + receive.
+      if (isTerrain) {
+        child.castShadow    = false;
+        child.receiveShadow = true;
+      } else if (verts < 50) {
+        child.castShadow    = false;
+        child.receiveShadow = false;
+      } else {
+        child.castShadow    = true;
+        child.receiveShadow = true;
+      }
     });
 
     // Apply scale: zone unitScale × optional per-asset scale from manifest.

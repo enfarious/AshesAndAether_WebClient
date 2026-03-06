@@ -36,10 +36,19 @@ export class SocketClient {
   connect(): void {
     if (this.socket?.connected) return;
 
+    // Tear down any lingering socket from a previous attempt so its
+    // event handlers don't fire ghost events alongside the new one.
+    if (this.socket) {
+      this.socket.removeAllListeners();
+      this.socket.disconnect();
+      this.socket = null;
+    }
+
     this.socket = io(ClientConfig.serverUrl, {
       path: '/socket.io/',
       transports: ['websocket'],
       autoConnect: false,
+      reconnection: false,   // We manage retries ourselves in app.ts
     });
 
     this.socket.on('connect', () => {

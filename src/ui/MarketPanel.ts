@@ -49,6 +49,8 @@ export class MarketPanel {
 
   // ── Public API ───────────────────────────────────────────────────────────
 
+  get isVisible(): boolean { return this.visible; }
+
   toggle(): void { this.visible ? this.hide() : this.show(); }
 
   show(): void {

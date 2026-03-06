@@ -66,6 +66,8 @@ export class InventoryWindow {
 
   // ── Public API ─────────────────────────────────────────────────────────────
 
+  get isVisible(): boolean { return this.visible; }
+
   toggle(): void {
     this.visible ? this.hide() : this.show();
   }

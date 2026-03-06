@@ -282,7 +282,7 @@ export class WardBeaconManager {
       new THREE.Vector3(0, -1, 0),      // straight down
     );
     const hits = ray.intersectObjects(this.scene.children, true);
-    if (hits.length > 0) {
+    if (hits.length > 0 && hits[0]) {
       return hits[0].point.y;
     }
     return fallbackY;

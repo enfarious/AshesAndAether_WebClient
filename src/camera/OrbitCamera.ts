@@ -7,14 +7,14 @@ import { ClientConfig } from '@/config/ClientConfig';
  * - Elevation (pitch) is adjustable within a configurable range
  * - Yaw is free (mouse drag, arrow keys, or programmatic)
  * - Zoom is camera distance from target
- * - Far plane is set to 10km to cover real-world-scale zones
+ * - Far plane is matched to draw distance + fog fade margin
  */
 export class OrbitCamera {
   readonly camera: THREE.PerspectiveCamera;
 
-  private yaw      = 0;
-  private distance = ClientConfig.cameraDistance;
-  private elevation = ClientConfig.cameraElevation; // degrees
+  private yaw: number      = 0;
+  private distance: number = ClientConfig.cameraDistance;
+  private elevation: number = ClientConfig.cameraElevation; // degrees
 
   private target     = new THREE.Vector3();
   private targetLerp = new THREE.Vector3();
@@ -24,7 +24,7 @@ export class OrbitCamera {
       50,
       window.innerWidth / window.innerHeight,
       0.5,     // near — 0.5m
-      10000,   // far  — 10km, covers the largest real-world zone
+      2000,    // far  — 2km, fog hides the clip boundary
     );
     window.addEventListener('resize', this._onResize);
     this._applyTransform();

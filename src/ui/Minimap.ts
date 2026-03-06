@@ -166,7 +166,7 @@ export class Minimap {
     this._drawCardinalLines(ctx, cx, cy, r);
 
     // 4. Entity dots
-    const playerPos = this.player.localPosition ?? this.player.position;
+    const playerPos = this.player.position;
     const allEntities = this.entities.getAll();
     const playerId    = this.entities.playerId;
     const scale       = r / VIEW_RADIUS;

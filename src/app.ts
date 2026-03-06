@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { SocketClient }       from '@/network/SocketClient';
 import { MessageRouter }      from '@/network/MessageRouter';
+import { ClientConfig }       from '@/config/ClientConfig';
 import { SessionState }       from '@/state/SessionState';
 import { PlayerState }        from '@/state/PlayerState';
 import { EntityRegistry }     from '@/state/EntityRegistry';
@@ -12,6 +13,7 @@ import { OrbitCamera }        from '@/camera/OrbitCamera';
 import { CameraInput }        from '@/camera/CameraInput';
 import { ClickMoveController } from '@/input/ClickMoveController';
 import { WASDController }      from '@/input/WASDController';
+import { GamepadController }   from '@/input/GamepadController';
 import { TabTargetService }    from '@/input/TabTargetService';
 import { HUD }                from '@/ui/HUD';
 import { ChatPanel }          from '@/ui/ChatPanel';
@@ -30,18 +32,23 @@ import { Minimap }            from '@/ui/Minimap';
 import { LoginScreen }        from '@/ui/LoginScreen';
 import { CharacterSelect }    from '@/ui/CharacterSelect';
 import { UIScaleWidget }      from '@/ui/UIScaleWidget';
+import { FpsWidget }          from '@/ui/FpsWidget';
 import { VillagePanel }       from '@/ui/VillagePanel';
 import { MarketPanel }        from '@/ui/MarketPanel';
 import { WorldMapPanel }      from '@/ui/WorldMapPanel';
 import { GuildPanel }         from '@/ui/GuildPanel';
 import { CompanionPanel }     from '@/ui/CompanionPanel';
 import { SystemMenu }         from '@/ui/SystemMenu';
+import { LayoutEditor }       from '@/ui/LayoutEditor';
 import { EnmityPanel }        from '@/ui/EnmityPanel';
 import { BuildPanel }         from '@/ui/BuildPanel';
 import { RegistrationModal }  from '@/ui/RegistrationModal';
 import { CorpseSystem }       from '@/entities/CorpseSystem';
 import { CorruptionMiasma }  from '@/entities/CorruptionMiasma';
 import { WardBeaconManager } from '@/entities/WardBeacon';
+import { WaterRenderer }      from '@/world/WaterRenderer';
+import { VaultRenderer }      from '@/world/VaultRenderer';
+import type { VaultTileData } from '@/world/VaultRenderer';
 import { PlacementMode }      from '@/village/PlacementMode';
 
 /**
@@ -69,13 +76,16 @@ export class App {
   private assets:  AssetLoader;
   private factory: EntityFactory;
   private corpses: CorpseSystem;
-  private worldRoot: THREE.Group | null = null;
-  private miasma:    CorruptionMiasma | null = null;
-  private beacons:   WardBeaconManager | null = null;
+  private worldRoot:  THREE.Group | null = null;
+  private _heightmap: import('@/world/HeightmapService').HeightmapService | null = null;
+  private miasma:     CorruptionMiasma | null = null;
+  private beacons:    WardBeaconManager | null = null;
+  private water:      WaterRenderer | null = null;
 
   // ── Input ─────────────────────────────────────────────────────────────────
   private clickMove: ClickMoveController;
   private wasd:      WASDController;
+  private gamepad:   GamepadController;
   private tabTarget: TabTargetService | null = null;
 
   // ── UI ────────────────────────────────────────────────────────────────────
@@ -96,6 +106,7 @@ export class App {
   private actionBar:       ActionBar       | null = null;
   private minimap:         Minimap         | null = null;
   private scaleWidget:     UIScaleWidget   | null = null;
+  private fpsWidget:       FpsWidget       | null = null;
   private villagePanel:      VillagePanel      | null = null;
   private marketPanel:       MarketPanel       | null = null;
   private registrationModal: RegistrationModal  | null = null;
@@ -103,6 +114,7 @@ export class App {
   private guildPanel:        GuildPanel         | null = null;
   private companionPanel:    CompanionPanel     | null = null;
   private systemMenu:        SystemMenu         | null = null;
+  private layoutEditor:      LayoutEditor       | null = null;
   private enmityPanel:       EnmityPanel        | null = null;
   private buildPanel:        BuildPanel         | null = null;
   private placementMode:     PlacementMode      | null = null;
@@ -111,6 +123,16 @@ export class App {
   private _lastWeather  = '';
   private _lastLighting = '';
   private _hasEnteredZone = false;
+
+  /** True once we've wired the PlayerEntity to WASD + ClickMove controllers. */
+  private _playerEntityWired = false;
+
+  // ── FPS limiter ──────────────────────────────────────────────────────────
+  private static readonly FPS_STORAGE_KEY = 'aa_fps_limit';
+  private static readonly FPS_PRESETS = [30, 60, 120, 144, 0] as const; // 0 = unlimited
+  private _fpsLimit = 0;
+  private _frameInterval = 0;
+  private _lastRender = 0;
 
   // ── Loop ──────────────────────────────────────────────────────────────────
   private rafId: number = 0;
@@ -130,6 +152,10 @@ export class App {
     // UI scale — mount outside #ui-root so it doesn't zoom itself.
     // Applies saved scale to #ui-root immediately, persists to localStorage.
     this.scaleWidget = new UIScaleWidget(document.body, this.uiRoot);
+
+    // FPS limit widget — mount outside #ui-root alongside scale widget.
+    // Fires saved limit on construction, so _fpsLimit is set before first frame.
+    this.fpsWidget = new FpsWidget(document.body, this.setFpsLimit);
 
     // Network
     this.socket = new SocketClient();
@@ -151,6 +177,7 @@ export class App {
       canvas, this.camera, this.socket, this.player, this.entities, this.factory,
     );
     this.wasd = new WASDController(this.camera, this.socket, this.player);
+    this.gamepad = new GamepadController(this.camera, this.socket, this.player);
 
     // Asset loader status → loading screen
     this.assets.onStatus(msg  => loading.setStatus(msg));
@@ -237,13 +264,30 @@ export class App {
 
     // Show login once connected (handshake_ack triggers phase → 'login')
     // If the server is unreachable, surface that on the loading screen
-    // rather than hanging silently.
+    // rather than hanging silently. After exhausting retries on the current
+    // host, try fallback servers (e.g. fusoya.servegame.com) before giving up.
     let retryCount = 0;
     const MAX_RETRIES = 3;
-    const RETRY_DELAY_MS = 3000;
+    const RETRY_DELAY_MS = 2000;
+    let triedFallback = false;
 
     const tryConnect = (): void => {
       this.socket.connect();
+    };
+
+    const tryFallbackHost = (): boolean => {
+      if (triedFallback) return false;
+      const fallback = ClientConfig.getNextFallback();
+      if (!fallback) return false;
+      triedFallback = true;
+      retryCount = 0;
+      const display = fallback.replace(/^https?:\/\//, '');
+      console.log(`[App] Primary server failed — trying fallback: ${display}`);
+      this.loading.setStatus(`Trying ${display}…`);
+      ClientConfig.setServerUrl(fallback);
+      this.socket.disconnect();
+      setTimeout(tryConnect, 500);
+      return true;
     };
 
     this.session.on('connectionStatus', () => {
@@ -255,21 +299,27 @@ export class App {
             `Server unreachable — retrying (${retryCount}/${MAX_RETRIES})…`
           );
           setTimeout(tryConnect, RETRY_DELAY_MS);
-        } else {
+        } else if (!tryFallbackHost()) {
           this.loading.setStatus(
-            'Could not reach the server. Is it running on localhost:3100?'
+            'Could not reach any server. Check the server address on the login screen.'
           );
+          // Show login screen so the user can manually enter a server URL
+          this._showLogin();
         }
       } else if (status === 'handshaking') {
         this.loading.setStatus('Handshaking…');
         retryCount = 0;
       } else if (status === 'connected') {
-        // Phase change to 'login' will hide the loading screen
+        // Phase change to 'login' will hide the loading screen.
+        // Sync the login screen server field to whichever host actually connected.
+        this._syncLoginServerField();
         retryCount = 0;
+        triedFallback = false;
       } else if (status === 'disconnected' && this.session.phase === 'in_world') {
         this.loading.show();
         this.loading.setStatus('Disconnected. Reconnecting…');
         retryCount = 0;
+        triedFallback = false;
         setTimeout(tryConnect, RETRY_DELAY_MS);
       }
     });
@@ -282,10 +332,12 @@ export class App {
     cancelAnimationFrame(this.rafId);
     this.clickMove.dispose();
     this.wasd.dispose();
+    this.gamepad.dispose();
     this.camInput.dispose();
     this.camera.dispose();
     this.miasma?.dispose();
     this.beacons?.dispose();
+    this.water?.dispose();
     this.corpses.dispose();
     this.factory.dispose();
     this.scene.dispose();
@@ -313,8 +365,40 @@ export class App {
     this.enmityPanel?.dispose();
     this.buildPanel?.dispose();
     this.systemMenu?.dispose();
+    this.layoutEditor?.dispose();
     this.registrationModal?.dispose();
     this.placementMode?.dispose();
+    this.fpsWidget?.dispose();
+  }
+
+  // ── Chat command handlers ────────────────────────────────────────────────
+
+  /** /quit — graceful logout, clear auth, reconnect to show login screen. */
+  private _handleQuit(): void {
+    this.socket.sendLogout();
+    // Set phase away from in_world BEFORE disconnect so auto-reconnect doesn't fire.
+    this.session.setPhase('disconnected');
+    setTimeout(() => {
+      this.socket.disconnect();
+      this.session.clearAuth();
+      this.entities.clear();
+      // Dispose old character select so it's rebuilt fresh for the next account.
+      this.characterSelect?.dispose();
+      this.characterSelect = null;
+      // Reconnect fresh — handshake_ack will set phase → 'login'.
+      this.socket.connect();
+    }, 500);
+  }
+
+  /** /shutdown — graceful logout, then close the client window. */
+  private _handleShutdown(): void {
+    this.socket.sendLogout();
+    setTimeout(() => {
+      this.socket.disconnect();
+      // Tauri WebView2: window.close() closes the native window.
+      // Browser: closes the tab (may be blocked by browser if not user-initiated).
+      window.close();
+    }, 500);
   }
 
   // ── Game loop ─────────────────────────────────────────────────────────────
@@ -322,17 +406,39 @@ export class App {
   private _loop = (now: number): void => {
     this.rafId = requestAnimationFrame(this._loop);
 
+    // FPS limiter — skip frame if too soon
+    if (this._fpsLimit > 0 && (now - this._lastRender) < this._frameInterval) return;
+    this._lastRender = now;
+
+    // FPS counter + entity count debug
+    this.hud?.updateFps(now, this.factory?.getAllObjects().length ?? 0);
+
     const dt = Math.min((now - this.lastTime) / 1000, 0.1);
     this.lastTime = now;
 
     // Tick entities
     this.factory.update(dt);
 
+    // Wire PlayerEntity to controllers once it exists
+    if (!this._playerEntityWired) {
+      const pe = this.factory.getPlayerEntity();
+      if (pe) {
+        this.wasd.setPlayerEntity(pe);
+        this.gamepad.setPlayerEntity(pe);
+        this.clickMove.setPlayerEntity(pe);
+        // Pass physics data so the entity can do terrain following + wall collision.
+        if (this._heightmap) pe.setHeightmap(this._heightmap);
+        if (this.worldRoot) pe.setWorldRoot(this.worldRoot);
+        this._playerEntityWired = true;
+      }
+    }
+
     // Tick tendril / corpse effects
     this.corpses.update(dt);
 
     // WASD movement + Q/E camera rotation
     this.wasd.tick(dt);
+    this.gamepad.tick(dt);
 
     // Follow player with camera
     const playerEntity = this.factory.getPlayerEntity();
@@ -358,7 +464,18 @@ export class App {
     // Tick ward beacon animations (ring spin + pulse)
     this.beacons?.update(dt);
 
+    // Tick water shader animation (wave displacement + fog sync)
+    this.water?.update(dt, this.scene.getSunDirection());
+
     this.scene.render(this.camera.getCamera());
+  };
+
+  /**
+   * Set an FPS cap. 0 = unlimited.
+   */
+  setFpsLimit = (limit: number): void => {
+    this._fpsLimit = limit;
+    this._frameInterval = limit > 0 ? 1000 / limit : 0;
   };
 
   // ── Phase management ──────────────────────────────────────────────────────
@@ -399,6 +516,12 @@ export class App {
         this.loading.setStatus('Entering world…');
         this.loading.setProgress(0);
         this._hasEnteredZone = false;
+        // Reset entity wiring — new zone will spawn a new PlayerEntity
+        this._playerEntityWired = false;
+        this._heightmap = null;
+        this.wasd.setPlayerEntity(null);
+        this.gamepad.setPlayerEntity(null);
+        this.clickMove.setPlayerEntity(null);
         break;
 
       case 'in_world':
@@ -442,6 +565,11 @@ export class App {
     this.loginScreen.show();
   }
 
+  /** Update the login screen server field to match the active ClientConfig URL. */
+  private _syncLoginServerField(): void {
+    this.loginScreen?.syncServerField();
+  }
+
   private _showCharacterSelect(): void {
     this.loginScreen?.hide();
     if (!this.characterSelect) {
@@ -456,6 +584,8 @@ export class App {
     }
     if (!this.chatPanel) {
       this.chatPanel = new ChatPanel(this.uiRoot, this.world, this.socket, this.player);
+      this.chatPanel.setQuitCallback(() => this._handleQuit());
+      this.chatPanel.setShutdownCallback(() => this._handleShutdown());
     }
     if (!this.targetWindow) {
       this.targetWindow = new TargetWindow(this.uiRoot, this.player, this.entities, this.socket);
@@ -556,19 +686,52 @@ export class App {
         party:      () => this.partyWindow?.toggle(),
         map:        () => this.worldMapPanel?.toggle(),
         market:     () => this.marketPanel?.toggle(),
+        layout:     () => this.layoutEditor?.toggle(),
       });
+    }
+    // Layout editor — drag-to-reposition HUD widgets
+    if (!this.layoutEditor) {
+      this.layoutEditor = new LayoutEditor(this.uiRoot);
+      this.wasd.setLayoutEditToggle(() => this.layoutEditor?.toggle());
+      this.wasd.setLayoutEditActive(() => this.layoutEditor?.isActive ?? false);
     }
     // Tab targeting
     if (!this.tabTarget) {
       this.tabTarget = new TabTargetService(
         this.entities, this.player,
-        () => this.player.localPosition ?? this.player.position,
+        () => {
+          const pe = this.factory.getPlayerEntity();
+          if (pe) {
+            const p = pe.object3d.position;
+            return { x: p.x, y: p.y, z: p.z };
+          }
+          return this.player.position;
+        },
       );
       this.wasd.setTabTargetNext(() => this.tabTarget!.cycleTarget(1));
       this.wasd.setTabTargetPrev(() => this.tabTarget!.cycleTarget(-1));
       this.wasd.setPartyTargetSlotCallback(slot => this.tabTarget!.targetPartySlot(slot));
       this.wasd.setPartyTargetNext(() => this.tabTarget!.cyclePartyTarget(1));
       this.wasd.setPartyTargetPrev(() => this.tabTarget!.cyclePartyTarget(-1));
+
+      // Gamepad — same targeting callbacks + layout/menu awareness
+      this.gamepad.setTabTargetNext(() => this.tabTarget!.cycleTarget(1));
+      this.gamepad.setTabTargetPrev(() => this.tabTarget!.cycleTarget(-1));
+      this.gamepad.setPartyTargetNext(() => this.tabTarget!.cyclePartyTarget(1));
+      this.gamepad.setPartyTargetPrev(() => this.tabTarget!.cyclePartyTarget(-1));
+      this.gamepad.setLayoutEditActive(() => this.layoutEditor?.isActive ?? false);
+      this.gamepad.setIsMenuOpen(() =>
+        (this.inventoryWindow?.isVisible ?? false) ||
+        (this.characterSheet?.isVisible  ?? false) ||
+        (this.abilityWindow?.isVisible   ?? false) ||
+        (this.marketPanel?.isVisible     ?? false) ||
+        (this.worldMapPanel?.isVisible   ?? false) ||
+        (this.guildPanel?.isVisible      ?? false) ||
+        (this.companionPanel?.isVisible  ?? false) ||
+        (this.partyWindow?.isVisible     ?? false) ||
+        (this.buildPanel?.isVisible      ?? false) ||
+        (this.scriptEditor?.isVisible    ?? false)
+      );
     }
     if (!this.villagePanel) {
       this.villagePanel = new VillagePanel(this.uiRoot, this.world, this.player, this.socket);
@@ -591,12 +754,16 @@ export class App {
       this.villagePanel.show();
     }
     // inventoryWindow and lootWindow start hidden (loot panels auto-appear on drops)
+
+    // Apply saved layout positions now that all widgets exist in the DOM
+    this.layoutEditor?.applyAll();
   }
 
   // ── Asset loading ─────────────────────────────────────────────────────────
 
   private async _loadWorldAssets(zoneId: string): Promise<void> {
-    // Remove previous world geometry
+    // Remove previous world geometry + water
+    this.water?.clear();
     if (this.worldRoot) {
       this.scene.scene.remove(this.worldRoot);
       this.worldRoot = null;
@@ -609,13 +776,25 @@ export class App {
       return;
     }
 
+    // Vault zones use tile-based terrain fetched from the server
+    if (zoneId.startsWith('vault:')) {
+      await this._buildVaultTerrain(zoneId);
+      return;
+    }
+
     try {
-      const { worldRoot: root, heightmap } = await this.assets.loadZone(zoneId);
+      const { worldRoot: root, heightmap, origin } = await this.assets.loadZone(zoneId);
       this.worldRoot = root;
+      this._heightmap = heightmap;
       this.scene.scene.add(root);
       this.clickMove.setHeightmap(heightmap);
       this.clickMove.setWorldRoot(root);  // no-op but kept for future mesh targets
       this.factory.setHeightmap(heightmap);
+      const pe = this.factory.getPlayerEntity();
+      if (pe) {
+        pe.setHeightmap(heightmap);
+        pe.setWorldRoot(root);
+      }
 
       // Compute world bounding box, log diagnostics, fit camera.
       const box = new THREE.Box3().setFromObject(root);
@@ -647,9 +826,71 @@ export class App {
       // Terrain is now in the scene — reposition beacons onto it.
       // (Initial beacon raycast fires before GLBs load and misses.)
       this.beacons?.repositionOnTerrain();
+
+      // Water rendering — animated shader surfaces from OSM polygon data
+      if (!this.water) this.water = new WaterRenderer(this.scene.scene, heightmap);
+      if (origin) await this.water.loadForZone(zoneId, origin.lat, origin.lon);
     } catch (err) {
       console.error('[App] Zone asset load failed:', err);
     }
+  }
+
+  /**
+   * Build vault terrain from tile data fetched from the server.
+   * Falls back to a flat grey plane if the fetch fails.
+   */
+  private async _buildVaultTerrain(zoneId: string): Promise<void> {
+    // Extract instanceId from 'vault:<instanceId>'
+    const instanceId = zoneId.slice('vault:'.length);
+    const url = `${ClientConfig.serverUrl}/world/vault-tiles/${instanceId}`;
+
+    let tileData: VaultTileData | null = null;
+    try {
+      const resp = await fetch(url);
+      if (resp.ok) {
+        tileData = await resp.json() as VaultTileData;
+      } else {
+        console.warn(`[App] Vault tiles fetch returned ${resp.status}`);
+      }
+    } catch (err) {
+      console.error('[App] Failed to fetch vault tiles:', err);
+    }
+
+    const root = new THREE.Group();
+    root.name = 'WorldRoot';
+
+    if (tileData) {
+      const renderer = new VaultRenderer();
+      renderer.build(tileData);
+      root.add(renderer.group);
+      console.log(`[App] Vault terrain built: ${tileData.width}×${tileData.height} tiles`);
+    } else {
+      // Fallback: simple grey plane
+      const geo = new THREE.PlaneGeometry(60, 60);
+      geo.rotateX(-Math.PI / 2);
+      const mat = new THREE.MeshStandardMaterial({ color: 0x555555, roughness: 0.9 });
+      const plane = new THREE.Mesh(geo, mat);
+      plane.receiveShadow = true;
+      root.add(plane);
+      console.warn('[App] Vault tile fetch failed — using fallback plane');
+    }
+
+    // Add a dim ambient light for the cave interior
+    const ambientExtra = new THREE.AmbientLight(0x606080, 0.3);
+    root.add(ambientExtra);
+
+    this.worldRoot = root;
+    this._heightmap = null;
+    this.scene.scene.add(root);
+    this.clickMove.setHeightmap(null);
+    this.clickMove.setWorldRoot(root);
+    this.factory.setHeightmap(null);
+    const pe = this.factory.getPlayerEntity();
+    if (pe) {
+      pe.setHeightmap(null);
+      pe.setWorldRoot(root);
+    }
+    this.camera.setDistance(20);
   }
 
   /**
@@ -698,10 +939,18 @@ export class App {
     root.add(boundary);
 
     this.worldRoot = root;
+    this._heightmap = null;
     this.scene.scene.add(root);
     this.clickMove.setHeightmap(null);
     this.clickMove.setWorldRoot(root);
     this.factory.setHeightmap(null);
+    // Wire physics to player entity — village has no heightmap, but worldRoot
+    // provides collision with placed structures.
+    const pe = this.factory.getPlayerEntity();
+    if (pe) {
+      pe.setHeightmap(null);
+      pe.setWorldRoot(root);
+    }
     this.camera.setDistance(30);
     console.log('[App] Village procedural terrain built');
   }

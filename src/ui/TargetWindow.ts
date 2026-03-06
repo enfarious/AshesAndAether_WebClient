@@ -80,6 +80,13 @@ export class TargetWindow {
       execute:  e => this.socket.sendCommand(`/party invite ${e.name}`),
     },
     {
+      // Enter Dungeon — scripted_object dungeon entrances.
+      // Sends /vault enter which triggers key consumption + zone transfer.
+      label:   'Enter Dungeon',
+      visible: e => e.type === 'scripted_object' && e.interactive !== false && /dungeon/i.test(e.name),
+      execute: _e => this.socket.sendCommand('/vault enter'),
+    },
+    {
       // Market — opens market panel when targeting a market stall structure.
       label:   'Market',
       visible: e => e.type === 'structure' && /market\s*stall/i.test(e.name),
@@ -453,7 +460,7 @@ export class TargetWindow {
     // Menu — only rebuild when the set of visible actions could have changed
     // (target swap, type change, or hostile flag change). HP/distance ticks skip this.
     const inParty = entity ? this.player.partyMembers.some(m => m.id === entity.id) : false;
-    const newKey = `${id}|${entity?.type ?? ''}|${entity?.hostile ?? false}|${entity?.isAlive ?? true}|${inParty}`;
+    const newKey = `${id}|${entity?.type ?? ''}|${entity?.hostile ?? false}|${entity?.isAlive ?? true}|${entity?.interactive ?? ''}|${inParty}`;
     if (newKey !== this._menuKey) {
       this._menuKey = newKey;
       this._rebuildMenu(entity ?? null);

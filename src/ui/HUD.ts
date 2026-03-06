@@ -35,6 +35,9 @@ export class HUD {
   private _lastBuffCount   = 0;
   private _lastDebuffCount = 0;
   private cleanup: (() => void)[] = [];
+  private fpsEl:           HTMLElement | null = null;
+  private _fpsFrames = 0;
+  private _fpsTime   = 0;
 
   constructor(
     private readonly uiRoot:  HTMLElement,
@@ -219,6 +222,22 @@ export class HUD {
           color: #e8e0f8;
         }
 
+        /* ── FPS counter ─────────────────────────────────────────────── */
+        #hud-fps {
+          position: fixed;
+          top: 18px;
+          left: 18px;
+          background: rgba(8, 6, 4, 0.72);
+          border: 1px solid rgba(200, 145, 60, 0.18);
+          padding: 4px 10px;
+          pointer-events: none;
+          font-family: var(--font-mono);
+          font-size: 12px;
+          color: rgba(212, 201, 184, 0.85);
+          letter-spacing: 0.1em;
+          z-index: 1000;
+        }
+
         /* ── Clock ────────────────────────────────────────────────────── */
         #hud-clock {
           position: fixed;
@@ -394,6 +413,8 @@ export class HUD {
         }
       </style>
 
+      <div id="hud-fps"></div>
+
       <div id="hud-clock">
         <div class="hud-clock-main">
           <span class="hud-clock-icon" id="hud-clock-icon">☀</span>
@@ -453,6 +474,7 @@ export class HUD {
     this.deathOverlay = el.querySelector<HTMLElement>('#hud-death')!;
     this.deathTimerEl = el.querySelector<HTMLElement>('#hud-death-timer')!;
     this.clockEl      = el.querySelector<HTMLElement>('#hud-clock')!;
+    this.fpsEl        = el.querySelector<HTMLElement>('#hud-fps')!;
 
     // Release button
     el.querySelector<HTMLButtonElement>('#hud-death-release')!
@@ -716,5 +738,24 @@ export class HUD {
   private _setFill(id: string, pct: number): void {
     const el = this.root.querySelector<HTMLElement>(`#${id}`);
     if (el) el.style.transform = `scaleX(${Math.max(0, Math.min(1, pct))})`;
+  }
+
+  /**
+   * Called every frame from the game loop. Updates the FPS counter ~2×/sec.
+   * @param entityCount — optional entity count for debug display
+   */
+  updateFps(now: number, entityCount?: number): void {
+    this._fpsFrames++;
+    if (this._fpsTime === 0) { this._fpsTime = now; return; }
+
+    const elapsed = now - this._fpsTime;
+    if (elapsed >= 500) {
+      const fps = Math.round((this._fpsFrames * 1000) / elapsed);
+      let text = `${fps} FPS`;
+      if (entityCount !== undefined) text += ` · ${entityCount} ent`;
+      if (this.fpsEl) this.fpsEl.textContent = text;
+      this._fpsFrames = 0;
+      this._fpsTime   = now;
+    }
   }
 }

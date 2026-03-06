@@ -1,25 +1,26 @@
-import type {
-  CharacterState,
-  StatBar,
-  Vector3,
-  MovementSpeed,
-  CoreStats,
-  DerivedStats,
-  CorruptionState,
-  CorruptionUpdatePayload,
-  StatusEffect,
-  ItemInfo,
-  EquipSlot,
-  InventoryUpdatePayload,
-  AbilityNodeSummary,
-  AbilityUpdatePayload,
-  PartyMemberInfo,
-  PartyAllyState,
-  GuildUpdatePayload,
-  GuildMemberInfo,
-  GuildMemberListPayload,
-  CompanionConfigPayload,
-  EnmityEntry,
+import {
+  SPEED_MULTIPLIERS,
+  type CharacterState,
+  type StatBar,
+  type Vector3,
+  type MovementSpeed,
+  type CoreStats,
+  type DerivedStats,
+  type CorruptionState,
+  type CorruptionUpdatePayload,
+  type StatusEffect,
+  type ItemInfo,
+  type EquipSlot,
+  type InventoryUpdatePayload,
+  type AbilityNodeSummary,
+  type AbilityUpdatePayload,
+  type PartyMemberInfo,
+  type PartyAllyState,
+  type GuildUpdatePayload,
+  type GuildMemberInfo,
+  type GuildMemberListPayload,
+  type CompanionConfigPayload,
+  type EnmityEntry,
 } from '@/network/Protocol';
 
 type Listener = () => void;
@@ -49,8 +50,12 @@ export class PlayerState {
   private _isGuest:       boolean = false;
   private _heading:  number  = 0;
   private _speed:    MovementSpeed = 'stop';
+  /** Base movement speed in m/s (from derivedStats.movementSpeed). Apply SPEED_MULTIPLIERS for actual. */
+  private _baseMovementSpeed: number = 0;
   /** Actual server movement speed in metres/second (from entity updates). */
-  private _movementSpeedMPS: number = 10.0; // default to jog until first update
+  private _movementSpeedMPS: number = 0; // 0 = unknown; WASDController uses a conservative fallback
+  /** High-res timestamp of the last applyServerPosition call (ms, from performance.now()). */
+  private _lastServerPosTime: number = 0;
 
   private _position: Vector3 = { x: 0, y: 0, z: 0 };
 
@@ -124,14 +129,6 @@ export class PlayerState {
   private _partyAllies:   PartyAllyState[] = [];
   private _pendingInvite: { fromName: string; expiresAt: number } | null = null;
 
-  /**
-   * Client-predicted position — set every frame by WASDController while
-   * movement keys are held.  EntityFactory reads this and forwards it to
-   * PlayerEntity so the player capsule moves smoothly without waiting for
-   * server round-trips.  null when the player is stationary.
-   */
-  private _localPos: Vector3 | null = null;
-
   private listeners = new Set<Listener>();
 
   // ── Getters ───────────────────────────────────────────────────────────────
@@ -147,8 +144,12 @@ export class PlayerState {
   get position(): Vector3 { return this._position; }
   get heading():  number  { return this._heading; }
   get speed():    MovementSpeed { return this._speed; }
+  /** Base movement speed in m/s (before walk/jog/run multiplier). */
+  get baseMovementSpeed(): number { return this._baseMovementSpeed; }
   /** Actual movement speed in m/s as reported by the server. */
   get movementSpeedMPS(): number { return this._movementSpeedMPS; }
+  /** When the server position was last updated (performance.now() ms). */
+  get lastServerPosTime(): number { return this._lastServerPosTime; }
   get health():   StatBar { return this._health; }
   get stamina():  StatBar { return this._stamina; }
   get mana():     StatBar { return this._mana; }
@@ -197,20 +198,11 @@ export class PlayerState {
 
   get companion(): CompanionConfigPayload | null { return this._companion; }
 
-  /** Client-predicted position; null while stationary. */
-  get localPosition(): Vector3 | null { return this._localPos; }
-
-  /** Called by WASDController every frame movement keys are held. */
-  setLocalPosition(pos: Vector3): void { this._localPos = { ...pos }; }
-
   /** Called after successful guest registration to clear ephemeral status. */
   setRegistered(username: string): void {
     this._isGuest = false;
     this._name    = username;
   }
-
-  /** Called by WASDController when movement keys are released. */
-  clearLocalPosition(): void { this._localPos = null; }
 
   // ── Mutations ─────────────────────────────────────────────────────────────
 
@@ -239,6 +231,14 @@ export class PlayerState {
     this._pendingInvite   = null;
     this._coreStats    = character.coreStats    ?? null;
     this._derivedStats = character.derivedStats ?? null;
+    // Seed prediction speeds from derived stats so WASD & click-to-move
+    // prediction is accurate from the first frame.
+    if (this._derivedStats?.movementSpeed) {
+      this._baseMovementSpeed = this._derivedStats.movementSpeed;
+      // Pre-compute run speed for WASDController's initial frames
+      // (overwritten by the first server state_update once movement starts).
+      this._movementSpeedMPS = this._baseMovementSpeed * SPEED_MULTIPLIERS['run'];
+    }
     // Ability tree
     this._unlockedActiveNodes  = character.unlockedAbilities?.activeNodes  ?? [];
     this._unlockedPassiveNodes = character.unlockedAbilities?.passiveNodes ?? [];
@@ -283,7 +283,12 @@ export class PlayerState {
     if (update.abilityPoints !== undefined) this._abilityPoints = update.abilityPoints;
     if (update.statPoints    !== undefined) this._statPoints    = update.statPoints;
     if (update.coreStats)    this._coreStats    = { ...update.coreStats };
-    if (update.derivedStats) this._derivedStats = { ...update.derivedStats };
+    if (update.derivedStats) {
+      this._derivedStats = { ...update.derivedStats };
+      if (update.derivedStats.movementSpeed) {
+        this._baseMovementSpeed = update.derivedStats.movementSpeed;
+      }
+    }
     this._notify();
   }
 
@@ -314,6 +319,7 @@ export class PlayerState {
 
   applyServerPosition(position: Vector3, heading?: number, speed?: MovementSpeed, movementSpeedMPS?: number): void {
     this._position = { ...position };
+    this._lastServerPosTime = performance.now();
     if (heading          !== undefined) this._heading          = heading;
     if (speed            !== undefined) this._speed            = speed;
     if (movementSpeedMPS !== undefined) this._movementSpeedMPS = movementSpeedMPS;

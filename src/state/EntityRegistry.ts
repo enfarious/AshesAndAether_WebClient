@@ -58,6 +58,11 @@ export class EntityRegistry {
   }
 
   add(entity: Entity): void {
+    if (this._entities.has(entity.id)) {
+      // Entity already tracked — merge as update to avoid duplicate scene objects.
+      this.update(entity.id, entity);
+      return;
+    }
     this._entities.set(entity.id, { ...entity });
     this._notifyAdd(entity);
   }
@@ -92,9 +97,11 @@ export class EntityRegistry {
     const merged: Entity = {
       ...existing,
       position: { ...position },
-      heading:  heading ?? existing.heading,
-      movementDuration: movementDuration ?? existing.movementDuration,
     };
+    if (heading !== undefined) merged.heading = heading;
+    else if (existing.heading !== undefined) merged.heading = existing.heading;
+    if (movementDuration !== undefined) merged.movementDuration = movementDuration;
+    else if (existing.movementDuration !== undefined) merged.movementDuration = existing.movementDuration;
     this._entities.set(id, merged);
     this._notifyUpdate(merged);
   }

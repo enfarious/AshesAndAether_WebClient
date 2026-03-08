@@ -15,6 +15,7 @@ export class PartyWindow {
   private _visible = false;
   private _userHidden = false;   // player manually toggled off with 'P'
   private _lastMemberCount = -1; // force first rebuild
+  private _rafId: number | null = null;
 
   constructor(
     private readonly uiRoot:   HTMLElement,
@@ -25,10 +26,10 @@ export class PartyWindow {
     this.root = this._build();
     uiRoot.appendChild(this.root);
 
-    const unsubPlayer = player.onChange(() => this._refresh());
+    const unsubPlayer = player.onChange(() => this._scheduleRefresh());
     const unsubEntity = entities.onUpdate(e => {
       // Refresh if an updated entity is a party member (HP changed)
-      if (this.player.partyMembers.some(m => m.id === e.id)) this._refresh();
+      if (this.player.partyMembers.some(m => m.id === e.id)) this._scheduleRefresh();
     });
     this.cleanup.push(unsubPlayer, unsubEntity);
 
@@ -54,6 +55,7 @@ export class PartyWindow {
   }
 
   dispose(): void {
+    if (this._rafId !== null) { cancelAnimationFrame(this._rafId); this._rafId = null; }
     this.cleanup.forEach(fn => fn());
     this.root.remove();
   }
@@ -262,6 +264,14 @@ export class PartyWindow {
   }
 
   // ── Refresh ────────────────────────────────────────────────────────────────
+
+  private _scheduleRefresh(): void {
+    if (this._rafId !== null) return;
+    this._rafId = requestAnimationFrame(() => {
+      this._rafId = null;
+      this._refresh();
+    });
+  }
 
   private _refresh(): void {
     const members = this.player.partyMembers;

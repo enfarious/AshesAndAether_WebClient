@@ -88,7 +88,7 @@ export class SocketClient {
       'zone_transfer', 'village_state', 'village_placement_mode', 'village_catalog',
       'editor_open', 'editor_result',
       'guild_update', 'guild_member_list', 'guild_invite', 'guild_chat', 'guild_founding_narrative',
-      'companion_config',
+      'companion_config', 'companion_status',
       'beacon_alert', 'library_assault',
       'error',
       'pong',
@@ -218,9 +218,17 @@ export class SocketClient {
     this._send('combat_action', { abilityId, targetId, position, timestamp: Date.now() });
   }
 
-  sendCommand(command: string): void {
+  sendCommand(
+    command: string,
+    targetContext?: { currentTarget?: string; focusTarget?: string },
+  ): void {
     console.log(`[SocketClient] → command "${command}"`);
-    this._send('command', { command, timestamp: Date.now() });
+    this._send('command', {
+      command,
+      currentTarget: targetContext?.currentTarget,
+      focusTarget:   targetContext?.focusTarget,
+      timestamp: Date.now(),
+    });
   }
 
   sendProximityRefresh(): void {
@@ -318,12 +326,28 @@ export class SocketClient {
     if (settings.stance)          parts.push(`stance=${settings.stance}`);
     if (settings.preferredRange)  parts.push(`range=${settings.preferredRange}`);
     if (settings.priority)        parts.push(`priority=${settings.priority}`);
+    if (settings.engagementMode)  parts.push(`engagementmode=${settings.engagementMode}`);
     if (settings.retreatThreshold !== undefined) parts.push(`retreat=${settings.retreatThreshold}`);
     if (settings.abilityWeights) {
       for (const [k, v] of Object.entries(settings.abilityWeights as Record<string, number>)) {
         parts.push(`${k}=${v}`);
       }
     }
+    // Healing / recovery
+    if (settings.healAllyThreshold !== undefined)     parts.push(`healallyth=${settings.healAllyThreshold}`);
+    if (settings.minHealTarget !== undefined)          parts.push(`minhealtarget=${settings.minHealTarget}`);
+    if (settings.healPriorityMode !== undefined)       parts.push(`healprio=${settings.healPriorityMode}`);
+    if (settings.defensiveThreshold !== undefined)     parts.push(`defensiveth=${settings.defensiveThreshold}`);
+    // Buff / cooldown
+    if (settings.saveCooldownsForElites !== undefined)  parts.push(`savecds=${settings.saveCooldownsForElites}`);
+    if (settings.minEnemyHpForBuffs !== undefined)      parts.push(`minenemyhp=${settings.minEnemyHpForBuffs}`);
+    // Resource
+    if (settings.resourceReservePercent !== undefined)  parts.push(`reserve=${settings.resourceReservePercent}`);
+    // Engagement lists
+    if (settings.ignoreFamily)        parts.push(`ignorefamily=${(settings.ignoreFamily as string[]).join(',')}`);
+    if (settings.alwaysEngageFamily)  parts.push(`alwaysengagefamily=${(settings.alwaysEngageFamily as string[]).join(',')}`);
+    if (settings.ignoreSpecies)       parts.push(`ignorespecies=${(settings.ignoreSpecies as string[]).join(',')}`);
+    if (settings.alwaysEngageSpecies) parts.push(`alwaysengagespecies=${(settings.alwaysEngageSpecies as string[]).join(',')}`);
     this.sendCommand(`/companion configure ${parts.join(' ')}`);
   }
 

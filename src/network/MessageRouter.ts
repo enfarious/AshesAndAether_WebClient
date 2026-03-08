@@ -46,6 +46,7 @@ import type {
   BeaconAlertPayload,
   LibraryAssaultPayload,
   CompanionConfigPayload,
+  CompanionStatusPayload,
   VillageCatalogPayload,
 } from './Protocol';
 
@@ -487,6 +488,11 @@ export class MessageRouter {
       const payload = p as CompanionConfigPayload;
       this.player.applyCompanionConfig(payload);
       this.companionConfigListeners.forEach(fn => fn(payload));
+    });
+
+    // ── Companion status (lightweight combat HUD updates ~1/s) ────────
+    s.on('companion_status', (p) => {
+      this.player.applyCompanionStatus(p as CompanionStatusPayload);
     });
 
     // ── Beacon & Library alerts ──────────────────────────────────────────

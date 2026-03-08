@@ -242,7 +242,7 @@ export class ChatPanel {
       this.socket.sendChat('party', text.slice(3));
     } else if (text.startsWith('/party ') || text === '/party') {
       // /party is a server command (invite, accept, decline, leave, kick, lead, list).
-      this.socket.sendCommand(text);
+      this.socket.sendCommand(text, this._targetContext());
     } else if (text.startsWith('/r ') || text.startsWith('/reply ')) {
       // /r or /reply — whisper to the last person who told us.
       const prefix  = text.startsWith('/r ') ? '/r ' : '/reply ';
@@ -252,19 +252,27 @@ export class ChatPanel {
         this.world.pushMessage('system', 'No one has whispered you yet.');
         return;
       }
-      this.socket.sendCommand(`/tell ${target} ${message}`);
+      this.socket.sendCommand(`/tell ${target} ${message}`, this._targetContext());
     } else if (text.startsWith('/w ')) {
       // /w <name> <message> — whisper shorthand, routed as /tell.
       const parts   = text.slice(3).split(' ');
       const target  = parts.shift() ?? '';
       const message = parts.join(' ');
-      this.socket.sendCommand(`/tell ${target} ${message}`);
+      this.socket.sendCommand(`/tell ${target} ${message}`, this._targetContext());
     } else if (text.startsWith('/')) {
       // Send as a slash command — server CommandParser requires the leading '/'.
-      this.socket.sendCommand(text);
+      this.socket.sendCommand(text, this._targetContext());
     } else {
       this.socket.sendChat('say', text);
     }
+  }
+
+  /** Build target context payload for sendCommand. */
+  private _targetContext(): { currentTarget?: string; focusTarget?: string } {
+    const ctx: { currentTarget?: string; focusTarget?: string } = {};
+    if (this.player.targetId)      ctx.currentTarget = this.player.targetId;
+    if (this.player.focusTargetId) ctx.focusTarget   = this.player.focusTargetId;
+    return ctx;
   }
 
   /** Replace <t>, <n> etc. with live game-state values. */

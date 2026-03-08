@@ -53,6 +53,7 @@ export class WASDController {
   private guildToggle:          (() => void) | null = null;
   private companionToggle:      (() => void) | null = null;
   private buildToggle:              (() => void) | null = null;
+  private settingsToggle:           (() => void) | null = null;
   private tabTargetNext:            (() => void) | null = null;
   private tabTargetPrev:            (() => void) | null = null;
   private partyTargetSlotCallback:  ((slot: number) => void) | null = null;
@@ -71,6 +72,7 @@ export class WASDController {
   setGuildToggle(fn: () => void):          void { this.guildToggle          = fn; }
   setCompanionToggle(fn: () => void):    void { this.companionToggle      = fn; }
   setBuildToggle(fn: () => void):       void { this.buildToggle          = fn; }
+  setSettingsToggle(fn: () => void):   void { this.settingsToggle       = fn; }
   setTabTargetNext(fn: () => void):        void { this.tabTargetNext        = fn; }
   setTabTargetPrev(fn: () => void):        void { this.tabTargetPrev        = fn; }
   setPartyTargetSlotCallback(fn: (slot: number) => void): void { this.partyTargetSlotCallback = fn; }
@@ -294,6 +296,12 @@ export class WASDController {
       return;
     }
 
+    // F — set focus target (current target → focus)
+    if (e.key.toLowerCase() === 'f') {
+      this.player.focusCurrentTarget();
+      return;
+    }
+
     // G — toggle guild panel
     if (e.key.toLowerCase() === 'g') {
       this.guildToggle?.();
@@ -322,6 +330,12 @@ export class WASDController {
     // M — toggle world map (plain M without Ctrl)
     if (e.key.toLowerCase() === 'm' && !e.ctrlKey) {
       this.worldMapToggle?.();
+      return;
+    }
+
+    // O — toggle settings window
+    if (e.key.toLowerCase() === 'o') {
+      this.settingsToggle?.();
       return;
     }
 

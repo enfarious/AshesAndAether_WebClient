@@ -38,6 +38,7 @@ export class ActionBar {
   private cleanup:  (() => void)[] = [];
 
   private _lastLoadoutKey = '';
+  private _rafId: number | null = null;
 
   constructor(
     private readonly mountEl: HTMLElement,
@@ -50,7 +51,7 @@ export class ActionBar {
     this._buildDOM();
     this.mountEl.appendChild(this.root);
 
-    const unsub = this.player.onChange(() => this._onPlayerChange());
+    const unsub = this.player.onChange(() => this._schedulePlayerChange());
     this.cleanup.push(unsub);
 
     this._refresh();
@@ -64,6 +65,7 @@ export class ActionBar {
   get isVisible(): boolean { return this.root.style.display !== 'none'; }
 
   dispose(): void {
+    if (this._rafId !== null) { cancelAnimationFrame(this._rafId); this._rafId = null; }
     this.cleanup.forEach(fn => fn());
     this.root.remove();
     this.tooltip.remove();
@@ -329,6 +331,14 @@ export class ActionBar {
   }
 
   // ── Refresh ────────────────────────────────────────────────────────────────
+
+  private _schedulePlayerChange(): void {
+    if (this._rafId !== null) return;
+    this._rafId = requestAnimationFrame(() => {
+      this._rafId = null;
+      this._onPlayerChange();
+    });
+  }
 
   private _onPlayerChange(): void {
     const key = this.player.activeLoadout.join('|');

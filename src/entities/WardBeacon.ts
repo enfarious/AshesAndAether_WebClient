@@ -212,6 +212,15 @@ export class WardBeaconManager {
     });
   }
 
+  // ── Visibility ─────────────────────────────────────────────────────────────
+
+  /** Hide or show all beacons (e.g. suppress in vault zones). */
+  setVisible(visible: boolean): void {
+    for (const b of this.beacons) {
+      b.group.visible = visible;
+    }
+  }
+
   // ── Frame update ───────────────────────────────────────────────────────────
 
   update(dt: number): void {

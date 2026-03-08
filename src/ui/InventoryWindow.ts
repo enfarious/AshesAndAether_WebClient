@@ -48,6 +48,13 @@ export class InventoryWindow {
   private visible  = false;
   private autoSort = true;
 
+  /** slotIndex → itemId mapping for manual arrangement (40 slots) */
+  private _slotMap: (string | null)[] = new Array(40).fill(null);
+  /** Whether the slot map has been loaded from localStorage yet */
+  private _slotMapLoaded = false;
+  /** Index of the currently "held" slot (picked up via left-click) */
+  private _heldSlot: number | null = null;
+
   private cleanup: (() => void)[] = [];
 
   constructor(
@@ -62,6 +69,16 @@ export class InventoryWindow {
       if (this.visible) this._refresh();
     });
     this.cleanup.push(unsub);
+
+    // Escape key cancels held item
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && this._heldSlot !== null) {
+        this._heldSlot = null;
+        this._renderGrid();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    this.cleanup.push(() => window.removeEventListener('keydown', onKey));
   }
 
   // ── Public API ─────────────────────────────────────────────────────────────
@@ -80,6 +97,7 @@ export class InventoryWindow {
   }
 
   hide(): void {
+    this._heldSlot = null;
     this.root.classList.remove('inv-visible');
     this.root.style.display = 'none';
     this.visible = false;
@@ -240,6 +258,15 @@ export class InventoryWindow {
           background: rgba(50,25,8,0.7);
           border-color: rgba(200,140,60,0.65);
         }
+        .inv-slot.held {
+          border-color: rgba(200,180,80,0.8);
+          background: rgba(80,60,15,0.5);
+          box-shadow: 0 0 8px rgba(200,160,40,0.3);
+        }
+        .inv-slot.drop-target:hover {
+          border-color: rgba(100,180,100,0.6);
+          background: rgba(20,60,20,0.3);
+        }
         .inv-slot-name {
           position: absolute;
           bottom: 2px;
@@ -313,6 +340,13 @@ export class InventoryWindow {
           font-size: 9px;
           color: rgba(100,160,100,0.8);
           letter-spacing: 0.06em;
+        }
+        .inv-tt-stats {
+          font-family: var(--font-mono);
+          font-size: 9px;
+          color: rgba(180,200,220,0.85);
+          line-height: 1.5;
+          margin-bottom: 4px;
         }
         .inv-tt-dur {
           font-family: var(--font-mono);
@@ -511,6 +545,7 @@ export class InventoryWindow {
       <div id="inv-tooltip">
         <div class="inv-tt-name" id="inv-tt-name"></div>
         <div class="inv-tt-type" id="inv-tt-type"></div>
+        <div class="inv-tt-stats" id="inv-tt-stats"></div>
         <div class="inv-tt-desc" id="inv-tt-desc"></div>
         <div class="inv-tt-equip-hint" id="inv-tt-equip-hint"></div>
         <div class="inv-tt-dur" id="inv-tt-dur"></div>
@@ -528,7 +563,15 @@ export class InventoryWindow {
 
     // Wire up close button + backdrop click
     el.querySelector('#inv-close-btn')!.addEventListener('click', () => this.hide());
-    el.querySelector('#inv-backdrop')!.addEventListener('click', () => this.hide());
+    el.querySelector('#inv-backdrop')!.addEventListener('click', () => {
+      if (this._heldSlot !== null) {
+        // Cancel held item instead of closing
+        this._heldSlot = null;
+        this._renderGrid();
+        return;
+      }
+      this.hide();
+    });
 
     // Sort toggle
     el.querySelector('#inv-sort-btn')!.addEventListener('click', () => {
@@ -547,6 +590,74 @@ export class InventoryWindow {
     return el;
   }
 
+  // ── Slot map persistence ──────────────────────────────────────────────────
+
+  private get _storageKey(): string {
+    return `inv-slots:${this.player.id}`;
+  }
+
+  private _saveSlotMap(): void {
+    try { localStorage.setItem(this._storageKey, JSON.stringify(this._slotMap)); }
+    catch { /* storage full or disabled — silently ignore */ }
+  }
+
+  private _loadSlotMap(): (string | null)[] | null {
+    try {
+      const raw = localStorage.getItem(this._storageKey);
+      if (!raw) return null;
+      const arr = JSON.parse(raw) as unknown;
+      if (Array.isArray(arr) && arr.length === 40) return arr as (string | null)[];
+    } catch { /* corrupted — ignore */ }
+    return null;
+  }
+
+  /**
+   * Sync `_slotMap` with the current inventory items.
+   * - autoSort ON:  deterministic sorted order (slot 0 = first sorted item)
+   * - autoSort OFF: keep existing positions, prune removed items, place new items in first empty slot
+   */
+  private _rebuildSlotMap(items: ItemInfo[]): void {
+    if (this.autoSort) {
+      // Sorted order — just fill sequentially
+      this._slotMap = new Array(40).fill(null);
+      for (let i = 0; i < items.length && i < 40; i++) {
+        this._slotMap[i] = items[i]!.id;
+      }
+      return;
+    }
+
+    // Manual mode — try to load saved map on first open
+    if (!this._slotMapLoaded) {
+      const saved = this._loadSlotMap();
+      if (saved) this._slotMap = saved;
+      this._slotMapLoaded = true;
+    }
+
+    // Build a set of current item IDs for fast lookup
+    const currentIds = new Set(items.map(it => it.id));
+
+    // Prune slots whose item is no longer in inventory
+    for (let i = 0; i < 40; i++) {
+      if (this._slotMap[i] && !currentIds.has(this._slotMap[i]!)) {
+        this._slotMap[i] = null;
+      }
+    }
+
+    // Place new items (IDs not yet in any slot)
+    const mappedIds = new Set(this._slotMap.filter(Boolean));
+    for (const item of items) {
+      if (!mappedIds.has(item.id)) {
+        const emptyIdx = this._slotMap.indexOf(null);
+        if (emptyIdx !== -1) {
+          this._slotMap[emptyIdx] = item.id;
+          mappedIds.add(item.id);
+        }
+      }
+    }
+
+    this._saveSlotMap();
+  }
+
   // ── Refresh ────────────────────────────────────────────────────────────────
 
   private _refresh(): void {
@@ -559,16 +670,32 @@ export class InventoryWindow {
     const countEl   = this.root.querySelector<HTMLElement>('#inv-count')!;
     const tooltipEl = this.root.querySelector<HTMLElement>('#inv-tooltip')!;
 
-    const items = this._sortedInventory();
-    countEl.textContent = String(items.length);
+    const sortedItems = this._sortedInventory();
+    countEl.textContent = String(sortedItems.length);
+
+    // Rebuild slot map from current inventory
+    this._rebuildSlotMap(sortedItems);
+
+    // Build a lookup from item ID → ItemInfo
+    const itemById = new Map<string, ItemInfo>();
+    for (const it of sortedItems) itemById.set(it.id, it);
 
     gridEl.innerHTML = '';
 
-    // Always render 40 slots
+    const isHolding = this._heldSlot !== null;
+
+    // Render 40 slots using the slot map
     for (let i = 0; i < 40; i++) {
-      const item = items[i] ?? null;
+      const itemId = this._slotMap[i];
+      const item = itemId ? itemById.get(itemId) ?? null : null;
       const slot = document.createElement('div');
-      slot.className = item ? 'inv-slot occupied' : 'inv-slot';
+      const isHeld = isHolding && i === this._heldSlot;
+
+      let cls = 'inv-slot';
+      if (item) cls += ' occupied';
+      if (isHeld) cls += ' held';
+      if (isHolding && !isHeld) cls += ' drop-target';
+      slot.className = cls;
 
       if (item) {
         if (item.quantity > 1) {
@@ -588,13 +715,39 @@ export class InventoryWindow {
         type.textContent = item.itemType.slice(0, 3).toUpperCase();
         slot.appendChild(type);
 
-        // Tooltip on hover
-        slot.addEventListener('mouseenter', (e) => this._showTooltip(e, item, tooltipEl));
-        slot.addEventListener('mousemove',  (e) => this._moveTooltip(e, tooltipEl));
+        // Tooltip on hover (suppress while holding an item)
+        slot.addEventListener('mouseenter', (e) => { if (!this._heldSlot) this._showTooltip(e, item, tooltipEl); });
+        slot.addEventListener('mousemove',  (e) => { if (!this._heldSlot) this._moveTooltip(e, tooltipEl); });
         slot.addEventListener('mouseleave', ()  => this._hideTooltip(tooltipEl));
 
-        // Click to equip
-        slot.addEventListener('click', () => this._onInventoryItemClick(item));
+        // Right-click → use / equip
+        slot.addEventListener('contextmenu', (e) => {
+          e.preventDefault();
+          if (this._heldSlot !== null) {
+            // Cancel hold on right-click
+            this._heldSlot = null;
+            this._renderGrid();
+            return;
+          }
+          this._useOrEquipItem(item);
+        });
+      }
+
+      // Prevent browser context menu on all slots (even empty ones)
+      if (!item) {
+        slot.addEventListener('contextmenu', (e) => {
+          e.preventDefault();
+          if (this._heldSlot !== null) {
+            this._heldSlot = null;
+            this._renderGrid();
+          }
+        });
+      }
+
+      // Left-click → pick up / place
+      {
+        const slotIndex = i;
+        slot.addEventListener('click', () => this._onSlotClick(slotIndex, item));
       }
 
       gridEl.appendChild(slot);
@@ -680,13 +833,54 @@ export class InventoryWindow {
 
   // ── Interactions ───────────────────────────────────────────────────────────
 
-  private _onInventoryItemClick(item: ItemInfo): void {
+  /** Left-click handler for inventory slot: pick-up / place / swap */
+  private _onSlotClick(slotIndex: number, item: ItemInfo | null): void {
+    const tooltipEl = this.root.querySelector<HTMLElement>('#inv-tooltip')!;
+
+    if (this._heldSlot === null) {
+      // Nothing held — pick up this item (if occupied)
+      if (!item) return;
+      this._heldSlot = slotIndex;
+      this._hideTooltip(tooltipEl);
+      this._renderGrid();
+      return;
+    }
+
+    // Something is held
+    if (this._heldSlot === slotIndex) {
+      // Clicked same slot — cancel
+      this._heldSlot = null;
+      this._renderGrid();
+      return;
+    }
+
+    // Swap the two slots in the map
+    const src = this._heldSlot;
+    const temp = this._slotMap[src]!;
+    this._slotMap[src] = this._slotMap[slotIndex] ?? null;
+    this._slotMap[slotIndex] = temp;
+    this._heldSlot = null;
+
+    // Persist the new arrangement (only matters when autoSort is OFF)
+    if (!this.autoSort) this._saveSlotMap();
+
+    this._renderGrid();
+  }
+
+  /** Right-click action: use consumable or equip gear */
+  private _useOrEquipItem(item: ItemInfo): void {
+    // Consumables — use
+    const lowerType = item.itemType.toLowerCase();
+    if (lowerType === 'consumable' || lowerType === 'potion' || lowerType === 'food') {
+      this.socket.sendCommand(`/use "${item.name}"`);
+      return;
+    }
+
     // Determine valid slots for this item type
     const validSlots = validEquipSlotsFor(item.itemType);
     if (validSlots.length === 0) return; // un-equippable item
 
     if (validSlots.length === 1) {
-      // Direct equip, no picker needed
       this.socket.sendEquipItem(item.id, validSlots[0]!);
       return;
     }
@@ -723,13 +917,67 @@ export class InventoryWindow {
     el.querySelector<HTMLElement>('#inv-tt-name')!.textContent  = item.name;
     el.querySelector<HTMLElement>('#inv-tt-type')!.textContent  = item.itemType;
     el.querySelector<HTMLElement>('#inv-tt-desc')!.textContent  = item.description;
-    el.querySelector<HTMLElement>('#inv-tt-equip-hint')!.textContent =
-      item.equipped ? `Equipped: ${item.equipSlot}` : 'Click to equip';
+
+    // ── Item stat line ──
+    el.querySelector<HTMLElement>('#inv-tt-stats')!.textContent = this._buildStatsLine(item);
+
+    const lowerType = item.itemType.toLowerCase();
+    const isConsumable = lowerType === 'consumable' || lowerType === 'potion' || lowerType === 'food';
+    const isEquipable = validEquipSlotsFor(item.itemType).length > 0;
+    let hint: string;
+    if (item.equipped) {
+      hint = `Equipped: ${item.equipSlot}`;
+    } else if (isConsumable) {
+      hint = 'LMB move · RMB use';
+    } else if (isEquipable) {
+      hint = 'LMB move · RMB equip';
+    } else {
+      hint = 'LMB move';
+    }
+    el.querySelector<HTMLElement>('#inv-tt-equip-hint')!.textContent = hint;
     el.querySelector<HTMLElement>('#inv-tt-dur')!.textContent =
       item.durability !== undefined ? `Durability: ${item.durability.toFixed(0)}%` : '';
 
     this._moveTooltip(e, el);
     el.classList.add('visible');
+  }
+
+  /** Build a stat summary string from item properties. */
+  private _buildStatsLine(item: ItemInfo): string {
+    const props = item.properties as Record<string, unknown> | undefined;
+    if (!props) return '';
+
+    // Weapon stats
+    const weapon = props.weapon as { baseDamage?: number; speed?: number; damageProfiles?: Array<{ damageType?: string; physicalType?: string }> } | undefined;
+    if (weapon && typeof weapon.baseDamage === 'number') {
+      const dmgType = weapon.damageProfiles?.[0]?.physicalType ?? weapon.damageProfiles?.[0]?.damageType ?? '';
+      const label = dmgType.charAt(0).toUpperCase() + dmgType.slice(1);
+      return `${weapon.baseDamage} damage \u00B7 ${weapon.speed ?? '?'}s \u00B7 ${label}`;
+    }
+
+    // Armor stats
+    const armor = props.armor as { qualityBias?: Record<string, number> } | undefined;
+    if (armor?.qualityBias) {
+      const parts: string[] = [];
+      for (const [type, val] of Object.entries(armor.qualityBias)) {
+        if (typeof val !== 'number') continue;
+        const pct = Math.round(val * 100);
+        const sign = pct >= 0 ? '+' : '';
+        const label = type.charAt(0).toUpperCase() + type.slice(1);
+        parts.push(`${label} ${sign}${pct}%`);
+      }
+      return parts.join(' \u00B7 ');
+    }
+
+    // Consumable stats
+    const effect = props.effect as { type?: string; amount?: number } | undefined;
+    if (effect && typeof effect.amount === 'number') {
+      const cooldown = typeof props.cooldown === 'number' ? ` \u00B7 ${props.cooldown}s cd` : '';
+      const label = effect.type === 'heal' ? 'Heals' : effect.type === 'stamina' ? 'Restores stamina' : effect.type === 'mana' ? 'Restores mana' : 'Effect';
+      return `${label} ${effect.amount}${cooldown}`;
+    }
+
+    return '';
   }
 
   private _moveTooltip(e: MouseEvent, el: HTMLElement): void {

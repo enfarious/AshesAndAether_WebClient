@@ -145,8 +145,9 @@ export class SceneManager {
       }
     }
 
-    // Sun orbit — move the directional light based on time of day
-    if (timeOfDay !== undefined) {
+    // Sun orbit — move the directional light based on time of day.
+    // Vault zones use static indoor lighting — skip sun movement.
+    if (timeOfDay !== undefined && this._lighting !== 'vault') {
       this._updateSunPosition(timeOfDay, focusPoint);
     }
   }
@@ -453,6 +454,20 @@ function _applyModifiers(preset: EnvPreset, weather: string, lighting: string): 
     p.hemiIntensity    = Math.max(p.hemiIntensity * 0.8, 0.7);
     p.ambientIntensity = Math.max(p.ambientIntensity * 0.8, 0.4);
     p.exposure         = Math.max(p.exposure * 0.9, 0.9);
+  } else if (lighting === 'vault') {
+    // Indoor vault lighting — static preset, ignores TOD-derived values.
+    // VaultRenderer adds its own ambient + point lights on top of these.
+    p.skyColor         = 0x0c0c14;
+    p.fogColor         = 0x181822;
+    p.fogDensity       = 0.003;
+    p.hemiSkyColor     = 0x607080;
+    p.hemiGroundColor  = 0x2a2a30;
+    p.hemiIntensity    = 1.2;
+    p.ambientColor     = 0x808898;
+    p.ambientIntensity = 1.0;
+    p.sunIntensity     = 0;      // No sun/moon inside vaults
+    p.fillIntensity    = 0;      // No fill light — point lights from VaultRenderer handle it
+    p.exposure         = 1.3;
   }
 
   return p;

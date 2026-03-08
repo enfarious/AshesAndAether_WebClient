@@ -7,28 +7,42 @@ import type {
   PreferredRange,
   TargetPriority,
   CombatStance,
+  EngagementMode,
+  HealPriorityMode,
 } from '@/network/Protocol';
 
 /**
- * CompanionPanel — manual companion management for when LLM is unavailable.
+ * CompanionPanel — tabbed companion management panel.
  *
  * 'N' key opens/closes.
  *
- * Sections:
- *   - Status: name, level, HP, behavior state
- *   - Archetype selector (4 types)
- *   - Combat settings: stance, priority, range, retreat, ability weights
- *   - Abilities: toggle T1 abilities on/off
- *   - Mode controls: follow / detach / recall
+ * Tabs:
+ *   General — archetype, engagement mode, abilities
+ *   Combat  — stance/priority/range, retreat/recovery, ability weights
+ *   Rules   — healing rules, buff/CD rules, resource mgmt, engagement filters
+ *
+ * Always-visible:
+ *   Status bar + HP (above tabs)
+ *   Mode controls: follow / detach / recall (below tabs)
  */
 export class CompanionPanel {
   private root:    HTMLElement;
   private cleanup: (() => void)[] = [];
   private _visible = false;
   private _configRequested = false;
+  private activeTab: 'general' | 'combat' | 'rules' = 'general';
 
   /** Debounce timer for slider changes. */
   private _debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Debounce timer for chip (engagement list) changes. */
+  private _chipDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  /** RAF coalescing — prevents DOM thrashing from rapid state updates. */
+  private _rafId: number | null = null;
+  /** When true, the next render does a full innerHTML rebuild.
+   *  When false, only the HP bar and state badge update in-place. */
+  private _structureDirty = true;
+  /** Last companion ID rendered — forces full rebuild on companion swap. */
+  private _lastCompanionId: string | null = null;
 
   constructor(
     private readonly uiRoot:  HTMLElement,
@@ -41,11 +55,12 @@ export class CompanionPanel {
     this._injectStyles();
     uiRoot.appendChild(this.root);
 
-    const unsub = player.onChange(() => { if (this._visible) this._render(); });
+    const unsub = player.onChange(() => { if (this._visible) this._scheduleRender(); });
     this.cleanup.push(unsub);
 
     const unsubConfig = router.onCompanionConfig(() => {
-      if (this._visible) this._render();
+      this._structureDirty = true;
+      if (this._visible) this._scheduleRender();
     });
     this.cleanup.push(unsubConfig);
 
@@ -56,6 +71,7 @@ export class CompanionPanel {
 
   show(): void {
     this._visible = true;
+    this._structureDirty = true;
     this.root.style.display = '';
     // Request config from server on first open
     if (!this._configRequested || !this.player.companion) {
@@ -78,7 +94,18 @@ export class CompanionPanel {
   dispose(): void {
     this.cleanup.forEach(fn => fn());
     if (this._debounceTimer) clearTimeout(this._debounceTimer);
+    if (this._chipDebounceTimer) clearTimeout(this._chipDebounceTimer);
+    if (this._rafId) { cancelAnimationFrame(this._rafId); this._rafId = null; }
     this.root.remove();
+  }
+
+  /** Coalesce rapid state updates into a single render per frame. */
+  private _scheduleRender(): void {
+    if (this._rafId) return;
+    this._rafId = requestAnimationFrame(() => {
+      this._rafId = null;
+      this._render();
+    });
   }
 
   // ── Styles ──────────────────────────────────────────────────────────────────
@@ -93,7 +120,7 @@ export class CompanionPanel {
         top: 50%;
         left: 50%;
         transform: translate(-50%, -50%);
-        width: clamp(340px, 32vw, 480px);
+        width: clamp(480px, 40vw, 600px);
         max-height: 80vh;
         background: var(--ui-bg, rgba(8,6,4,0.92));
         border: 1px solid var(--ui-border, rgba(200,145,60,0.18));
@@ -128,32 +155,15 @@ export class CompanionPanel {
       }
       .cp-close:hover { color: var(--ember, #c86a2a); }
 
-      /* ── Body ──────────────────────────────────────────── */
-      .cp-body {
-        padding: 10px 14px;
-        overflow-y: auto;
-        flex: 1;
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-        scrollbar-width: thin;
-        scrollbar-color: var(--ember, #c86a2a) transparent;
+      /* ── Status (always visible, above tabs) ─────────────── */
+      .cp-status-area {
+        padding: 8px 14px 6px;
       }
-
-      .cp-empty {
-        font-family: var(--font-body, serif);
-        font-size: 13px;
-        color: rgba(212,201,184,0.55);
-        text-align: center;
-        padding: 24px 0;
-        line-height: 1.6;
-      }
-
-      /* ── Status bar ──────────────────────────────────────── */
       .cp-status {
         display: flex;
         align-items: center;
         gap: 8px;
+        margin-bottom: 5px;
       }
       .cp-name {
         font-family: var(--font-display, serif);
@@ -187,6 +197,62 @@ export class CompanionPanel {
         height: 100%;
         background: #44cc66;
         transition: width 0.3s ease;
+      }
+
+      /* ── Tab bar ─────────────────────────────────────────── */
+      .cp-tab-bar {
+        display: flex;
+        gap: 0;
+        padding: 0 14px;
+        border-bottom: 1px solid rgba(200,145,60,0.08);
+      }
+      .cp-tab {
+        flex: 1;
+        font-family: var(--font-display, serif);
+        font-size: 11px;
+        padding: 6px 2px;
+        border: 1px solid rgba(200,145,60,0.15);
+        border-bottom: 2px solid transparent;
+        background: rgba(20,14,6,0.5);
+        color: rgba(212,201,184,0.5);
+        cursor: pointer;
+        text-align: center;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        transition: background 0.15s, border-color 0.15s, color 0.15s;
+      }
+      .cp-tab:hover { background: rgba(40,28,10,0.6); }
+      .cp-tab.active {
+        border-bottom-color: var(--ember, #c86a2a);
+        background: rgba(60,35,8,0.3);
+        color: rgba(212,201,184,0.95);
+      }
+      .cp-tab + .cp-tab { border-left: none; }
+
+      /* ── Tab pages ───────────────────────────────────────── */
+      .cp-tab-page {
+        display: none;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .cp-tab-page.active { display: flex; }
+
+      /* ── Body (scrollable tab content) ───────────────────── */
+      .cp-body {
+        padding: 10px 14px;
+        overflow-y: auto;
+        flex: 1;
+        scrollbar-width: thin;
+        scrollbar-color: var(--ember, #c86a2a) transparent;
+      }
+
+      .cp-empty {
+        font-family: var(--font-body, serif);
+        font-size: 13px;
+        color: rgba(212,201,184,0.55);
+        text-align: center;
+        padding: 24px 0;
+        line-height: 1.6;
       }
 
       /* ── Section titles ──────────────────────────────────── */
@@ -278,7 +344,7 @@ export class CompanionPanel {
         font-family: var(--font-body, serif);
         font-size: 11px;
         color: rgba(212,201,184,0.5);
-        min-width: 52px;
+        min-width: 66px;
       }
       .cp-slider-val {
         font-family: var(--font-mono, monospace);
@@ -335,12 +401,87 @@ export class CompanionPanel {
         white-space: nowrap;
       }
 
-      /* ── Mode controls ───────────────────────────────────── */
+      /* ── Checkbox rows ───────────────────────────────────── */
+      .cp-check-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        cursor: pointer;
+        padding: 2px 0;
+      }
+      .cp-check-row input[type="checkbox"] {
+        width: 14px; height: 14px;
+        accent-color: var(--ember, #c86a2a);
+        cursor: pointer;
+      }
+      .cp-check-row span {
+        font-family: var(--font-body, serif);
+        font-size: 11px;
+        color: rgba(212,201,184,0.7);
+      }
+
+      /* ── Chip groups (engagement filters) ────────────────── */
+      .cp-chip-section {
+        margin-bottom: 6px;
+      }
+      .cp-chip-label {
+        font-family: var(--font-body, serif);
+        font-size: 10px;
+        color: rgba(212,201,184,0.45);
+        margin-bottom: 3px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .cp-chip-group {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        align-items: center;
+      }
+      .cp-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-family: var(--font-mono, monospace);
+        font-size: 10px;
+        padding: 2px 6px;
+        border: 1px solid rgba(200,145,60,0.2);
+        background: rgba(30,20,8,0.6);
+        color: rgba(212,201,184,0.7);
+      }
+      .cp-chip-x {
+        background: none;
+        border: none;
+        color: rgba(212,201,184,0.4);
+        cursor: pointer;
+        font-size: 12px;
+        padding: 0;
+        line-height: 1;
+      }
+      .cp-chip-x:hover { color: var(--ember, #c86a2a); }
+      .cp-chip-input {
+        width: 72px;
+        font-family: var(--font-mono, monospace);
+        font-size: 10px;
+        padding: 2px 6px;
+        border: 1px solid rgba(200,145,60,0.15);
+        background: rgba(20,14,6,0.6);
+        color: rgba(212,201,184,0.7);
+        outline: none;
+      }
+      .cp-chip-input::placeholder {
+        color: rgba(212,201,184,0.3);
+      }
+      .cp-chip-input:focus {
+        border-color: var(--ember, #c86a2a);
+      }
+
+      /* ── Mode controls (always visible, below tabs) ──────── */
       .cp-modes {
         display: flex;
         gap: 8px;
         justify-content: center;
-        padding-top: 6px;
+        padding: 6px 14px 10px;
         border-top: 1px solid rgba(200,145,60,0.08);
       }
       .cp-btn {
@@ -365,10 +506,44 @@ export class CompanionPanel {
     document.head.appendChild(style);
   }
 
+  // ── Live in-place update (HP bar + state badge only) ────────────────────────
+
+  private _updateLive(): void {
+    const c = this.player.companion;
+    if (!c) return;
+
+    const hpPct = c.maxHealth > 0 ? Math.round((c.currentHealth / c.maxHealth) * 100) : 0;
+    const fillEl = this.root.querySelector<HTMLElement>('.cp-hp-fill');
+    if (fillEl) fillEl.style.width = `${hpPct}%`;
+
+    const badge = this.root.querySelector<HTMLElement>('.cp-state-badge');
+    if (badge) {
+      const cls = c.behaviorState === 'active' ? 'active'
+                : c.behaviorState === 'tasked' ? 'tasked'
+                : 'detached';
+      badge.className = `cp-state-badge ${cls}`;
+      badge.textContent = c.behaviorState;
+    }
+  }
+
   // ── Render ────────────────────────────────────────────────────────────────────
 
   private _render(): void {
     const c = this.player.companion;
+    const companionId = c?.name ?? null;
+
+    // Detect companion swap (appeared / disappeared / different companion)
+    if (companionId !== this._lastCompanionId) {
+      this._structureDirty = true;
+      this._lastCompanionId = companionId;
+    }
+
+    // Fast path: if structure hasn't changed, just update HP + state badge in-place
+    if (!this._structureDirty) {
+      this._updateLive();
+      return;
+    }
+    this._structureDirty = false;
 
     if (!c) {
       this.root.innerHTML = `
@@ -396,69 +571,124 @@ export class CompanionPanel {
       { id: 'tank',            name: 'Tank',             desc: 'Melee defender, CC-focused' },
     ];
 
-    const settings = c.combatSettings;
+    const s = c.combatSettings;
 
     this.root.innerHTML = `
       <div class="cp-header">
         <span class="cp-title">Companion</span>
         <button class="cp-close" id="cp-close">&times;</button>
       </div>
-      <div class="cp-body">
-        <!-- Status -->
+
+      <!-- Status (always visible) -->
+      <div class="cp-status-area">
         <div class="cp-status">
           <span class="cp-name">${this._esc(c.name)}</span>
           <span class="cp-level">Lv ${c.level}</span>
           <span class="cp-state-badge ${stateClass}">${c.behaviorState}</span>
         </div>
         <div class="cp-hp-bar"><div class="cp-hp-fill" style="width:${hpPct}%"></div></div>
+      </div>
 
-        <!-- Archetype -->
-        <div class="cp-section">Archetype</div>
-        <div class="cp-archetypes">
-          ${archetypes.map(a => `
-            <div class="cp-arch ${c.archetype === a.id ? 'selected' : ''}" data-arch="${a.id}">
-              <div class="cp-arch-name">${a.name}</div>
-              <div class="cp-arch-desc">${a.desc}</div>
+      <!-- Tab bar -->
+      <div class="cp-tab-bar">
+        <button class="cp-tab ${this.activeTab === 'general' ? 'active' : ''}" data-tab="general">General</button>
+        <button class="cp-tab ${this.activeTab === 'combat' ? 'active' : ''}" data-tab="combat">Combat</button>
+        <button class="cp-tab ${this.activeTab === 'rules' ? 'active' : ''}" data-tab="rules">Rules</button>
+      </div>
+
+      <!-- Tab content -->
+      <div class="cp-body">
+
+        <!-- ═══ GENERAL TAB ═══ -->
+        <div class="cp-tab-page ${this.activeTab === 'general' ? 'active' : ''}" data-tab-page="general">
+          <div class="cp-section">Archetype</div>
+          <div class="cp-archetypes">
+            ${archetypes.map(a => `
+              <div class="cp-arch ${c.archetype === a.id ? 'selected' : ''}" data-arch="${a.id}">
+                <div class="cp-arch-name">${a.name}</div>
+                <div class="cp-arch-desc">${a.desc}</div>
+              </div>
+            `).join('')}
+          </div>
+
+          <div class="cp-section">Engagement</div>
+          ${this._segRow('Mode', 'engagementMode',
+              ['aggressive', 'defensive', 'passive'],
+              s.engagementMode ?? 'defensive',
+              ['AGR', 'DEF', 'PAS'])}
+
+          <div class="cp-section">Abilities</div>
+          ${c.abilities.map(a => `
+            <div class="cp-ability">
+              <input type="checkbox" class="cp-ability-check" data-ability="${a.id}" ${a.enabled ? 'checked' : ''} />
+              <span class="cp-ability-name">${this._esc(a.name)}</span>
+              <span class="cp-ability-desc">${this._esc(a.description)}</span>
             </div>
           `).join('')}
         </div>
 
-        <!-- Combat Settings -->
-        <div class="cp-section">Combat Settings</div>
+        <!-- ═══ COMBAT TAB ═══ -->
+        <div class="cp-tab-page ${this.activeTab === 'combat' ? 'active' : ''}" data-tab-page="combat">
+          <div class="cp-section">Stance &amp; Positioning</div>
+          ${this._segRow('Stance', 'stance', ['aggressive', 'cautious', 'support'], s.stance)}
+          ${this._segRow('Priority', 'priority', ['weakest', 'nearest', 'threatening_player'], s.priority, ['Weakest', 'Nearest', 'Protect'])}
+          ${this._segRow('Range', 'range', ['melee', 'close', 'mid', 'far'], s.preferredRange)}
 
-        ${this._segRow('Stance', 'stance', ['aggressive', 'cautious', 'support'], settings.stance)}
-        ${this._segRow('Priority', 'priority', ['weakest', 'nearest', 'threatening_player'], settings.priority, ['Weakest', 'Nearest', 'Protect'])}
-        ${this._segRow('Range', 'range', ['melee', 'close', 'mid', 'far'], settings.preferredRange)}
+          <div class="cp-section">Retreat &amp; Recovery</div>
+          ${this._sliderRow('Retreat', 'retreat', Math.round(s.retreatThreshold * 100), 0, 100, '%')}
+          ${this._sliderRow('Defensive', 'defensiveThreshold', Math.round((s.defensiveThreshold ?? 0.4) * 100), 0, 100, '%')}
+          ${this._sliderRow('Heal Allies', 'healAllyThreshold', Math.round((s.healAllyThreshold ?? 0.6) * 100), 0, 100, '%')}
 
-        ${this._sliderRow('Retreat', 'retreat', Math.round(settings.retreatThreshold * 100), 0, 100, '%')}
-        ${this._sliderRow('Damage', 'damage', Math.round((settings.abilityWeights.damage ?? 0) * 100), 0, 100)}
-        ${this._sliderRow('CC', 'cc', Math.round((settings.abilityWeights.cc ?? 0) * 100), 0, 100)}
-        ${this._sliderRow('Heal', 'heal', Math.round((settings.abilityWeights.heal ?? 0) * 100), 0, 100)}
-
-        <!-- Abilities -->
-        <div class="cp-section">Abilities</div>
-        ${c.abilities.map(a => `
-          <div class="cp-ability">
-            <input type="checkbox" class="cp-ability-check" data-ability="${a.id}" ${a.enabled ? 'checked' : ''} />
-            <span class="cp-ability-name">${this._esc(a.name)}</span>
-            <span class="cp-ability-desc">${this._esc(a.description)}</span>
-          </div>
-        `).join('')}
-
-        <!-- Mode controls -->
-        <div class="cp-modes">
-          <button class="cp-btn ${c.behaviorState === 'active' ? 'active' : ''}" data-mode="follow">Follow</button>
-          <button class="cp-btn ${c.behaviorState === 'detached' ? 'active' : ''}" data-mode="detach">Detach</button>
-          <button class="cp-btn" data-mode="recall">Recall</button>
+          <div class="cp-section">Ability Weights</div>
+          ${this._sliderRow('Damage', 'damage', Math.round((s.abilityWeights.damage ?? 0) * 100), 0, 100)}
+          ${this._sliderRow('CC', 'cc', Math.round((s.abilityWeights.cc ?? 0) * 100), 0, 100)}
+          ${this._sliderRow('Heal', 'heal', Math.round((s.abilityWeights.heal ?? 0) * 100), 0, 100)}
         </div>
+
+        <!-- ═══ RULES TAB ═══ -->
+        <div class="cp-tab-page ${this.activeTab === 'rules' ? 'active' : ''}" data-tab-page="rules">
+          <div class="cp-section">Healing Rules</div>
+          ${this._sliderRow('Max HP% to heal', 'minHealTarget', Math.round((s.minHealTarget ?? 0.85) * 100), 0, 100, '%')}
+          ${this._segRow('Heal Priority', 'healPriorityMode',
+              ['lowest_hp', 'most_damage_taken', 'tank_first'],
+              s.healPriorityMode ?? 'lowest_hp',
+              ['Lowest HP', 'Most Dmg', 'Tank First'])}
+
+          <div class="cp-section">Buff &amp; Cooldown Rules</div>
+          <label class="cp-check-row">
+            <input type="checkbox" data-setting="saveCooldownsForElites" ${s.saveCooldownsForElites ? 'checked' : ''} />
+            <span>Save big cooldowns for elites</span>
+          </label>
+          ${this._sliderRow('Min mob HP%', 'minEnemyHpForBuffs', Math.round((s.minEnemyHpForBuffs ?? 0.2) * 100), 0, 100, '%')}
+
+          <div class="cp-section">Resource Management</div>
+          ${this._sliderRow('Reserve %', 'resourceReserve', Math.round(s.resourceReservePercent ?? 15), 0, 100)}
+
+          <div class="cp-section">Engagement Filters</div>
+          ${this._chipSection('Ignore Family', 'ignoreFamily', s.ignoreFamily ?? [])}
+          ${this._chipSection('Always Engage Family', 'alwaysEngageFamily', s.alwaysEngageFamily ?? [])}
+          ${this._chipSection('Ignore Species', 'ignoreSpecies', s.ignoreSpecies ?? [])}
+          ${this._chipSection('Always Engage Species', 'alwaysEngageSpecies', s.alwaysEngageSpecies ?? [])}
+        </div>
+
+      </div>
+
+      <!-- Mode controls (always visible) -->
+      <div class="cp-modes">
+        <button class="cp-btn ${c.behaviorState === 'active' ? 'active' : ''}" data-mode="follow">Follow</button>
+        <button class="cp-btn ${c.behaviorState === 'detached' ? 'active' : ''}" data-mode="detach">Detach</button>
+        <button class="cp-btn" data-mode="recall">Recall</button>
       </div>
     `;
 
     this._wireClose();
+    this._wireTabs();
     this._wireArchetypes(c);
     this._wireSegments();
     this._wireSliders();
     this._wireAbilities(c);
+    this._wireCheckboxes();
+    this._wireChips();
     this._wireModes();
   }
 
@@ -497,10 +727,45 @@ export class CompanionPanel {
     `;
   }
 
+  private _chipSection(label: string, listKey: string, values: string[]): string {
+    return `
+      <div class="cp-chip-section">
+        <div class="cp-chip-label">${label}</div>
+        <div class="cp-chip-group" data-chip-list="${listKey}">
+          ${values.map(v => `
+            <span class="cp-chip" data-chip-val="${this._esc(v)}">${this._esc(v)}<button class="cp-chip-x">&times;</button></span>
+          `).join('')}
+          <input class="cp-chip-input" placeholder="+ add" data-chip-add="${listKey}" />
+        </div>
+      </div>
+    `;
+  }
+
   // ── Event wiring ──────────────────────────────────────────────────────────────
 
   private _wireClose(): void {
     this.root.querySelector('#cp-close')?.addEventListener('click', () => this.hide());
+  }
+
+  private _wireTabs(): void {
+    this.root.querySelectorAll<HTMLElement>('.cp-tab').forEach(el => {
+      el.addEventListener('click', () => {
+        const tab = el.dataset.tab as 'general' | 'combat' | 'rules';
+        if (tab) this._switchTab(tab);
+      });
+    });
+  }
+
+  private _switchTab(tab: 'general' | 'combat' | 'rules'): void {
+    this.activeTab = tab;
+    // Update tab buttons
+    this.root.querySelectorAll<HTMLElement>('.cp-tab').forEach(el => {
+      el.classList.toggle('active', el.dataset.tab === tab);
+    });
+    // Update tab pages
+    this.root.querySelectorAll<HTMLElement>('.cp-tab-page').forEach(el => {
+      el.classList.toggle('active', el.dataset.tabPage === tab);
+    });
   }
 
   private _wireArchetypes(c: CompanionConfigPayload): void {
@@ -520,11 +785,12 @@ export class CompanionPanel {
         const key = el.dataset.segKey;
         const val = el.dataset.segVal;
         if (!key || !val) return;
-        // Map key to settings field
         const settings: Record<string, unknown> = {};
-        if (key === 'stance')   settings.stance = val as CombatStance;
-        if (key === 'priority') settings.priority = val as TargetPriority;
-        if (key === 'range')    settings.preferredRange = val as PreferredRange;
+        if (key === 'stance')           settings.stance = val as CombatStance;
+        if (key === 'priority')         settings.priority = val as TargetPriority;
+        if (key === 'range')            settings.preferredRange = val as PreferredRange;
+        if (key === 'engagementMode')   settings.engagementMode = val as EngagementMode;
+        if (key === 'healPriorityMode') settings.healPriorityMode = val as HealPriorityMode;
         this.socket.sendCompanionConfigure(settings);
       });
     });
@@ -535,17 +801,24 @@ export class CompanionPanel {
       slider.addEventListener('input', () => {
         const key = slider.dataset.slider!;
         const num = parseInt(slider.value, 10);
-        // Update display immediately
+        // Determine suffix for display
+        const hasPct = ['retreat', 'defensiveThreshold', 'healAllyThreshold', 'minHealTarget', 'minEnemyHpForBuffs'].includes(key);
         const valEl = this.root.querySelector(`[data-slider-val="${key}"]`);
-        if (valEl) valEl.textContent = key === 'retreat' ? `${num}%` : `${num}`;
+        if (valEl) valEl.textContent = hasPct ? `${num}%` : `${num}`;
         // Debounce the server send
         if (this._debounceTimer) clearTimeout(this._debounceTimer);
         this._debounceTimer = setTimeout(() => {
           const settings: Record<string, unknown> = {};
-          if (key === 'retreat') {
-            settings.retreatThreshold = num / 100;
-          } else {
-            settings.abilityWeights = { [key]: num / 100 };
+          switch (key) {
+            case 'retreat':              settings.retreatThreshold = num / 100; break;
+            case 'defensiveThreshold':   settings.defensiveThreshold = num / 100; break;
+            case 'healAllyThreshold':    settings.healAllyThreshold = num / 100; break;
+            case 'minHealTarget':        settings.minHealTarget = num / 100; break;
+            case 'minEnemyHpForBuffs':   settings.minEnemyHpForBuffs = num / 100; break;
+            case 'resourceReserve':      settings.resourceReservePercent = num; break;
+            default:
+              // Ability weight keys: damage, cc, heal
+              settings.abilityWeights = { [key]: num / 100 };
           }
           this.socket.sendCompanionConfigure(settings);
         }, 200);
@@ -553,10 +826,9 @@ export class CompanionPanel {
     });
   }
 
-  private _wireAbilities(c: CompanionConfigPayload): void {
+  private _wireAbilities(_c: CompanionConfigPayload): void {
     this.root.querySelectorAll<HTMLInputElement>('.cp-ability-check').forEach(cb => {
       cb.addEventListener('change', () => {
-        // Collect all checked ability IDs
         const enabled: string[] = [];
         this.root.querySelectorAll<HTMLInputElement>('.cp-ability-check').forEach(el => {
           if (el.checked && el.dataset.ability) enabled.push(el.dataset.ability);
@@ -564,6 +836,68 @@ export class CompanionPanel {
         this.socket.sendCompanionSetAbilities(enabled);
       });
     });
+  }
+
+  private _wireCheckboxes(): void {
+    this.root.querySelectorAll<HTMLInputElement>('[data-setting]').forEach(cb => {
+      cb.addEventListener('change', () => {
+        const key = cb.dataset.setting!;
+        const settings: Record<string, unknown> = { [key]: cb.checked };
+        this.socket.sendCompanionConfigure(settings);
+      });
+    });
+  }
+
+  private _wireChips(): void {
+    // Add chip on Enter
+    this.root.querySelectorAll<HTMLInputElement>('.cp-chip-input').forEach(input => {
+      input.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter') return;
+        const val = input.value.trim();
+        if (!val) return;
+        const listKey = input.dataset.chipAdd!;
+        // Create new chip element
+        const chip = document.createElement('span');
+        chip.className = 'cp-chip';
+        chip.dataset.chipVal = val;
+        chip.innerHTML = `${this._esc(val)}<button class="cp-chip-x">&times;</button>`;
+        // Wire remove on the new chip
+        chip.querySelector('.cp-chip-x')?.addEventListener('click', () => {
+          chip.remove();
+          this._sendChipList(listKey);
+        });
+        // Insert before the input
+        input.parentElement!.insertBefore(chip, input);
+        input.value = '';
+        this._sendChipList(listKey);
+      });
+    });
+
+    // Remove chip on X click (for initial chips)
+    this.root.querySelectorAll<HTMLElement>('.cp-chip').forEach(chip => {
+      const x = chip.querySelector('.cp-chip-x');
+      x?.addEventListener('click', () => {
+        const group = chip.closest('[data-chip-list]') as HTMLElement | null;
+        const listKey = group?.dataset.chipList;
+        chip.remove();
+        if (listKey) this._sendChipList(listKey);
+      });
+    });
+  }
+
+  private _sendChipList(listKey: string): void {
+    // Debounce chip sends
+    if (this._chipDebounceTimer) clearTimeout(this._chipDebounceTimer);
+    this._chipDebounceTimer = setTimeout(() => {
+      const group = this.root.querySelector(`[data-chip-list="${listKey}"]`);
+      if (!group) return;
+      const values: string[] = [];
+      group.querySelectorAll<HTMLElement>('.cp-chip').forEach(chip => {
+        if (chip.dataset.chipVal) values.push(chip.dataset.chipVal);
+      });
+      const settings: Record<string, unknown> = { [listKey]: values };
+      this.socket.sendCompanionConfigure(settings);
+    }, 500);
   }
 
   private _wireModes(): void {

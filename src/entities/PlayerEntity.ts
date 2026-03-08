@@ -210,7 +210,10 @@ export class PlayerEntity extends EntityObject {
           if (box.isEmpty()) continue;
           if (box.max.y - box.min.y < COLLISION_MIN_HEIGHT) continue;
           box.getBoundingSphere(sphere);
-          if (sphere.radius > COLLISION_CANDIDATE_MAX_RADIUS) continue;
+          // Collider meshes (e.g. vault_wall_collider) are always included —
+          // they span the whole vault but are specifically built for raycasting.
+          if (sphere.radius > COLLISION_CANDIDATE_MAX_RADIUS
+              && !sub.name.includes('collider')) continue;
           this._collisionCandidates.push({
             obj:    sub,
             center: sphere.center.clone(),

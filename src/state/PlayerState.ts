@@ -20,6 +20,7 @@ import {
   type GuildMemberInfo,
   type GuildMemberListPayload,
   type CompanionConfigPayload,
+  type CompanionStatusPayload,
   type EnmityEntry,
 } from '@/network/Protocol';
 
@@ -81,6 +82,9 @@ export class PlayerState {
   private _targetId:     string | null = null;
   private _targetName:   string | null = null;
   private _targetLocked: boolean       = false;
+
+  private _focusTargetId:   string | null = null;
+  private _focusTargetName: string | null = null;
 
   /**
    * Unix-ms timestamp at which the player's corpse will fully dissolve and
@@ -162,6 +166,8 @@ export class PlayerState {
   get targetId(): string | null { return this._targetId; }
   get targetName(): string | null { return this._targetName; }
   get targetLocked(): boolean { return this._targetLocked; }
+  get focusTargetId(): string | null { return this._focusTargetId; }
+  get focusTargetName(): string | null { return this._focusTargetName; }
   /** Unix-ms at which corpse auto-dissolves. null if alive. */
   get corpseDissolvesAt(): number | null { return this._corpseDissolvesAt; }
 
@@ -463,6 +469,30 @@ export class PlayerState {
     this._notify();
   }
 
+  /** Lightweight status patch from companion_status events (HP, resources, BT state, LLM pending). */
+  applyCompanionStatus(status: CompanionStatusPayload): void {
+    if (!this._companion || this._companion.companionId !== status.companionId) return;
+    this._companion = {
+      ...this._companion,
+      currentHealth:  status.currentHealth,
+      maxHealth:      status.maxHealth,
+      currentMana:    status.currentMana,
+      maxMana:        status.maxMana,
+      currentStamina: status.currentStamina,
+      maxStamina:     status.maxStamina,
+      isAlive:        status.isAlive,
+      behaviorState:  status.behaviorState,
+      lastAbility:    status.lastAbility,
+      combatSettings: {
+        ...this._companion.combatSettings,
+        engagementMode: status.engagementMode,
+      },
+    };
+    // Stash llmPending as an extra property for the HUD
+    (this._companion as CompanionConfigPayload & { llmPending?: boolean }).llmPending = status.llmPending;
+    this._notify();
+  }
+
   clearCompanion(): void {
     this._companion = null;
     this._notify();
@@ -484,6 +514,27 @@ export class PlayerState {
   toggleTargetLock(): void {
     if (!this._targetId) return;
     this._targetLocked = !this._targetLocked;
+    this._notify();
+  }
+
+  // ── Focus target ─────────────────────────────────────────────────────────
+
+  setFocusTarget(id: string | null, name: string | null): void {
+    this._focusTargetId   = id;
+    this._focusTargetName = name;
+    this._notify();
+  }
+
+  clearFocusTarget(): void {
+    this._focusTargetId   = null;
+    this._focusTargetName = null;
+    this._notify();
+  }
+
+  /** Promote current target to focus target. */
+  focusCurrentTarget(): void {
+    this._focusTargetId   = this._targetId;
+    this._focusTargetName = this._targetName;
     this._notify();
   }
 

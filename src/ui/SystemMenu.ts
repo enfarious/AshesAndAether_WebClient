@@ -18,6 +18,7 @@ export interface SystemMenuCallbacks {
   map:        () => void;
   market:     () => void;
   layout:     () => void;
+  settings:   () => void;
 }
 
 interface MenuEntry {
@@ -37,6 +38,7 @@ const ENTRIES: MenuEntry[] = [
   { id: 'map',        icon: '\u25CE', label: 'Map',        keybind: 'M' },
   { id: 'market',     icon: '\u2696', label: 'Market',     keybind: 'Ctrl+M' },
   { id: 'layout',     icon: '\u2B1A', label: 'Layout',     keybind: 'F10' },
+  { id: 'settings',   icon: '\u2699', label: 'Settings',   keybind: 'O' },
 ];
 
 export class SystemMenu {

@@ -90,7 +90,16 @@
       "Bash(node -e \"const fs=require\\(''fs''\\);const b=fs.readFileSync\\(''F:\\\\\\\\Projects\\\\\\\\AshesAndAether\\\\\\\\AshesAndAether_Server\\\\\\\\data\\\\\\\\world\\\\\\\\assets\\\\\\\\dungeon\\\\\\\\Dungeon_Entrance_01.glb''\\);console.log\\(''size:'',b.length\\);console.log\\(''magic:'',b.toString\\(''ascii'',0,4\\)\\);console.log\\(''ver:'',b.readUInt32LE\\(4\\)\\);const jl=b.readUInt32LE\\(12\\);const j=JSON.parse\\(b.slice\\(20,20+jl\\).toString\\(\\)\\);console.log\\(''mats:'',\\(j.materials||[]\\).length\\);\\(j.materials||[]\\).forEach\\(\\(m,i\\)=>console.log\\(i,m.name,JSON.stringify\\(m.pbrMetallicRoughness\\)\\)\\);\")",
       "Bash(node -e \"const fs=require\\(''fs''\\);const b=fs.readFileSync\\(''F:/Projects/AshesAndAether/AshesAndAether_Server/data/world/assets/dungeon/Dungeon_Entrance_01.glb''\\);console.log\\(''size:'',b.length\\);console.log\\(''magic:'',b.toString\\(''ascii'',0,4\\)\\);const jl=b.readUInt32LE\\(12\\);const j=JSON.parse\\(b.slice\\(20,20+jl\\).toString\\(\\)\\);console.log\\(''mats:'',\\(j.materials||[]\\).length\\);\\(j.materials||[]\\).forEach\\(\\(m,i\\)=>console.log\\(i,m.name,JSON.stringify\\(m.pbrMetallicRoughness\\)\\)\\);console.log\\(''textures:'',\\(j.textures||[]\\).length\\);console.log\\(''images:'',\\(j.images||[]\\).length\\);\")",
       "Bash(cargo check)",
-      "Bash(npm install @tauri-apps/api)"
+      "Bash(npm install @tauri-apps/api)",
+      "Bash(wsl -d Ubuntu -- which redis-server)",
+      "Bash(find \"F:\\\\Projects\\\\AshesAndAether\\\\AshesAndAether_Server\\\\src\" -name \"VaultTemplates.ts\" -exec wc -l {} ;)",
+      "Bash(npx tsx -e \":*)",
+      "Bash(npx tsx -e \"const{PrismaClient}=require\\(''@prisma/client''\\);const p=new PrismaClient\\(\\);\\(async\\(\\)=>{const c=await p.character.findMany\\({select:{id:true,name:true}}\\);console.log\\(JSON.stringify\\(c,null,2\\)\\);await p.$disconnect\\(\\);}\\)\\(\\)\")",
+      "Bash(npx tsx prisma/give-fragments.ts)",
+      "Bash(npx prisma db push)",
+      "Bash(xargs grep -l \"combat_action\\\\|executeAction\\\\|performAction\")",
+      "Bash(xargs grep -l \"setTarget\\\\|targetId\\\\s*=\")",
+      "Bash(xargs grep -l \"focusTarget\\\\|subtarget\\\\|<t>\\\\|<st>\\\\|<ft>\")"
     ]
   }
 }

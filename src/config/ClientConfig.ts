@@ -29,6 +29,11 @@ function _loadServerUrl(): string {
 /** Mutable server URL — updated via login screen server field. */
 let _serverUrl = _loadServerUrl();
 
+/** Mutable settings — adjusted via Settings window, persisted to localStorage. */
+let _drawDistance = 200;
+let _cameraYawSensitivity = 0.005;
+let _cameraPitchSensitivity = 0.15;
+
 export const ClientConfig = {
   get serverUrl(): string { return _serverUrl; },
 
@@ -77,11 +82,13 @@ export const ClientConfig = {
   cameraMinDistance: 8,
   cameraMaxDistance: 500,
 
-  /** How fast yaw drag rotates (radians per pixel). */
-  cameraYawSensitivity: 0.005,
+  /** How fast yaw drag rotates (radians per pixel). Adjustable via Settings. */
+  get cameraYawSensitivity(): number { return _cameraYawSensitivity; },
+  set cameraYawSensitivity(v: number) { _cameraYawSensitivity = v; },
 
-  /** How fast pitch drag rotates (degrees per pixel). */
-  cameraPitchSensitivity: 0.15,
+  /** How fast pitch drag rotates (degrees per pixel). Adjustable via Settings. */
+  get cameraPitchSensitivity(): number { return _cameraPitchSensitivity; },
+  set cameraPitchSensitivity(v: number) { _cameraPitchSensitivity = v; },
 
   /** Movement interpolation: snap if server/client delta exceeds this (world units). */
   movementSnapThreshold: 4,
@@ -89,6 +96,7 @@ export const ClientConfig = {
   /** How much history to keep in the chat panel. */
   chatMaxLines: 200,
 
-  /** Draw distance for entities (metres). Beyond this, entities are hidden + unticked. */
-  drawDistance: 200,
-} as const;
+  /** Draw distance for entities (metres). Adjustable via Settings. */
+  get drawDistance(): number { return _drawDistance; },
+  set drawDistance(v: number) { _drawDistance = v; },
+};

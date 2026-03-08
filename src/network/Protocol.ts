@@ -319,6 +319,8 @@ export type CompanionArchetype = 'scrappy_fighter' | 'cautious_healer' | 'opport
 export type PreferredRange     = 'melee' | 'close' | 'mid' | 'far';
 export type TargetPriority     = 'weakest' | 'nearest' | 'threatening_player';
 export type CombatStance       = 'aggressive' | 'cautious' | 'support';
+export type EngagementMode     = 'aggressive' | 'defensive' | 'passive';
+export type HealPriorityMode   = 'lowest_hp' | 'most_damage_taken' | 'tank_first';
 
 export interface CompanionCombatSettings {
   preferredRange:   PreferredRange;
@@ -326,6 +328,28 @@ export interface CompanionCombatSettings {
   stance:           CombatStance;
   abilityWeights:   Record<string, number>;
   retreatThreshold: number;
+  engagementMode:   EngagementMode;
+
+  // Healing rules
+  healAllyThreshold:      number;
+  minHealTarget:          number;
+  healPriorityMode:       HealPriorityMode;
+
+  // Buff / cooldown rules
+  saveCooldownsForElites: boolean;
+  minEnemyHpForBuffs:     number;
+
+  // Resource management
+  resourceReservePercent: number;
+
+  // Recovery
+  defensiveThreshold:     number;
+
+  // Engagement overrides
+  ignoreFamily:           string[];
+  alwaysEngageFamily:     string[];
+  ignoreSpecies:          string[];
+  alwaysEngageSpecies:    string[];
 }
 
 export interface CompanionAbilityInfo {
@@ -342,6 +366,10 @@ export interface CompanionConfigPayload {
   level:             number;
   currentHealth:     number;
   maxHealth:         number;
+  currentMana?:      number;
+  maxMana?:          number;
+  currentStamina?:   number;
+  maxStamina?:       number;
   isAlive:           boolean;
   archetype:         CompanionArchetype;
   behaviorState:     string;
@@ -350,6 +378,23 @@ export interface CompanionConfigPayload {
   abilities:         CompanionAbilityInfo[];
   harvestsCompleted: number;
   itemsGathered:     number;
+  lastAbility?:      { abilityId: string; abilityName: string; timestamp: number } | null;
+}
+
+/** Lightweight status update for the CompanionHUD, sent ~1/s during combat. */
+export interface CompanionStatusPayload {
+  companionId:    string;
+  currentHealth:  number;
+  maxHealth:      number;
+  currentMana:    number;
+  maxMana:        number;
+  currentStamina: number;
+  maxStamina:     number;
+  isAlive:        boolean;
+  behaviorState:  string;
+  engagementMode: EngagementMode;
+  llmPending:     boolean;
+  lastAbility:    { abilityId: string; abilityName: string; timestamp: number } | null;
 }
 
 // ── Communication ─────────────────────────────────────────────────────────────

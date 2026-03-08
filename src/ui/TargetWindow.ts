@@ -25,6 +25,7 @@ export class TargetWindow {
   private root:    HTMLElement;
   private cleanup: (() => void)[] = [];
   private _cursor  = 0;
+  private _rafId: number | null = null;
 
   // Track which entity state last drove a menu build, so we skip it on HP/distance ticks
   private _menuKey: string = '';
@@ -172,9 +173,9 @@ export class TargetWindow {
       this.player.toggleTargetLock();
     });
 
-    const unsubPlayer = player.onChange(() => this._onTargetChange());
+    const unsubPlayer = player.onChange(() => this._scheduleRefresh());
     const unsubUpdate = entities.onUpdate(e => {
-      if (e.id === player.targetId) this._refresh();
+      if (e.id === player.targetId) this._scheduleRefresh();
     });
     const unsubRemove = entities.onRemove(id => {
       if (id === player.targetId) player.clearTarget();
@@ -196,6 +197,7 @@ export class TargetWindow {
   show():    void { this.root.style.display = ''; }
   hide():    void { this.root.style.display = 'none'; }
   dispose(): void {
+    if (this._rafId !== null) { cancelAnimationFrame(this._rafId); this._rafId = null; }
     this.cleanup.forEach(fn => fn());
     this.root.remove();
   }
@@ -393,6 +395,14 @@ export class TargetWindow {
   }
 
   // ── State updates ─────────────────────────────────────────────────────────
+
+  private _scheduleRefresh(): void {
+    if (this._rafId !== null) return;
+    this._rafId = requestAnimationFrame(() => {
+      this._rafId = null;
+      this._onTargetChange();
+    });
+  }
 
   private _onTargetChange(): void {
     const newId = this.player.targetId;

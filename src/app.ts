@@ -31,13 +31,13 @@ import { ActionBar }          from '@/ui/ActionBar';
 import { Minimap }            from '@/ui/Minimap';
 import { LoginScreen }        from '@/ui/LoginScreen';
 import { CharacterSelect }    from '@/ui/CharacterSelect';
-import { UIScaleWidget }      from '@/ui/UIScaleWidget';
-import { FpsWidget }          from '@/ui/FpsWidget';
+import { SettingsWindow }     from '@/ui/SettingsWindow';
 import { VillagePanel }       from '@/ui/VillagePanel';
 import { MarketPanel }        from '@/ui/MarketPanel';
 import { WorldMapPanel }      from '@/ui/WorldMapPanel';
 import { GuildPanel }         from '@/ui/GuildPanel';
 import { CompanionPanel }     from '@/ui/CompanionPanel';
+import { CompanionHUD }       from '@/ui/CompanionHUD';
 import { SystemMenu }         from '@/ui/SystemMenu';
 import { LayoutEditor }       from '@/ui/LayoutEditor';
 import { EnmityPanel }        from '@/ui/EnmityPanel';
@@ -81,6 +81,7 @@ export class App {
   private miasma:     CorruptionMiasma | null = null;
   private beacons:    WardBeaconManager | null = null;
   private water:      WaterRenderer | null = null;
+  private _vaultRenderer: VaultRenderer | null = null;
 
   // ── Input ─────────────────────────────────────────────────────────────────
   private clickMove: ClickMoveController;
@@ -105,14 +106,14 @@ export class App {
   private partyWindow:     PartyWindow     | null = null;
   private actionBar:       ActionBar       | null = null;
   private minimap:         Minimap         | null = null;
-  private scaleWidget:     UIScaleWidget   | null = null;
-  private fpsWidget:       FpsWidget       | null = null;
+  private settingsWindow:  SettingsWindow  | null = null;
   private villagePanel:      VillagePanel      | null = null;
   private marketPanel:       MarketPanel       | null = null;
   private registrationModal: RegistrationModal  | null = null;
   private worldMapPanel:     WorldMapPanel      | null = null;
   private guildPanel:        GuildPanel         | null = null;
   private companionPanel:    CompanionPanel     | null = null;
+  private companionHUD:      CompanionHUD       | null = null;
   private systemMenu:        SystemMenu         | null = null;
   private layoutEditor:      LayoutEditor       | null = null;
   private enmityPanel:       EnmityPanel        | null = null;
@@ -128,8 +129,6 @@ export class App {
   private _playerEntityWired = false;
 
   // ── FPS limiter ──────────────────────────────────────────────────────────
-  private static readonly FPS_STORAGE_KEY = 'aa_fps_limit';
-  private static readonly FPS_PRESETS = [30, 60, 120, 144, 0] as const; // 0 = unlimited
   private _fpsLimit = 0;
   private _frameInterval = 0;
   private _lastRender = 0;
@@ -149,13 +148,13 @@ export class App {
     this.entities = new EntityRegistry();
     this.world    = new WorldState();
 
-    // UI scale — mount outside #ui-root so it doesn't zoom itself.
-    // Applies saved scale to #ui-root immediately, persists to localStorage.
-    this.scaleWidget = new UIScaleWidget(document.body, this.uiRoot);
-
-    // FPS limit widget — mount outside #ui-root alongside scale widget.
-    // Fires saved limit on construction, so _fpsLimit is set before first frame.
-    this.fpsWidget = new FpsWidget(document.body, this.setFpsLimit);
+    // Settings window — replaces FpsWidget + UIScaleWidget.
+    // Created early so saved FPS limit & UI scale restore before first frame.
+    this.settingsWindow = new SettingsWindow(this.uiRoot, {
+      onFpsLimitChange:     this.setFpsLimit,
+      onUiScaleChange:      (scale) => { (this.uiRoot.style as any).zoom = String(scale); },
+      onDrawDistanceChange: () => { /* ClientConfig already mutated by SettingsWindow */ },
+    });
 
     // Network
     this.socket = new SocketClient();
@@ -368,7 +367,7 @@ export class App {
     this.layoutEditor?.dispose();
     this.registrationModal?.dispose();
     this.placementMode?.dispose();
-    this.fpsWidget?.dispose();
+    this.settingsWindow?.dispose();
   }
 
   // ── Chat command handlers ────────────────────────────────────────────────
@@ -444,6 +443,14 @@ export class App {
     const playerEntity = this.factory.getPlayerEntity();
     if (playerEntity) {
       this.camera.follow(playerEntity.cameraTarget, dt);
+      // Ceiling clip hole: intersect the camera→player ray with the
+      // ceiling plane so the hole tracks the camera's line of sight.
+      const camPos = this.camera.camera.position;
+      const target = playerEntity.cameraTarget;
+      this._vaultRenderer?.setClipCenter(
+        camPos.x, camPos.y, camPos.z,
+        target.x, target.z,
+      );
     }
 
     // Advance day/night / weather crossfade + sun orbit
@@ -658,13 +665,15 @@ export class App {
       this.companionPanel = new CompanionPanel(this.uiRoot, this.player, this.socket, this.router);
       this.wasd.setCompanionToggle(() => this.companionPanel!.toggle());
     }
+    if (!this.companionHUD) {
+      this.companionHUD = new CompanionHUD(this.uiRoot, this.player);
+    }
     if (!this.enmityPanel) {
       this.enmityPanel = new EnmityPanel(this.uiRoot, this.player);
       this.enmityPanel.setTargetCallback((entityId) => {
         const entity = this.entities.get(entityId);
         this.player.setTarget(entityId, entity?.name ?? null);
       });
-      this.enmityPanel.show();
     }
     if (!this.buildPanel) {
       this.buildPanel = new BuildPanel(this.uiRoot, this.socket, this.router);
@@ -687,6 +696,7 @@ export class App {
         map:        () => this.worldMapPanel?.toggle(),
         market:     () => this.marketPanel?.toggle(),
         layout:     () => this.layoutEditor?.toggle(),
+        settings:   () => this.settingsWindow?.toggle(),
       });
     }
     // Layout editor — drag-to-reposition HUD widgets
@@ -695,6 +705,8 @@ export class App {
       this.wasd.setLayoutEditToggle(() => this.layoutEditor?.toggle());
       this.wasd.setLayoutEditActive(() => this.layoutEditor?.isActive ?? false);
     }
+    // Settings window — O key toggle
+    this.wasd.setSettingsToggle(() => this.settingsWindow?.toggle());
     // Tab targeting
     if (!this.tabTarget) {
       this.tabTarget = new TabTargetService(
@@ -749,6 +761,7 @@ export class App {
     this.chatPanel.show();
     this.targetWindow.show();
     this.systemMenu!.show();
+    this.enmityPanel.show();
     // Show village panel if we're in a village zone
     if (this.world.isVillage) {
       this.villagePanel.show();
@@ -764,6 +777,7 @@ export class App {
   private async _loadWorldAssets(zoneId: string): Promise<void> {
     // Remove previous world geometry + water
     this.water?.clear();
+    this._vaultRenderer = null;
     if (this.worldRoot) {
       this.scene.scene.remove(this.worldRoot);
       this.worldRoot = null;
@@ -773,11 +787,15 @@ export class App {
     // Village zones use procedural terrain instead of server-hosted GLBs
     if (zoneId.startsWith('village:')) {
       this._buildVillageTerrain();
+      // Re-show overworld effects hidden by vault zones
+      this.beacons?.setVisible(true);
       return;
     }
 
     // Vault zones use tile-based terrain fetched from the server
     if (zoneId.startsWith('vault:')) {
+      // Hide overworld effects that don't belong inside vaults
+      this.beacons?.setVisible(false);
       await this._buildVaultTerrain(zoneId);
       return;
     }
@@ -825,6 +843,8 @@ export class App {
 
       // Terrain is now in the scene — reposition beacons onto it.
       // (Initial beacon raycast fires before GLBs load and misses.)
+      // Also re-show beacons in case they were hidden by a vault zone.
+      this.beacons?.setVisible(true);
       this.beacons?.repositionOnTerrain();
 
       // Water rendering — animated shader surfaces from OSM polygon data
@@ -840,6 +860,18 @@ export class App {
    * Falls back to a flat grey plane if the fetch fails.
    */
   private async _buildVaultTerrain(zoneId: string): Promise<void> {
+    // ── Clear overworld heightmap IMMEDIATELY ────────────────────────────────
+    // Vault zones are flat (Y=0). The heightmap must be nulled BEFORE the
+    // async tile fetch so that entities created during the fetch don't get
+    // snapped to overworld terrain elevations (the old heightmap persists
+    // until this point, which would put Y=0 vault entities hundreds of
+    // metres in the air).
+    this._heightmap = null;
+    this.clickMove.setHeightmap(null);
+    this.factory.setHeightmap(null);
+    const peEarly = this.factory.getPlayerEntity();
+    if (peEarly) peEarly.setHeightmap(null);
+
     // Extract instanceId from 'vault:<instanceId>'
     const instanceId = zoneId.slice('vault:'.length);
     const url = `${ClientConfig.serverUrl}/world/vault-tiles/${instanceId}`;
@@ -863,10 +895,11 @@ export class App {
       const renderer = new VaultRenderer();
       renderer.build(tileData);
       root.add(renderer.group);
+      this._vaultRenderer = renderer;
       console.log(`[App] Vault terrain built: ${tileData.width}×${tileData.height} tiles`);
     } else {
-      // Fallback: simple grey plane
-      const geo = new THREE.PlaneGeometry(60, 60);
+      // Fallback: simple grey plane (sized for multi-room vaults)
+      const geo = new THREE.PlaneGeometry(200, 100);
       geo.rotateX(-Math.PI / 2);
       const mat = new THREE.MeshStandardMaterial({ color: 0x555555, roughness: 0.9 });
       const plane = new THREE.Mesh(geo, mat);
@@ -880,11 +913,10 @@ export class App {
     root.add(ambientExtra);
 
     this.worldRoot = root;
-    this._heightmap = null;
     this.scene.scene.add(root);
-    this.clickMove.setHeightmap(null);
     this.clickMove.setWorldRoot(root);
-    this.factory.setHeightmap(null);
+    // PlayerEntity may have been created during the async fetch — catch it now
+    // and wire worldRoot (heightmap already nulled at method start).
     const pe = this.factory.getPlayerEntity();
     if (pe) {
       pe.setHeightmap(null);

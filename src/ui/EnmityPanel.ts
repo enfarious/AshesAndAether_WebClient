@@ -23,6 +23,8 @@ export class EnmityPanel {
   private body: HTMLElement;
   private unsub: (() => void) | null = null;
   private _visible = false;
+  private _rafId: number | null = null;
+  private _lastEnmityKey = '';
   private onTargetClick: ((entityId: string) => void) | null = null;
 
   constructor(
@@ -46,7 +48,7 @@ export class EnmityPanel {
 
     uiRoot.appendChild(this.root);
 
-    this.unsub = player.onChange(() => this._refresh());
+    this.unsub = player.onChange(() => this._scheduleRefresh());
   }
 
   setTargetCallback(fn: (entityId: string) => void): void {
@@ -64,11 +66,20 @@ export class EnmityPanel {
   }
 
   dispose(): void {
+    if (this._rafId !== null) { cancelAnimationFrame(this._rafId); this._rafId = null; }
     this.unsub?.();
     this.root.remove();
   }
 
   // ── Internal ──────────────────────────────────────────────────────────────
+
+  private _scheduleRefresh(): void {
+    if (this._rafId !== null) return;
+    this._rafId = requestAnimationFrame(() => {
+      this._rafId = null;
+      this._refresh();
+    });
+  }
 
   private _refresh(): void {
     if (!this._visible) return;
@@ -78,6 +89,7 @@ export class EnmityPanel {
 
     if (!inCombat || list.length === 0) {
       this.root.classList.add('enmity-hidden');
+      this._lastEnmityKey = '';
       return;
     }
 
@@ -87,6 +99,11 @@ export class EnmityPanel {
     const sorted = [...list].sort(
       (a, b) => (LEVEL_ORDER[a.level] ?? 3) - (LEVEL_ORDER[b.level] ?? 3),
     );
+
+    // Skip DOM rebuild if the list hasn't changed
+    const key = sorted.map(e => `${e.entityId}:${e.level}`).join('|');
+    if (key === this._lastEnmityKey) return;
+    this._lastEnmityKey = key;
 
     this.body.innerHTML = '';
     for (const entry of sorted) {

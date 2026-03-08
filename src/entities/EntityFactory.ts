@@ -80,8 +80,9 @@ export class EntityFactory {
   }
 
   /** Draw distance² — entities beyond this are hidden AND unticked. */
-  private static readonly DRAW_DIST_SQ =
-    ClientConfig.drawDistance * ClientConfig.drawDistance;
+  private static get DRAW_DIST_SQ(): number {
+    return ClientConfig.drawDistance * ClientConfig.drawDistance;
+  }
 
   /** Called every frame — ticks all entity interpolators and the highlight ring. */
   update(dt: number): void {

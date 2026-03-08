@@ -35,6 +35,8 @@ export class HUD {
   private _lastBuffCount   = 0;
   private _lastDebuffCount = 0;
   private cleanup: (() => void)[] = [];
+  /** RAF coalescing — prevents DOM thrashing from rapid state updates. */
+  private _rafId: number | null = null;
   private fpsEl:           HTMLElement | null = null;
   private _fpsFrames = 0;
   private _fpsTime   = 0;
@@ -48,7 +50,7 @@ export class HUD {
     this.root = this._build();
     uiRoot.appendChild(this.root);
 
-    const unsubPlayer = player.onChange(() => this._refresh());
+    const unsubPlayer = player.onChange(() => this._scheduleRefresh());
     const unsubZone   = world.onZoneChange(() => this._updateClock());
     this.cleanup.push(unsubPlayer, unsubZone);
 
@@ -73,7 +75,17 @@ export class HUD {
     if (this.timerInterval   !== null) clearInterval(this.timerInterval);
     if (this.clockInterval   !== null) clearInterval(this.clockInterval);
     if (this.effectsInterval !== null) clearInterval(this.effectsInterval);
+    if (this._rafId !== null) { cancelAnimationFrame(this._rafId); this._rafId = null; }
     this.root.remove();
+  }
+
+  /** Coalesce rapid state updates into a single refresh per frame. */
+  private _scheduleRefresh(): void {
+    if (this._rafId !== null) return;
+    this._rafId = requestAnimationFrame(() => {
+      this._rafId = null;
+      this._refresh();
+    });
   }
 
   private _build(): HTMLElement {

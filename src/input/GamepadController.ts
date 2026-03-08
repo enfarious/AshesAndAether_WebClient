@@ -141,8 +141,8 @@ export class GamepadController {
     // ── D-pad ─────────────────────────────────────────────────────────────
     this._tickDpad(snap);
 
-    // ── Death gate ────────────────────────────────────────────────────────
-    if (!this.player.isAlive) {
+    // ── Death / root gate ────────────────────────────────────────────────
+    if (!this.player.isAlive || this.player.isRooted) {
       this._stopMovement();
       return;
     }

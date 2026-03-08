@@ -82,6 +82,8 @@ export class ClickMoveController {
     // ── 2. Terrain hit? ─────────────────────────────────────────────────────
     // WASD has priority over click-to-move
     if (this._playerEntity?.mode === PlayerMoveMode.WASD) return;
+    // Block movement while rooted or dead
+    if (!this.player.isAlive || this.player.isRooted) return;
 
     if (this.heightmap) {
       const hit = this.heightmap.raycast(this.raycaster.ray);

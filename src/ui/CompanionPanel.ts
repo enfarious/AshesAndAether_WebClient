@@ -4,12 +4,14 @@ import type { MessageRouter } from '@/network/MessageRouter';
 import type {
   CompanionConfigPayload,
   CompanionArchetype,
+  CompanionLoadoutPayload,
   PreferredRange,
   TargetPriority,
   CombatStance,
   EngagementMode,
   HealPriorityMode,
 } from '@/network/Protocol';
+import { loadSettings, saveSettings } from '@/companion/CompanionSettings';
 
 /**
  * CompanionPanel — tabbed companion management panel.
@@ -30,7 +32,12 @@ export class CompanionPanel {
   private cleanup: (() => void)[] = [];
   private _visible = false;
   private _configRequested = false;
-  private activeTab: 'general' | 'combat' | 'rules' = 'general';
+  private activeTab: 'general' | 'actives' | 'passives' | 'combat' | 'rules' = 'general';
+
+  /** Loadout data received from server. */
+  private _activeLoadout:  CompanionLoadoutPayload | null = null;
+  private _passiveLoadout: CompanionLoadoutPayload | null = null;
+  private _selectedLoadoutSlot: number | null = null;
 
   /** Debounce timer for slider changes. */
   private _debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -63,6 +70,14 @@ export class CompanionPanel {
       if (this._visible) this._scheduleRender();
     });
     this.cleanup.push(unsubConfig);
+
+    const unsubLoadout = router.onCompanionLoadout((p) => {
+      if (p.web === 'active')  this._activeLoadout  = p;
+      else                     this._passiveLoadout = p;
+      this._structureDirty = true;
+      if (this._visible) this._scheduleRender();
+    });
+    this.cleanup.push(unsubLoadout);
 
     this.root.style.display = 'none';
   }
@@ -502,6 +517,237 @@ export class CompanionPanel {
         border-color: var(--ember, #c86a2a);
         background: rgba(60,35,8,0.5);
       }
+
+      /* ── Loadout slots ─────────────────────────────────────── */
+      .cp-loadout-slots {
+        display: flex;
+        gap: 4px;
+        flex-wrap: wrap;
+        margin-bottom: 8px;
+      }
+      .cp-slot {
+        width: 56px;
+        height: 48px;
+        border: 1px solid rgba(200,145,60,0.2);
+        background: rgba(20,14,6,0.6);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        transition: border-color 0.15s, background 0.15s;
+        position: relative;
+      }
+      .cp-slot:hover {
+        background: rgba(40,28,10,0.7);
+        border-color: rgba(200,145,60,0.4);
+      }
+      .cp-slot.selected {
+        border-color: var(--ember, #c86a2a);
+        box-shadow: 0 0 8px rgba(200,106,42,0.35);
+        background: rgba(60,35,8,0.4);
+      }
+      .cp-slot.filled {
+        border-color: rgba(68,204,102,0.35);
+      }
+      .cp-slot-idx {
+        font-family: var(--font-mono, monospace);
+        font-size: 8px;
+        color: rgba(212,201,184,0.3);
+        position: absolute;
+        top: 2px;
+        left: 4px;
+      }
+      .cp-slot-name {
+        font-family: var(--font-body, serif);
+        font-size: 9px;
+        color: rgba(212,201,184,0.7);
+        text-align: center;
+        line-height: 1.15;
+        padding: 0 2px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 100%;
+      }
+      .cp-slot-empty {
+        font-size: 9px;
+        color: rgba(212,201,184,0.25);
+        font-style: italic;
+      }
+
+      /* ── Available abilities list ──────────────────────────── */
+      .cp-avail-group-title {
+        font-family: var(--font-body, serif);
+        font-size: 10px;
+        color: rgba(212,201,184,0.45);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        margin-top: 4px;
+        margin-bottom: 2px;
+      }
+      .cp-avail-item {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 4px;
+        cursor: pointer;
+        transition: background 0.12s;
+      }
+      .cp-avail-item:hover {
+        background: rgba(40,28,10,0.5);
+      }
+      .cp-avail-name {
+        font-family: var(--font-body, serif);
+        font-size: 12px;
+        color: rgba(212,201,184,0.8);
+        flex: 1;
+      }
+      .cp-tier-badge {
+        font-family: var(--font-mono, monospace);
+        font-size: 9px;
+        padding: 1px 5px;
+        border: 1px solid rgba(200,145,60,0.2);
+        color: rgba(212,201,184,0.55);
+      }
+      .cp-tier-badge.t1 { border-color: rgba(68,204,102,0.3); color: #44cc66; }
+      .cp-tier-badge.t2 { border-color: rgba(100,160,220,0.3); color: #64a0dc; }
+      .cp-tier-badge.t3 { border-color: rgba(180,120,220,0.3); color: #b478dc; }
+
+      /* ── Archetype modifier box ────────────────────────────── */
+      .cp-arch-mods {
+        margin-top: 6px;
+        padding: 6px 8px;
+        border: 1px solid rgba(200,145,60,0.1);
+        background: rgba(15,10,4,0.5);
+      }
+      .cp-arch-mod-title {
+        font-family: var(--font-display, serif);
+        font-size: 11px;
+        color: rgba(212,201,184,0.65);
+        letter-spacing: 0.06em;
+        margin-bottom: 3px;
+      }
+      .cp-arch-mod-buff {
+        font-size: 11px;
+        color: #44cc66;
+        line-height: 1.5;
+      }
+      .cp-arch-mod-debuff {
+        font-size: 11px;
+        color: #cc4444;
+        line-height: 1.5;
+      }
+
+      /* ── Identity editor ─────────────────────────────────────── */
+      .cp-identity {
+        margin-top: 4px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .cp-id-row {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+      }
+      .cp-id-label {
+        font-family: var(--font-body, serif);
+        font-size: 11px;
+        color: rgba(212,201,184,0.5);
+        min-width: 72px;
+        padding-top: 3px;
+      }
+      .cp-id-input {
+        flex: 1;
+        font-family: var(--font-mono, monospace);
+        font-size: 10px;
+        padding: 3px 6px;
+        border: 1px solid rgba(200,145,60,0.15);
+        background: rgba(20,14,6,0.6);
+        color: rgba(212,201,184,0.7);
+        outline: none;
+      }
+      .cp-id-input::placeholder {
+        color: rgba(212,201,184,0.25);
+      }
+      .cp-id-input:focus {
+        border-color: var(--ember, #c86a2a);
+      }
+      .cp-id-textarea {
+        resize: vertical;
+        min-height: 32px;
+      }
+
+      /* ── Core stats grid ───────────────────────────────────── */
+      .cp-core-stats {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 4px;
+        margin-top: 4px;
+      }
+      .cp-core-stat {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        padding: 3px 6px;
+        background: rgba(15,10,4,0.5);
+        border: 1px solid rgba(200,145,60,0.08);
+      }
+      .cp-core-stat-abbr {
+        font-family: var(--font-mono, monospace);
+        font-size: 10px;
+        color: rgba(212,201,184,0.45);
+        text-transform: uppercase;
+        min-width: 26px;
+      }
+      .cp-core-stat-val {
+        font-family: var(--font-mono, monospace);
+        font-size: 12px;
+        color: rgba(212,201,184,0.85);
+      }
+
+      /* ── Derived stats block ───────────────────────────────── */
+      .cp-derived-stats {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 2px 12px;
+        margin-top: 4px;
+      }
+      .cp-derived-stat {
+        display: flex;
+        justify-content: space-between;
+        padding: 2px 0;
+      }
+      .cp-derived-label {
+        font-family: var(--font-body, serif);
+        font-size: 11px;
+        color: rgba(212,201,184,0.5);
+      }
+      .cp-derived-val {
+        font-family: var(--font-mono, monospace);
+        font-size: 11px;
+        color: rgba(212,201,184,0.8);
+      }
+      .cp-derived-val.modified {
+        color: #c8a84e;
+      }
+
+      /* ── Activity summary ──────────────────────────────────── */
+      .cp-activity {
+        display: flex;
+        gap: 16px;
+        margin-top: 4px;
+        padding: 4px 0;
+      }
+      .cp-activity-item {
+        font-family: var(--font-body, serif);
+        font-size: 11px;
+        color: rgba(212,201,184,0.5);
+      }
+      .cp-activity-val {
+        font-family: var(--font-mono, monospace);
+        color: rgba(212,201,184,0.75);
+      }
     `;
     document.head.appendChild(style);
   }
@@ -592,6 +838,8 @@ export class CompanionPanel {
       <!-- Tab bar -->
       <div class="cp-tab-bar">
         <button class="cp-tab ${this.activeTab === 'general' ? 'active' : ''}" data-tab="general">General</button>
+        <button class="cp-tab ${this.activeTab === 'actives' ? 'active' : ''}" data-tab="actives">Actives</button>
+        <button class="cp-tab ${this.activeTab === 'passives' ? 'active' : ''}" data-tab="passives">Passives</button>
         <button class="cp-tab ${this.activeTab === 'combat' ? 'active' : ''}" data-tab="combat">Combat</button>
         <button class="cp-tab ${this.activeTab === 'rules' ? 'active' : ''}" data-tab="rules">Rules</button>
       </div>
@@ -611,20 +859,23 @@ export class CompanionPanel {
             `).join('')}
           </div>
 
-          <div class="cp-section">Engagement</div>
-          ${this._segRow('Mode', 'engagementMode',
-              ['aggressive', 'defensive', 'passive'],
-              s.engagementMode ?? 'defensive',
-              ['AGR', 'DEF', 'PAS'])}
+          ${this._renderArchetypeModifiers(c.archetype)}
 
-          <div class="cp-section">Abilities</div>
-          ${c.abilities.map(a => `
-            <div class="cp-ability">
-              <input type="checkbox" class="cp-ability-check" data-ability="${a.id}" ${a.enabled ? 'checked' : ''} />
-              <span class="cp-ability-name">${this._esc(a.name)}</span>
-              <span class="cp-ability-desc">${this._esc(a.description)}</span>
-            </div>
-          `).join('')}
+          ${this._renderIdentityEditor(c)}
+
+          ${this._renderCoreStats(c)}
+          ${this._renderDerivedStats(c)}
+          ${this._renderActivity(c)}
+        </div>
+
+        <!-- ═══ ACTIVES TAB ═══ -->
+        <div class="cp-tab-page ${this.activeTab === 'actives' ? 'active' : ''}" data-tab-page="actives">
+          ${this._renderLoadoutTab('active')}
+        </div>
+
+        <!-- ═══ PASSIVES TAB ═══ -->
+        <div class="cp-tab-page ${this.activeTab === 'passives' ? 'active' : ''}" data-tab-page="passives">
+          ${this._renderLoadoutTab('passive')}
         </div>
 
         <!-- ═══ COMBAT TAB ═══ -->
@@ -684,12 +935,13 @@ export class CompanionPanel {
     this._wireClose();
     this._wireTabs();
     this._wireArchetypes(c);
+    this._wireIdentityInputs();
     this._wireSegments();
     this._wireSliders();
-    this._wireAbilities(c);
     this._wireCheckboxes();
     this._wireChips();
     this._wireModes();
+    this._wireLoadoutSlots();
   }
 
   // ── HTML helpers ──────────────────────────────────────────────────────────────
@@ -750,14 +1002,15 @@ export class CompanionPanel {
   private _wireTabs(): void {
     this.root.querySelectorAll<HTMLElement>('.cp-tab').forEach(el => {
       el.addEventListener('click', () => {
-        const tab = el.dataset.tab as 'general' | 'combat' | 'rules';
+        const tab = el.dataset.tab as typeof this.activeTab;
         if (tab) this._switchTab(tab);
       });
     });
   }
 
-  private _switchTab(tab: 'general' | 'combat' | 'rules'): void {
+  private _switchTab(tab: typeof this.activeTab): void {
     this.activeTab = tab;
+    this._selectedLoadoutSlot = null;
     // Update tab buttons
     this.root.querySelectorAll<HTMLElement>('.cp-tab').forEach(el => {
       el.classList.toggle('active', el.dataset.tab === tab);
@@ -766,6 +1019,9 @@ export class CompanionPanel {
     this.root.querySelectorAll<HTMLElement>('.cp-tab-page').forEach(el => {
       el.classList.toggle('active', el.dataset.tabPage === tab);
     });
+    // Fetch loadout data when switching to Actives/Passives
+    if (tab === 'actives')  this.socket.sendCompanionViewActiveLoadout();
+    if (tab === 'passives') this.socket.sendCompanionViewPassiveLoadout();
   }
 
   private _wireArchetypes(c: CompanionConfigPayload): void {
@@ -822,18 +1078,6 @@ export class CompanionPanel {
           }
           this.socket.sendCompanionConfigure(settings);
         }, 200);
-      });
-    });
-  }
-
-  private _wireAbilities(_c: CompanionConfigPayload): void {
-    this.root.querySelectorAll<HTMLInputElement>('.cp-ability-check').forEach(cb => {
-      cb.addEventListener('change', () => {
-        const enabled: string[] = [];
-        this.root.querySelectorAll<HTMLInputElement>('.cp-ability-check').forEach(el => {
-          if (el.checked && el.dataset.ability) enabled.push(el.dataset.ability);
-        });
-        this.socket.sendCompanionSetAbilities(enabled);
       });
     });
   }
@@ -909,6 +1153,258 @@ export class CompanionPanel {
     });
     this.root.querySelector('[data-mode="recall"]')?.addEventListener('click', () => {
       this.socket.sendCompanionRecall();
+    });
+  }
+
+  // ── Archetype modifiers ──────────────────────────────────────────────────────
+
+  private static readonly ARCHETYPE_MODIFIERS: Record<CompanionArchetype, { label: string; buffs: string[]; debuffs: string[] }> = {
+    cautious_healer: { label: "Healer's Attunement", buffs: ['+15% Heal Potency', '+1 Mana Regen'], debuffs: [] },
+    opportunist:     { label: "Exploiter's Edge",    buffs: ['+5% Critical Hit'],                    debuffs: ['-4 Defense'] },
+    scrappy_fighter: { label: "Brawler's Tenacity",  buffs: ['+6 Attack', '+15 Max HP'],             debuffs: ['-20% Healing Received'] },
+    tank:            { label: "Guardian's Resolve",   buffs: ['+8 Defense', '+20 Max HP', '+50% Threat'], debuffs: ['-4 Attack', '-15% Healing Received'] },
+  };
+
+  private _renderArchetypeModifiers(archetype: CompanionArchetype): string {
+    const mod = CompanionPanel.ARCHETYPE_MODIFIERS[archetype];
+    if (!mod) return '';
+    return `
+      <div class="cp-arch-mods">
+        <div class="cp-arch-mod-title">${this._esc(mod.label)}</div>
+        ${mod.buffs.map(b => `<div class="cp-arch-mod-buff">▲ ${this._esc(b)}</div>`).join('')}
+        ${mod.debuffs.map(d => `<div class="cp-arch-mod-debuff">▼ ${this._esc(d)}</div>`).join('')}
+      </div>
+    `;
+  }
+
+  // ── Identity editor ─────────────────────────────────────────────────────────
+
+  private _renderIdentityEditor(c: CompanionConfigPayload): string {
+    const id = loadSettings().identity;
+    // Client-side overrides take priority; fall back to server-provided data
+    const personality = id.personalityType || c.personalityType || '';
+    const traits      = id.traits          || (c.traits ?? []).join(', ');
+    const description = id.description     || c.description || '';
+
+    return `
+      <div class="cp-section">Identity</div>
+      <div class="cp-identity">
+        <label class="cp-id-row">
+          <span class="cp-id-label">Personality</span>
+          <input type="text" class="cp-id-input" data-id-field="personalityType"
+            value="${this._esc(personality)}" placeholder="e.g. sarcastic and witty" />
+        </label>
+        <label class="cp-id-row">
+          <span class="cp-id-label">Traits</span>
+          <input type="text" class="cp-id-input" data-id-field="traits"
+            value="${this._esc(traits)}" placeholder="e.g. brave, curious, protective" />
+        </label>
+        <label class="cp-id-row">
+          <span class="cp-id-label">Description</span>
+          <textarea class="cp-id-input cp-id-textarea" data-id-field="description"
+            rows="2" placeholder="e.g. a battle-scarred wolf companion">${this._esc(description)}</textarea>
+        </label>
+      </div>
+    `;
+  }
+
+  private _wireIdentityInputs(): void {
+    this.root.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('.cp-id-input').forEach(el => {
+      el.addEventListener('change', () => {
+        const field = el.dataset.idField;
+        if (!field) return;
+        const settings = loadSettings();
+        if (field === 'personalityType') settings.identity.personalityType = el.value.trim();
+        if (field === 'traits')          settings.identity.traits          = el.value.trim();
+        if (field === 'description')     settings.identity.description     = el.value.trim();
+        saveSettings(settings);
+      });
+    });
+  }
+
+  // ── Stats rendering ─────────────────────────────────────────────────────────
+
+  private _renderCoreStats(c: CompanionConfigPayload): string {
+    const cs = c.coreStats;
+    if (!cs) return '';
+    const stats: [string, number][] = [
+      ['STR', cs.strength], ['VIT', cs.vitality], ['DEX', cs.dexterity],
+      ['AGI', cs.agility],  ['INT', cs.intelligence], ['WIS', cs.wisdom],
+    ];
+    return `
+      <div class="cp-section">Attributes</div>
+      <div class="cp-core-stats">
+        ${stats.map(([abbr, val]) => `
+          <div class="cp-core-stat">
+            <span class="cp-core-stat-abbr">${abbr}</span>
+            <span class="cp-core-stat-val">${val}</span>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  private _renderDerivedStats(c: CompanionConfigPayload): string {
+    const d = c.derivedStats;
+    if (!d) return '';
+
+    const rows: [string, string, boolean][] = [
+      ['Attack',     String(d.attackRating),                        (d.attackRating !== 26)],
+      ['Defense',    d.defenseRating.toFixed(1),                    (d.defenseRating !== 5)],
+      ['Magic Atk',  String(d.magicAttack),                        false],
+      ['Magic Def',  d.magicDefense.toFixed(1),                    false],
+      ['Crit %',     d.criticalHitChance.toFixed(1) + '%',         (d.criticalHitChance !== 10.9)],
+      ['Evasion',    String(d.evasion),                             false],
+      ['Move Spd',   d.movementSpeed.toFixed(1) + ' m/s',         false],
+    ];
+
+    // Only show heal potency / threat if archetype modifies them
+    if (d.healPotencyMult !== 1.0) {
+      const pct = Math.round((d.healPotencyMult - 1) * 100);
+      const sign = pct >= 0 ? '+' : '';
+      rows.push(['Heal Potency', `${sign}${pct}%`, true]);
+    }
+    if (d.threatMultiplier !== 1.0) {
+      const pct = Math.round((d.threatMultiplier - 1) * 100);
+      const sign = pct >= 0 ? '+' : '';
+      rows.push(['Threat', `${sign}${pct}%`, true]);
+    }
+
+    return `
+      <div class="cp-section">Combat Stats</div>
+      <div class="cp-derived-stats">
+        ${rows.map(([label, val, mod]) => `
+          <div class="cp-derived-stat">
+            <span class="cp-derived-label">${label}</span>
+            <span class="cp-derived-val${mod ? ' modified' : ''}">${val}</span>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  private _renderActivity(c: CompanionConfigPayload): string {
+    if (!c.harvestsCompleted && !c.itemsGathered) return '';
+    return `
+      <div class="cp-section">Activity</div>
+      <div class="cp-activity">
+        <span class="cp-activity-item">Harvests: <span class="cp-activity-val">${c.harvestsCompleted}</span></span>
+        <span class="cp-activity-item">Items gathered: <span class="cp-activity-val">${c.itemsGathered}</span></span>
+      </div>
+    `;
+  }
+
+  // ── Loadout tab rendering ──────────────────────────────────────────────────
+
+  private _renderLoadoutTab(web: 'active' | 'passive'): string {
+    const loadout = web === 'active' ? this._activeLoadout : this._passiveLoadout;
+
+    if (!loadout) {
+      return `
+        <div class="cp-empty">
+          Loading ${web} loadout…<br/>
+          <span style="font-size:11px;color:rgba(212,201,184,0.35)">
+            Switch to this tab to fetch data from server.
+          </span>
+        </div>
+      `;
+    }
+
+    const SLOT_COUNT = 8;
+    const slots: string[] = [];
+    for (let i = 0; i < SLOT_COUNT; i++) {
+      const s = loadout.slots.find(sl => sl.slot === i);
+      const filled = s && s.nodeId;
+      const selected = this._selectedLoadoutSlot === i;
+      const cls = `cp-slot${filled ? ' filled' : ''}${selected ? ' selected' : ''}`;
+      slots.push(`
+        <div class="${cls}" data-loadout-slot="${i}" data-loadout-web="${web}">
+          <span class="cp-slot-idx">${i + 1}</span>
+          ${filled
+            ? `<span class="cp-slot-name">${this._esc(s!.name)}</span>`
+            : `<span class="cp-slot-empty">—</span>`
+          }
+        </div>
+      `);
+    }
+
+    // Group available abilities by sector
+    const bySector = new Map<string, typeof loadout.available>();
+    for (const a of loadout.available) {
+      const arr = bySector.get(a.sector) || [];
+      arr.push(a);
+      bySector.set(a.sector, arr);
+    }
+
+    let availHtml = '';
+    for (const [sector, abilities] of bySector) {
+      availHtml += `<div class="cp-avail-group-title">${this._esc(sector)}</div>`;
+      for (const a of abilities) {
+        const tierClass = a.tier <= 3 ? `t${a.tier}` : '';
+        availHtml += `
+          <div class="cp-avail-item" data-avail-node="${a.nodeId}" data-avail-web="${web}">
+            <span class="cp-avail-name">${this._esc(a.name)}</span>
+            <span class="cp-tier-badge ${tierClass}">T${a.tier}</span>
+          </div>
+        `;
+      }
+    }
+
+    return `
+      <div class="cp-section">${web === 'active' ? 'Active' : 'Passive'} Slots</div>
+      <div class="cp-loadout-slots">${slots.join('')}</div>
+      <div class="cp-section">Available ${web === 'active' ? 'Abilities' : 'Passives'}</div>
+      ${availHtml || '<div class="cp-empty" style="padding:8px 0">No abilities available.</div>'}
+    `;
+  }
+
+  // ── Loadout wiring ─────────────────────────────────────────────────────────
+
+  private _wireLoadoutSlots(): void {
+    // Slot click → select slot for assignment
+    this.root.querySelectorAll<HTMLElement>('.cp-slot').forEach(el => {
+      el.addEventListener('click', () => {
+        const slot = parseInt(el.dataset.loadoutSlot ?? '', 10);
+        if (isNaN(slot)) return;
+        this._selectedLoadoutSlot = this._selectedLoadoutSlot === slot ? null : slot;
+        // Update selection visuals without full rebuild
+        this.root.querySelectorAll<HTMLElement>('.cp-slot').forEach(s => {
+          s.classList.toggle('selected', parseInt(s.dataset.loadoutSlot ?? '', 10) === this._selectedLoadoutSlot);
+        });
+      });
+
+      // Right-click → unslot
+      el.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        const slot = parseInt(el.dataset.loadoutSlot ?? '', 10);
+        const web = el.dataset.loadoutWeb as 'active' | 'passive';
+        if (isNaN(slot) || !web) return;
+        this.socket.sendCompanionUnslotAbility(web, slot);
+      });
+    });
+
+    // Available ability click → assign to selected (or first empty) slot
+    this.root.querySelectorAll<HTMLElement>('.cp-avail-item').forEach(el => {
+      el.addEventListener('click', () => {
+        const nodeId = el.dataset.availNode;
+        const web = el.dataset.availWeb as 'active' | 'passive';
+        if (!nodeId || !web) return;
+
+        const loadout = web === 'active' ? this._activeLoadout : this._passiveLoadout;
+        let targetSlot = this._selectedLoadoutSlot;
+
+        // If no slot selected, find first empty
+        if (targetSlot === null && loadout) {
+          for (let i = 0; i < 8; i++) {
+            const s = loadout.slots.find(sl => sl.slot === i);
+            if (!s || !s.nodeId) { targetSlot = i; break; }
+          }
+        }
+        if (targetSlot === null) targetSlot = 0;
+
+        this.socket.sendCompanionSlotAbility(web, targetSlot, nodeId);
+        this._selectedLoadoutSlot = null;
+      });
     });
   }
 

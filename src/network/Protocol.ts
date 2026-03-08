@@ -360,6 +360,23 @@ export interface CompanionAbilityInfo {
   tags?:       string[];
 }
 
+export interface CompanionCoreStats {
+  strength: number; vitality: number; dexterity: number;
+  agility: number; intelligence: number; wisdom: number;
+}
+
+export interface CompanionDerivedStats {
+  attackRating:      number;
+  defenseRating:     number;
+  magicAttack:       number;
+  magicDefense:      number;
+  criticalHitChance: number;
+  evasion:           number;
+  movementSpeed:     number;
+  healPotencyMult:   number;
+  threatMultiplier:  number;
+}
+
 export interface CompanionConfigPayload {
   companionId:       string;
   name:              string;
@@ -379,6 +396,11 @@ export interface CompanionConfigPayload {
   harvestsCompleted: number;
   itemsGathered:     number;
   lastAbility?:      { abilityId: string; abilityName: string; timestamp: number } | null;
+  coreStats?:        CompanionCoreStats;
+  derivedStats?:     CompanionDerivedStats;
+  personalityType?:  string | null;
+  traits?:           string[];
+  description?:      string | null;
 }
 
 /** Lightweight status update for the CompanionHUD, sent ~1/s during combat. */
@@ -395,6 +417,28 @@ export interface CompanionStatusPayload {
   engagementMode: EngagementMode;
   llmPending:     boolean;
   lastAbility:    { abilityId: string; abilityName: string; timestamp: number } | null;
+}
+
+// ── Companion Loadout ─────────────────────────────────────────────────────────
+
+export interface CompanionLoadoutSlot {
+  slot:   number;
+  nodeId: string | null;
+  name:   string;
+}
+
+export interface CompanionAvailableAbility {
+  nodeId: string;
+  name:   string;
+  tier:   number;
+  sector: string;
+}
+
+export interface CompanionLoadoutPayload {
+  companionId: string;
+  web:         'active' | 'passive';
+  slots:       CompanionLoadoutSlot[];
+  available:   CompanionAvailableAbility[];
 }
 
 // ── Communication ─────────────────────────────────────────────────────────────

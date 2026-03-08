@@ -12,13 +12,15 @@ export class ChatPanel {
   private log:      HTMLElement;
   private input:    HTMLInputElement;
   private cleanup:  (() => void)[] = [];
-  private registerCallback: (() => void) | null = null;
-  private quitCallback:     (() => void) | null = null;
-  private shutdownCallback: (() => void) | null = null;
+  private registerCallback:      (() => void) | null = null;
+  private quitCallback:          (() => void) | null = null;
+  private shutdownCallback:      (() => void) | null = null;
+  private companionChatCallback: ((message: string) => void) | null = null;
 
-  setRegisterCallback(fn: () => void): void { this.registerCallback = fn; }
-  setQuitCallback(fn: () => void): void     { this.quitCallback = fn; }
-  setShutdownCallback(fn: () => void): void { this.shutdownCallback = fn; }
+  setRegisterCallback(fn: () => void): void      { this.registerCallback = fn; }
+  setQuitCallback(fn: () => void): void           { this.quitCallback = fn; }
+  setShutdownCallback(fn: () => void): void       { this.shutdownCallback = fn; }
+  setCompanionChatCallback(fn: (message: string) => void): void { this.companionChatCallback = fn; }
 
   constructor(
     private readonly uiRoot: HTMLElement,
@@ -215,7 +217,7 @@ export class ChatPanel {
       return;
     }
 
-    // /cc <message> — companion chat (private, with placeholder expansion)
+    // /cc <message> — companion chat (private, BYOLLM client-side)
     if (text.startsWith('/cc ')) {
       const raw = text.slice(4).trim();
       if (!raw) {
@@ -225,7 +227,13 @@ export class ChatPanel {
       const expanded = this._expandPlaceholders(raw);
       // Echo locally so the player sees their own message in the chat log
       this.world.pushMessage('companion', expanded, this.player.name);
-      this.socket.sendChat('companion', expanded);
+
+      if (this.companionChatCallback) {
+        this.companionChatCallback(expanded);
+      } else {
+        // Legacy fallback: send to server
+        this.socket.sendChat('companion', expanded);
+      }
       return;
     }
 

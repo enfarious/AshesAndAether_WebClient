@@ -144,6 +144,8 @@ export class PlayerState {
   get abilityPoints(): number  { return this._abilityPoints; }
   get statPoints():    number  { return this._statPoints; }
   get isAlive():       boolean { return this._isAlive; }
+  /** True when any active effect prevents movement (root, stun, etc.). */
+  get isRooted():      boolean { return this._effects.some(e => e.id === 'rooted' || e.id === 'stunned'); }
   get isGuest():       boolean { return this._isGuest; }
   get position(): Vector3 { return this._position; }
   get heading():  number  { return this._heading; }

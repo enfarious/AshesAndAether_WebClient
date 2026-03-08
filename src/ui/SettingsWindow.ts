@@ -1,5 +1,5 @@
 /**
- * SettingsWindow — tabbed settings panel (Display / Camera / Audio).
+ * SettingsWindow — tabbed settings panel (Display / Camera / Audio / Companion).
  *
  * Replaces the old FpsWidget and UIScaleWidget with a single, proper modal.
  * Opened via SystemMenu "Settings" button or the O key.
@@ -8,9 +8,20 @@
  * immediately — no "Apply" button needed. Camera sensitivities are written
  * directly to ClientConfig; other values fire callbacks so app.ts can wire
  * them to the renderer / frame limiter.
+ *
+ * The Companion tab exposes BYOLLM configuration:
+ *   - LLM provider (Anthropic, OpenAI, Ollama, custom), endpoint, key, model
+ *   - Test Connection button
+ *   - Social actions toggle
+ *   - Chat history channel selection & lookback settings
  */
 
 import { ClientConfig } from '@/config/ClientConfig';
+import {
+  loadSettings, saveSettings, getDefaultEndpoint, getDefaultModel,
+  type CompanionLLMConfig, type LLMProvider, type CompanionFullSettings,
+} from '@/companion/CompanionSettings';
+import type { CommunicationChannel } from '@/network/Protocol';
 
 // ── Callback interface ──────────────────────────────────────────────────────
 
@@ -57,12 +68,24 @@ function saveNum(key: string, v: number): void {
 
 // ── Tabs ────────────────────────────────────────────────────────────────────
 
-type TabId = 'display' | 'camera' | 'audio';
+type TabId = 'display' | 'camera' | 'audio' | 'companion';
 
 const TABS: { id: TabId; label: string }[] = [
-  { id: 'display', label: 'Display' },
-  { id: 'camera',  label: 'Camera' },
-  { id: 'audio',   label: 'Audio' },
+  { id: 'display',   label: 'Display' },
+  { id: 'camera',    label: 'Camera' },
+  { id: 'audio',     label: 'Audio' },
+  { id: 'companion', label: 'Companion' },
+];
+
+// ── Channel display names ─────────────────────────────────────────────────
+
+const CHANNEL_OPTIONS: { id: CommunicationChannel; label: string }[] = [
+  { id: 'say',       label: 'Say' },
+  { id: 'emote',     label: 'Emote' },
+  { id: 'companion', label: 'Companion' },
+  { id: 'shout',     label: 'Shout' },
+  { id: 'party',     label: 'Party' },
+  { id: 'guild',     label: 'Guild' },
 ];
 
 // ── Component ───────────────────────────────────────────────────────────────
@@ -73,6 +96,10 @@ export class SettingsWindow {
   private activeTab: TabId = 'display';
   private pages = new Map<TabId, HTMLElement>();
   private tabButtons = new Map<TabId, HTMLButtonElement>();
+
+  // ── Companion tab state ──
+  private _testLLMCallback: ((config: CompanionLLMConfig) => Promise<{ ok: boolean; message?: string; error?: string }>) | null = null;
+  private _companionSettings: CompanionFullSettings = loadSettings();
 
   constructor(
     private readonly uiRoot: HTMLElement,
@@ -116,6 +143,13 @@ export class SettingsWindow {
   dispose(): void {
     window.removeEventListener('keydown', this._onKeyDown, true);
     this.root.remove();
+  }
+
+  /**
+   * Set the LLM test callback — called from app.ts after CompanionLLMService is created.
+   */
+  setTestLLMCallback(fn: (config: CompanionLLMConfig) => Promise<{ ok: boolean; message?: string; error?: string }>): void {
+    this._testLLMCallback = fn;
   }
 
   // ── Escape handler ──────────────────────────────────────────────────────
@@ -199,6 +233,7 @@ export class SettingsWindow {
     this._buildDisplayPage(content);
     this._buildCameraPage(content);
     this._buildAudioPage(content);
+    this._buildCompanionPage(content);
     body.appendChild(content);
 
     panel.appendChild(body);
@@ -319,6 +354,325 @@ export class SettingsWindow {
     container.appendChild(page);
   }
 
+  // ── Companion tab ─────────────────────────────────────────────────────
+
+  private _buildCompanionPage(container: HTMLElement): void {
+    const page = this._makePage('companion');
+    const s = this._companionSettings;
+
+    // ── Section: LLM Provider ────────────────────────────────────────
+    page.appendChild(this._buildSectionLabel('LLM Provider'));
+
+    // Provider dropdown
+    const providerRow = this._buildSelect({
+      label: 'Provider',
+      options: [
+        { value: 'anthropic', label: 'Anthropic (Claude)' },
+        { value: 'openai',    label: 'OpenAI-compatible' },
+        { value: 'lmstudio',  label: 'LM Studio (local)' },
+        { value: 'ollama',    label: 'Ollama (local)' },
+        { value: 'custom',    label: 'Custom' },
+      ],
+      initial: s.llm.provider,
+      onChange: (v) => {
+        const provider = v as LLMProvider;
+        s.llm.provider = provider;
+        // Auto-fill endpoint + model for non-custom providers
+        const ep = getDefaultEndpoint(provider);
+        const model = getDefaultModel(provider);
+        if (ep) {
+          s.llm.apiEndpoint = ep;
+          endpointInput.value = ep;
+        }
+        if (model) {
+          s.llm.modelName = model;
+          modelInput.value = model;
+        }
+        this._saveCompanion();
+      },
+    });
+    page.appendChild(providerRow);
+
+    // API Endpoint
+    const endpointRow = this._buildTextInput({
+      label: 'API Endpoint',
+      initial: s.llm.apiEndpoint,
+      placeholder: 'https://api.example.com/v1/...',
+      onChange: (v) => { s.llm.apiEndpoint = v; this._saveCompanion(); },
+    });
+    const endpointInput = endpointRow.querySelector('input')!;
+    page.appendChild(endpointRow);
+
+    // API Key
+    page.appendChild(this._buildTextInput({
+      label: 'API Key',
+      initial: s.llm.apiKey,
+      placeholder: 'sk-...',
+      isPassword: true,
+      onChange: (v) => { s.llm.apiKey = v; this._saveCompanion(); },
+    }));
+
+    // Model Name
+    const modelRow = this._buildTextInput({
+      label: 'Model',
+      initial: s.llm.modelName,
+      placeholder: 'model-name',
+      onChange: (v) => { s.llm.modelName = v; this._saveCompanion(); },
+    });
+    const modelInput = modelRow.querySelector('input')!;
+    page.appendChild(modelRow);
+
+    // Test Connection button
+    page.appendChild(this._buildTestButton());
+
+    // ── Section: Behavior ────────────────────────────────────────────
+    page.appendChild(this._buildDivider());
+    page.appendChild(this._buildSectionLabel('Behavior'));
+
+    page.appendChild(this._buildToggle({
+      label: 'Social Actions',
+      sublabel: 'Companion can speak and emote via LLM',
+      initial: s.behavior.socialActionsEnabled,
+      onChange: (v) => { s.behavior.socialActionsEnabled = v; this._saveCompanion(); },
+    }));
+
+    // ── Section: Chat History ────────────────────────────────────────
+    page.appendChild(this._buildDivider());
+    page.appendChild(this._buildSectionLabel('Chat History (LLM context)'));
+
+    page.appendChild(this._buildSlider({
+      label: 'Lookback',
+      min: 5, max: 60, step: 5,
+      initial: s.chatHistory.lookbackMinutes,
+      format: (v) => `${v} min`,
+      onChange: (v) => { s.chatHistory.lookbackMinutes = v; this._saveCompanion(); },
+    }));
+
+    page.appendChild(this._buildSlider({
+      label: 'Max Lines',
+      min: 10, max: 200, step: 10,
+      initial: s.chatHistory.maxLines,
+      format: (v) => String(v),
+      onChange: (v) => { s.chatHistory.maxLines = v; this._saveCompanion(); },
+    }));
+
+    // Channel checkboxes
+    page.appendChild(this._buildChannelCheckboxes(s));
+
+    container.appendChild(page);
+  }
+
+  private _saveCompanion(): void {
+    saveSettings(this._companionSettings);
+  }
+
+  private _buildTestButton(): HTMLElement {
+    const row = document.createElement('div');
+    row.className = 'sw-row sw-test-row';
+
+    // Spacer for label column alignment
+    const spacer = document.createElement('span');
+    spacer.className = 'sw-lbl';
+    row.appendChild(spacer);
+
+    const btn = document.createElement('button');
+    btn.className = 'sw-test-btn';
+    btn.textContent = 'Test Connection';
+
+    const status = document.createElement('span');
+    status.className = 'sw-test-status';
+
+    btn.addEventListener('click', async () => {
+      if (!this._testLLMCallback) {
+        status.textContent = 'Not available yet';
+        status.className = 'sw-test-status sw-test-fail';
+        return;
+      }
+      btn.disabled = true;
+      status.textContent = 'Testing\u2026';
+      status.className = 'sw-test-status';
+
+      try {
+        const result = await this._testLLMCallback(this._companionSettings.llm);
+        if (result.ok) {
+          status.textContent = result.message ?? '\u2713 Connected';
+          status.className = 'sw-test-status sw-test-ok';
+        } else {
+          status.textContent = result.error ?? 'Failed';
+          status.className = 'sw-test-status sw-test-fail';
+        }
+      } catch (err) {
+        status.textContent = String(err);
+        status.className = 'sw-test-status sw-test-fail';
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    row.appendChild(btn);
+    row.appendChild(status);
+    return row;
+  }
+
+  private _buildChannelCheckboxes(s: CompanionFullSettings): HTMLElement {
+    const wrap = document.createElement('div');
+    wrap.className = 'sw-row sw-channels';
+
+    const lbl = document.createElement('span');
+    lbl.className = 'sw-lbl';
+    lbl.textContent = 'Channels';
+    wrap.appendChild(lbl);
+
+    const grid = document.createElement('div');
+    grid.className = 'sw-channel-grid';
+
+    for (const ch of CHANNEL_OPTIONS) {
+      const label = document.createElement('label');
+      label.className = 'sw-ch-label';
+
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = s.chatHistory.enabledChannels.includes(ch.id);
+
+      // 'companion' always enabled
+      if (ch.id === 'companion') {
+        cb.disabled = true;
+        cb.checked = true;
+      }
+
+      cb.addEventListener('change', () => {
+        const set = new Set(s.chatHistory.enabledChannels);
+        if (cb.checked) set.add(ch.id);
+        else set.delete(ch.id);
+        set.add('companion'); // always
+        s.chatHistory.enabledChannels = [...set];
+        this._saveCompanion();
+      });
+
+      label.appendChild(cb);
+      label.appendChild(document.createTextNode(` ${ch.label}`));
+      grid.appendChild(label);
+    }
+
+    wrap.appendChild(grid);
+    return wrap;
+  }
+
+  // ── Generic input builders ──────────────────────────────────────────────
+
+  private _buildSelect(opts: {
+    label: string;
+    options: { value: string; label: string }[];
+    initial: string;
+    onChange: (v: string) => void;
+  }): HTMLElement {
+    const row = document.createElement('div');
+    row.className = 'sw-row';
+
+    const lbl = document.createElement('span');
+    lbl.className = 'sw-lbl';
+    lbl.textContent = opts.label;
+
+    const select = document.createElement('select');
+    select.className = 'sw-select';
+    for (const opt of opts.options) {
+      const o = document.createElement('option');
+      o.value = opt.value;
+      o.textContent = opt.label;
+      if (opt.value === opts.initial) o.selected = true;
+      select.appendChild(o);
+    }
+    select.addEventListener('change', () => opts.onChange(select.value));
+
+    row.appendChild(lbl);
+    row.appendChild(select);
+    return row;
+  }
+
+  private _buildTextInput(opts: {
+    label: string;
+    initial: string;
+    placeholder?: string;
+    isPassword?: boolean;
+    onChange: (v: string) => void;
+  }): HTMLElement {
+    const row = document.createElement('div');
+    row.className = 'sw-row';
+
+    const lbl = document.createElement('span');
+    lbl.className = 'sw-lbl';
+    lbl.textContent = opts.label;
+
+    const input = document.createElement('input');
+    input.type = opts.isPassword ? 'password' : 'text';
+    input.className = 'sw-input';
+    input.value = opts.initial;
+    if (opts.placeholder) input.placeholder = opts.placeholder;
+
+    input.addEventListener('change', () => opts.onChange(input.value));
+    input.addEventListener('blur', () => opts.onChange(input.value));
+
+    row.appendChild(lbl);
+    row.appendChild(input);
+    return row;
+  }
+
+  private _buildToggle(opts: {
+    label: string;
+    sublabel?: string;
+    initial: boolean;
+    onChange: (v: boolean) => void;
+  }): HTMLElement {
+    const row = document.createElement('div');
+    row.className = 'sw-row sw-toggle-row';
+
+    const textWrap = document.createElement('div');
+    textWrap.className = 'sw-toggle-text';
+
+    const lbl = document.createElement('span');
+    lbl.className = 'sw-lbl';
+    lbl.textContent = opts.label;
+    textWrap.appendChild(lbl);
+
+    if (opts.sublabel) {
+      const sub = document.createElement('span');
+      sub.className = 'sw-sublabel';
+      sub.textContent = opts.sublabel;
+      textWrap.appendChild(sub);
+    }
+
+    const toggle = document.createElement('label');
+    toggle.className = 'sw-toggle';
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = opts.initial;
+    cb.addEventListener('change', () => opts.onChange(cb.checked));
+
+    const track = document.createElement('span');
+    track.className = 'sw-toggle-track';
+
+    toggle.appendChild(cb);
+    toggle.appendChild(track);
+
+    row.appendChild(textWrap);
+    row.appendChild(toggle);
+    return row;
+  }
+
+  private _buildSectionLabel(text: string): HTMLElement {
+    const el = document.createElement('div');
+    el.className = 'sw-section-label';
+    el.textContent = text;
+    return el;
+  }
+
+  private _buildDivider(): HTMLElement {
+    const el = document.createElement('div');
+    el.className = 'sw-divider';
+    return el;
+  }
+
   // ── Builders ────────────────────────────────────────────────────────────
 
   private _makePage(id: TabId): HTMLElement {
@@ -430,8 +784,8 @@ export class SettingsWindow {
 
       /* ── Panel ────────────────────────────────────────────────── */
       .sw-panel {
-        width: 520px;
-        max-height: 420px;
+        width: 560px;
+        max-height: 520px;
         background: rgba(8, 6, 4, 0.96);
         border: 1px solid rgba(200, 145, 60, 0.25);
         border-radius: 6px;
@@ -603,6 +957,158 @@ export class SettingsWindow {
         background: rgba(200, 145, 60, 0.28);
         color: rgba(212, 201, 184, 0.9);
         border-color: rgba(200, 145, 60, 0.45);
+      }
+
+      /* ── Companion tab — inputs ─────────────────────────────── */
+      .sw-select, .sw-input {
+        flex: 1;
+        font-family: var(--font-mono, monospace);
+        font-size: 11px;
+        color: rgba(212, 201, 184, 0.85);
+        background: rgba(200, 145, 60, 0.06);
+        border: 1px solid rgba(200, 145, 60, 0.2);
+        border-radius: 3px;
+        padding: 5px 8px;
+        outline: none;
+        transition: border-color 0.12s;
+        letter-spacing: 0.02em;
+      }
+      .sw-select:focus, .sw-input:focus {
+        border-color: rgba(200, 145, 60, 0.45);
+      }
+      .sw-input::placeholder {
+        color: rgba(212, 201, 184, 0.25);
+      }
+      .sw-select option {
+        background: #0a0806;
+        color: rgba(212, 201, 184, 0.85);
+      }
+
+      /* ── Section label ─────────────────────────────────────── */
+      .sw-section-label {
+        font-family: var(--font-body, serif);
+        font-size: 10px;
+        color: rgba(200, 145, 60, 0.6);
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+
+      /* ── Divider ───────────────────────────────────────────── */
+      .sw-divider {
+        height: 1px;
+        background: rgba(200, 145, 60, 0.12);
+        margin: 4px 0;
+      }
+
+      /* ── Toggle switch ─────────────────────────────────────── */
+      .sw-toggle-row {
+        justify-content: space-between;
+      }
+      .sw-toggle-text {
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+      }
+      .sw-toggle-text .sw-lbl { min-width: 0; }
+      .sw-sublabel {
+        font-family: var(--font-body, serif);
+        font-size: 9px;
+        color: rgba(212, 201, 184, 0.35);
+        letter-spacing: 0.03em;
+      }
+      .sw-toggle {
+        position: relative;
+        display: inline-block;
+        width: 32px;
+        height: 16px;
+        flex-shrink: 0;
+        cursor: pointer;
+      }
+      .sw-toggle input { opacity: 0; width: 0; height: 0; position: absolute; }
+      .sw-toggle-track {
+        position: absolute;
+        inset: 0;
+        background: rgba(200, 145, 60, 0.15);
+        border-radius: 8px;
+        transition: background 0.2s;
+      }
+      .sw-toggle-track::after {
+        content: '';
+        position: absolute;
+        left: 2px;
+        top: 2px;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: rgba(212, 201, 184, 0.5);
+        transition: transform 0.2s, background 0.2s;
+      }
+      .sw-toggle input:checked + .sw-toggle-track {
+        background: rgba(200, 145, 60, 0.45);
+      }
+      .sw-toggle input:checked + .sw-toggle-track::after {
+        transform: translateX(16px);
+        background: rgba(212, 201, 184, 0.9);
+      }
+
+      /* ── Test button ───────────────────────────────────────── */
+      .sw-test-row { gap: 8px; }
+      .sw-test-btn {
+        font-family: var(--font-body, serif);
+        font-size: 10px;
+        color: rgba(212, 201, 184, 0.7);
+        background: rgba(200, 145, 60, 0.12);
+        border: 1px solid rgba(200, 145, 60, 0.25);
+        border-radius: 3px;
+        padding: 4px 12px;
+        cursor: pointer;
+        letter-spacing: 0.04em;
+        transition: background 0.12s, color 0.12s;
+      }
+      .sw-test-btn:hover {
+        background: rgba(200, 145, 60, 0.22);
+        color: rgba(212, 201, 184, 0.9);
+      }
+      .sw-test-btn:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      .sw-test-status {
+        font-family: var(--font-mono, monospace);
+        font-size: 10px;
+        color: rgba(212, 201, 184, 0.4);
+        letter-spacing: 0.02em;
+      }
+      .sw-test-ok   { color: rgba(120, 200, 80, 0.85); }
+      .sw-test-fail { color: rgba(220, 80, 80, 0.85); }
+
+      /* ── Channel checkboxes ────────────────────────────────── */
+      .sw-channels { align-items: flex-start; }
+      .sw-channel-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 4px 12px;
+        flex: 1;
+      }
+      .sw-ch-label {
+        font-family: var(--font-body, serif);
+        font-size: 10px;
+        color: rgba(212, 201, 184, 0.55);
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        letter-spacing: 0.03em;
+      }
+      .sw-ch-label input[type="checkbox"] {
+        accent-color: rgba(200, 145, 60, 0.7);
+        width: 12px;
+        height: 12px;
+        cursor: pointer;
+      }
+      .sw-ch-label input[type="checkbox"]:disabled {
+        opacity: 0.5;
+        cursor: default;
       }
     `;
     document.head.appendChild(style);

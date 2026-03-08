@@ -88,7 +88,8 @@ export class SocketClient {
       'zone_transfer', 'village_state', 'village_placement_mode', 'village_catalog',
       'editor_open', 'editor_result',
       'guild_update', 'guild_member_list', 'guild_invite', 'guild_chat', 'guild_founding_narrative',
-      'companion_config', 'companion_status',
+      'companion_config', 'companion_status', 'companion_active_loadout', 'companion_passive_loadout',
+      'companion_combat_trigger', 'companion_social_trigger',
       'beacon_alert', 'library_assault',
       'error',
       'pong',
@@ -355,9 +356,49 @@ export class SocketClient {
     this.sendCommand(`/companion abilities ${abilityIds.join(',')}`);
   }
 
+  sendCompanionViewActiveLoadout(): void {
+    this.sendCommand('/companion abilities');
+  }
+
+  sendCompanionViewPassiveLoadout(): void {
+    this.sendCommand('/companion passives');
+  }
+
+  sendCompanionSlotAbility(web: 'active' | 'passive', slotIndex: number, nodeId: string): void {
+    const sub = web === 'active' ? 'abilities' : 'passives';
+    this.sendCommand(`/companion ${sub} slot ${slotIndex} ${nodeId}`);
+  }
+
+  sendCompanionUnslotAbility(web: 'active' | 'passive', slotIndex: number): void {
+    const sub = web === 'active' ? 'abilities' : 'passives';
+    this.sendCommand(`/companion ${sub} unslot ${slotIndex}`);
+  }
+
   sendCompanionFollow(): void { this.sendCommand('/companion follow'); }
   sendCompanionDetach(): void { this.sendCommand('/companion detach'); }
   sendCompanionRecall(): void { this.sendCommand('/companion recall'); }
+
+  // ── Companion BYOLLM ──────────────────────────────────────────────────
+
+  sendCompanionSettingsUpdate(companionId: string, settings: Record<string, unknown>): void {
+    this._send('companion_settings_update', { companionId, settings });
+  }
+
+  sendCompanionSocialAction(
+    companionId: string,
+    action: 'say' | 'emote' | 'move',
+    message?: string,
+    bearing?: number,
+    distance?: number,
+  ): void {
+    this._send('companion_social_action', {
+      companionId,
+      action,
+      ...(message !== undefined ? { message } : {}),
+      ...(bearing !== undefined ? { bearing } : {}),
+      ...(distance !== undefined ? { distance } : {}),
+    });
+  }
 
   // ── Event bus ─────────────────────────────────────────────────────────────
 

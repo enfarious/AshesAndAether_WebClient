@@ -47,6 +47,7 @@ import type {
   LibraryAssaultPayload,
   CompanionConfigPayload,
   CompanionStatusPayload,
+  CompanionLoadoutPayload,
   VillageCatalogPayload,
 } from './Protocol';
 
@@ -73,8 +74,11 @@ export class MessageRouter {
   private guildNarrativeListeners  = new Set<(p: GuildFoundingNarrativePayload) => void>();
   private beaconAlertListeners     = new Set<(p: BeaconAlertPayload) => void>();
   private libraryAssaultListeners  = new Set<(p: LibraryAssaultPayload) => void>();
-  private companionConfigListeners = new Set<(p: CompanionConfigPayload) => void>();
-  private villageCatalogListeners  = new Set<(p: VillageCatalogPayload) => void>();
+  private companionConfigListeners  = new Set<(p: CompanionConfigPayload) => void>();
+  private companionLoadoutListeners = new Set<(p: CompanionLoadoutPayload) => void>();
+  private companionCombatTriggerListeners = new Set<(p: unknown) => void>();
+  private companionSocialTriggerListeners = new Set<(p: unknown) => void>();
+  private villageCatalogListeners   = new Set<(p: VillageCatalogPayload) => void>();
 
   constructor(
     private readonly socket:   SocketClient,
@@ -163,6 +167,21 @@ export class MessageRouter {
   onCompanionConfig(fn: (p: CompanionConfigPayload) => void): () => void {
     this.companionConfigListeners.add(fn);
     return () => this.companionConfigListeners.delete(fn);
+  }
+
+  onCompanionLoadout(fn: (p: CompanionLoadoutPayload) => void): () => void {
+    this.companionLoadoutListeners.add(fn);
+    return () => this.companionLoadoutListeners.delete(fn);
+  }
+
+  onCompanionCombatTrigger(fn: (p: unknown) => void): () => void {
+    this.companionCombatTriggerListeners.add(fn);
+    return () => this.companionCombatTriggerListeners.delete(fn);
+  }
+
+  onCompanionSocialTrigger(fn: (p: unknown) => void): () => void {
+    this.companionSocialTriggerListeners.add(fn);
+    return () => this.companionSocialTriggerListeners.delete(fn);
   }
 
   onVillageCatalog(fn: (p: VillageCatalogPayload) => void): () => void {
@@ -493,6 +512,24 @@ export class MessageRouter {
     // ── Companion status (lightweight combat HUD updates ~1/s) ────────
     s.on('companion_status', (p) => {
       this.player.applyCompanionStatus(p as CompanionStatusPayload);
+    });
+
+    // ── Companion loadout (active/passive ability slots) ─────────────
+    s.on('companion_active_loadout', (p) => {
+      this.companionLoadoutListeners.forEach(fn => fn(p as CompanionLoadoutPayload));
+    });
+
+    s.on('companion_passive_loadout', (p) => {
+      this.companionLoadoutListeners.forEach(fn => fn(p as CompanionLoadoutPayload));
+    });
+
+    // ── Companion BYOLLM triggers ─────────────────────────────────────────
+    s.on('companion_combat_trigger', (p) => {
+      this.companionCombatTriggerListeners.forEach(fn => fn(p));
+    });
+
+    s.on('companion_social_trigger', (p) => {
+      this.companionSocialTriggerListeners.forEach(fn => fn(p));
     });
 
     // ── Beacon & Library alerts ──────────────────────────────────────────

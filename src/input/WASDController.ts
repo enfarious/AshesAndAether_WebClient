@@ -113,8 +113,8 @@ export class WASDController {
     if (this.held.has('=') || this.held.has('+')) this.camera.addZoom(+ZOOM_SPEED * dt);
     if (this.held.has('-'))                       this.camera.addZoom(-ZOOM_SPEED * dt);
 
-    // Gate on isAlive — stop movement if dead
-    if (!this.player.isAlive) {
+    // Gate on isAlive / isRooted — stop movement if dead or movement-impaired
+    if (!this.player.isAlive || this.player.isRooted) {
       if (this.isMoving) {
         this.socket.sendMoveStop();
         this.isMoving = false;

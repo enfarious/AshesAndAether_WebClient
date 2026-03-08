@@ -6,8 +6,9 @@
  * Client-side cooldown overlay ticks down each frame via tick(dt).
  */
 
-import type { PlayerState }       from '@/state/PlayerState';
-import type { SocketClient }      from '@/network/SocketClient';
+import type { PlayerState }        from '@/state/PlayerState';
+import type { SocketClient }       from '@/network/SocketClient';
+import type { EntityRegistry }     from '@/state/EntityRegistry';
 import type { AbilityNodeSummary } from '@/network/Protocol';
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -40,10 +41,14 @@ export class ActionBar {
   private _lastLoadoutKey = '';
   private _rafId: number | null = null;
 
+  /** Optional callback for showing validation feedback (e.g. chat system message). */
+  onValidationError: ((msg: string) => void) | null = null;
+
   constructor(
-    private readonly mountEl: HTMLElement,
-    private readonly player:  PlayerState,
-    private readonly socket:  SocketClient,
+    private readonly mountEl:   HTMLElement,
+    private readonly player:    PlayerState,
+    private readonly socket:    SocketClient,
+    private readonly entities:  EntityRegistry,
   ) {
     this.root    = document.createElement('div');
     this.tooltip = document.createElement('div');
@@ -109,7 +114,14 @@ export class ActionBar {
     const node = this._manifestMap().get(nodeId);
     if (!node) return;
 
+    // ── Target validation ──────────────────────────────────────────────────
     const targetId = this.player.targetId ?? '';
+    const err = this._validateTarget(node, targetId);
+    if (err) {
+      this.onValidationError?.(err);
+      return;
+    }
+
     this.socket.sendCombatAction(nodeId, targetId);
 
     // Client-side cooldown (server enforces the real one)
@@ -122,6 +134,77 @@ export class ActionBar {
     el.classList.remove('ab-flash');
     void el.offsetWidth;          // force reflow to restart animation
     el.classList.add('ab-flash');
+  }
+
+  // ── Target validation ───────────────────────────────────────────────────
+
+  /**
+   * Pre-flight check before sending a combat action.
+   * Returns an error string if the cast should be blocked, or null if OK.
+   *
+   * These are UX guardrails — the server always validates authoritatively.
+   */
+  private _validateTarget(node: AbilityNodeSummary, targetId: string): string | null {
+    const tt = node.targetType;  // 'self' | 'enemy' | 'ally' | 'aoe' | undefined
+
+    // Self-cast and AoE don't need a target entity
+    if (!tt || tt === 'self' || tt === 'aoe') return null;
+
+    // ── Enemy-targeted abilities ─────────────────────────────────────────
+    if (tt === 'enemy') {
+      if (!targetId) return 'You need a target.';
+
+      const target = this.entities.get(targetId);
+      if (!target) return 'Target not found.';
+      if (target.isAlive === false) return 'Target is dead.';
+
+      // Don't debuff/attack yourself
+      if (targetId === this.player.id) return "You can't use that on yourself.";
+
+      // Don't debuff party members
+      if (this._isAlly(targetId)) return "You can't use that on an ally.";
+
+      return null;
+    }
+
+    // ── Ally-targeted abilities (heals, buffs) ───────────────────────────
+    if (tt === 'ally') {
+      if (!targetId) return 'You need a target.';
+
+      const target = this.entities.get(targetId);
+      if (!target) return 'Target not found.';
+      if (target.isAlive === false) return 'Target is dead.';
+
+      // Don't buff hostile entities
+      if (target.hostile) return "You can't use that on an enemy.";
+
+      // Only allow on self, party members, companions, players, NPCs
+      if (targetId !== this.player.id && !this._isAlly(targetId)) {
+        // For ally casts on non-party players: allow it (could be buffing a stranger).
+        // But block hostile mobs/wildlife.
+        const type = target.type?.toLowerCase() ?? '';
+        if (type === 'mob' || type === 'wildlife') {
+          return "You can't use that on an enemy.";
+        }
+      }
+
+      return null;
+    }
+
+    return null;
+  }
+
+  /** Check if an entity ID is the player, a party member, or the player's companion. */
+  private _isAlly(id: string): boolean {
+    if (id === this.player.id) return true;
+
+    // Party members
+    if (this.player.partyMembers.some(m => m.id === id)) return true;
+
+    // Player's companion
+    if (this.player.companion?.companionId === id) return true;
+
+    return false;
   }
 
   // ── Styles ─────────────────────────────────────────────────────────────────

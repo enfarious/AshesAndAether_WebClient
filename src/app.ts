@@ -50,6 +50,9 @@ import { WaterRenderer }      from '@/world/WaterRenderer';
 import { VaultRenderer }      from '@/world/VaultRenderer';
 import type { VaultTileData } from '@/world/VaultRenderer';
 import { PlacementMode }      from '@/village/PlacementMode';
+import { ChatLogger }         from '@/companion/ChatLogger';
+import { CompanionLLMService, type CompanionCombatTriggerPayload, type CompanionSocialTriggerPayload } from '@/companion/CompanionLLMService';
+import { loadSettings }       from '@/companion/CompanionSettings';
 
 /**
  * App — top-level bootstrap. Creates all modules, wires them together,
@@ -119,6 +122,10 @@ export class App {
   private enmityPanel:       EnmityPanel        | null = null;
   private buildPanel:        BuildPanel         | null = null;
   private placementMode:     PlacementMode      | null = null;
+
+  // ── BYOLLM ──────────────────────────────────────────────────────────────
+  private chatLogger:    ChatLogger           | null = null;
+  private companionLLM:  CompanionLLMService  | null = null;
 
   // ── Environment tracking ─────────────────────────────────────────────────
   private _lastWeather  = '';
@@ -219,7 +226,7 @@ export class App {
 
     // ── XP gain / level-up notifications ──────────────────────────────────
     this.world.onEvent(payload => {
-      if (payload.eventType === 'xp_gain' || payload.eventType === 'level_up') {
+      if (payload.eventType === 'xp_gain' || payload.eventType === 'level_up' || payload.eventType === 'companion_level_up') {
         const msg = payload['message'] as string | undefined;
         if (msg) this.world.pushMessage('system', msg);
       }
@@ -593,6 +600,32 @@ export class App {
       this.chatPanel = new ChatPanel(this.uiRoot, this.world, this.socket, this.player);
       this.chatPanel.setQuitCallback(() => this._handleQuit());
       this.chatPanel.setShutdownCallback(() => this._handleShutdown());
+
+      // Wire /cc to client-side BYOLLM
+      this.chatPanel.setCompanionChatCallback((message: string) => {
+        const comp = this.player.companion;
+        if (!comp) {
+          this.world.pushMessage('system', 'You don\'t have a companion summoned.');
+          return;
+        }
+        if (!this.companionLLM) {
+          this.world.pushMessage('system', 'Companion chat system not initialized.');
+          return;
+        }
+        const companionName = comp.name;
+        // Show thinking indicator
+        this.world.pushMessage('companion', '\u2026', companionName);
+        // Async LLM call — no cooldown for player-initiated chat
+        void this.companionLLM.handleChat(this.player.name, message).then((reply) => {
+          if (reply) {
+            this.world.pushMessage('companion', reply, companionName);
+          } else {
+            this.world.pushMessage('companion',
+              `*${companionName} looks at you but doesn't seem to know what to say.*`,
+              companionName);
+          }
+        });
+      });
     }
     if (!this.targetWindow) {
       this.targetWindow = new TargetWindow(this.uiRoot, this.player, this.entities, this.socket);
@@ -638,7 +671,8 @@ export class App {
       this.wasd.setCharacterSheetToggle(() => this.characterSheet!.toggle());
     }
     if (!this.actionBar) {
-      this.actionBar = new ActionBar(this.uiRoot, this.player, this.socket);
+      this.actionBar = new ActionBar(this.uiRoot, this.player, this.socket, this.entities);
+      this.actionBar.onValidationError = (msg) => this.world.pushMessage('system', msg);
       this.wasd.setAbilitySlotCallback((idx) => this.actionBar!.activateSlot(idx));
     }
     if (!this.partyWindow) {
@@ -667,6 +701,37 @@ export class App {
     }
     if (!this.companionHUD) {
       this.companionHUD = new CompanionHUD(this.uiRoot, this.player);
+    }
+
+    // ── BYOLLM system ─────────────────────────────────────────────────────
+    if (!this.chatLogger) {
+      const settings = loadSettings();
+      this.chatLogger = new ChatLogger(settings.chatHistory.enabledChannels);
+      void this.chatLogger.init();
+
+      // Hook chat messages into the logger after rendering
+      this.world.onChat((entry) => {
+        this.chatLogger!.write(entry.channel, entry.sender, entry.content);
+      });
+    }
+    if (!this.companionLLM) {
+      this.companionLLM = new CompanionLLMService(this.socket, this.chatLogger!);
+
+      // Wire trigger handlers
+      this.router.onCompanionCombatTrigger((p) => {
+        void this.companionLLM!.handleCombatTrigger(p as CompanionCombatTriggerPayload);
+      });
+      this.router.onCompanionSocialTrigger((p) => {
+        void this.companionLLM!.handleSocialTrigger(p as CompanionSocialTriggerPayload);
+      });
+
+      // Wire LLM test callback into settings window
+      this.settingsWindow?.setTestLLMCallback((config) => this.companionLLM!.testConnection(config));
+
+      // Feed companion config to LLM service (personality data for /cc prompts)
+      this.router.onCompanionConfig((payload) => {
+        this.companionLLM!.setCompanionConfig(payload);
+      });
     }
     if (!this.enmityPanel) {
       this.enmityPanel = new EnmityPanel(this.uiRoot, this.player);

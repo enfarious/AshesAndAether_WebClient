@@ -820,6 +820,12 @@ export class App {
       );
       this.router.onVillagePlacementMode(p => this.placementMode!.enter(p));
     }
+
+    // Wire vault gate opened → update VaultRenderer tiles + collision
+    this.router.onVaultGateOpened(p => {
+      this._vaultRenderer?.openGate(p.tiles);
+    });
+
     this.hud.show();
     this.actionBar.show();
     this.minimap.show();

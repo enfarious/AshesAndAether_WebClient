@@ -332,7 +332,7 @@ export class CompanionLLMService {
       ``,
       `Available settings you may adjust (include only fields you want to change):`,
       `- stance: "aggressive" | "cautious" | "support"`,
-      `- preferredRange: "melee" | "close" | "mid" | "far"`,
+      `- preferredRange: "close" | "mid" | "long" (close = melee ~1m, mid = polearm ~4m, long = ranged/caster ~15m)`,
       `- priority: "weakest" | "nearest" | "threatening_player"`,
       `- retreatThreshold: 0.0-1.0 (HP ratio to retreat at)`,
       `- healAllyThreshold: 0.0-1.0 (ally HP to switch to healing)`,

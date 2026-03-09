@@ -49,6 +49,12 @@ import type {
   CompanionStatusPayload,
   CompanionLoadoutPayload,
   VillageCatalogPayload,
+  VaultGateOpenedPayload,
+  VaultRoomEnterPayload,
+  VaultMobKilledPayload,
+  VaultRoomClearedPayload,
+  VaultCompletePayload,
+  VaultFailedPayload,
 } from './Protocol';
 
 /**
@@ -79,6 +85,7 @@ export class MessageRouter {
   private companionCombatTriggerListeners = new Set<(p: unknown) => void>();
   private companionSocialTriggerListeners = new Set<(p: unknown) => void>();
   private villageCatalogListeners   = new Set<(p: VillageCatalogPayload) => void>();
+  private vaultGateOpenedListeners  = new Set<(p: VaultGateOpenedPayload) => void>();
 
   constructor(
     private readonly socket:   SocketClient,
@@ -187,6 +194,11 @@ export class MessageRouter {
   onVillageCatalog(fn: (p: VillageCatalogPayload) => void): () => void {
     this.villageCatalogListeners.add(fn);
     return () => this.villageCatalogListeners.delete(fn);
+  }
+
+  onVaultGateOpened(fn: (p: VaultGateOpenedPayload) => void): () => void {
+    this.vaultGateOpenedListeners.add(fn);
+    return () => this.vaultGateOpenedListeners.delete(fn);
   }
 
   mount(): void {
@@ -575,6 +587,40 @@ export class MessageRouter {
 
     s.on('village_catalog', (p) => {
       this.villageCatalogListeners.forEach(fn => fn(p as VillageCatalogPayload));
+    });
+
+    // ── Vault events ──────────────────────────────────────────────────────
+    s.on('vault_room_enter', (p) => {
+      const payload = p as VaultRoomEnterPayload;
+      this.world.pushMessage('event', payload.message);
+    });
+
+    s.on('vault_mob_killed', (p) => {
+      const payload = p as VaultMobKilledPayload;
+      if (payload.remainingMobs > 0) {
+        this.world.pushMessage('event', `${payload.remainingMobs} enemies remaining.`);
+      }
+    });
+
+    s.on('vault_room_cleared', (p) => {
+      const payload = p as VaultRoomClearedPayload;
+      this.world.pushMessage('event', payload.message);
+    });
+
+    s.on('vault_gate_opened', (p) => {
+      const payload = p as VaultGateOpenedPayload;
+      this.world.pushMessage('event', payload.message);
+      this.vaultGateOpenedListeners.forEach(fn => fn(payload));
+    });
+
+    s.on('vault_complete', (p) => {
+      const payload = p as VaultCompletePayload;
+      this.world.pushMessage('event', payload.message ?? 'Vault complete!');
+    });
+
+    s.on('vault_failed', (p) => {
+      const payload = p as VaultFailedPayload;
+      this.world.pushMessage('event', payload.message);
     });
 
     // ── Logout (return to character select) ─────────────────────────────────

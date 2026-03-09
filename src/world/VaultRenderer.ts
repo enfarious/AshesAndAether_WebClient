@@ -67,6 +67,9 @@ export class VaultRenderer {
   private colliderMesh: THREE.Mesh | null = null;
   private lights:       THREE.Light[] = [];
 
+  /** Stored tile data for rebuilding meshes when gates open. */
+  private _tileData: VaultTileData | null = null;
+
   /**
    * XZ centre of the ceiling clip hole — updated every frame via
    * {@link setClipCenter}.  Shared by reference with the ceiling
@@ -80,7 +83,10 @@ export class VaultRenderer {
   build(data: VaultTileData): void {
     this.dispose();
 
-    const { width, height, tileSize, tiles, geometry } = data;
+    // Keep a mutable copy of tile data so openGate() can update tiles
+    this._tileData = { ...data, tiles: [...data.tiles] };
+
+    const { width, height, tileSize, tiles, geometry } = this._tileData;
 
     const wallHeight    = geometry?.wallHeight    ?? DEFAULT_WALL_HEIGHT;
     const ceilingHeight = geometry?.ceilingHeight ?? DEFAULT_CEILING_HEIGHT;
@@ -157,25 +163,20 @@ export class VaultRenderer {
     // PlayerEntity.setWorldRoot() includes it despite spanning > 50 m.
     this._buildCollisionMesh(width, height, tileSize, tiles, wallHeight);
 
-    // ── Flat Ceiling ────────────────────────────────────────────────
-    // Single plane at ceilingHeight, facing downward (visible from below).
-    // The camera orbits below the ceiling so it never blocks the view.
-    const vaultSpanX = width  * tileSize;
-    const vaultSpanZ = height * tileSize;
-
-    const ceilGeo = new THREE.PlaneGeometry(vaultSpanX, vaultSpanZ);
-    ceilGeo.rotateX(-Math.PI / 2); // face upward (visible from top-down camera)
-    const ceilMat = new THREE.MeshStandardMaterial({
-      color: CEILING_COLOR,
-      roughness: 0.95,
-      metalness: 0.0,
-      side: THREE.FrontSide,
-    });
-    this._applyCeilingClip(ceilMat);
-    this.ceilingMesh = new THREE.Mesh(ceilGeo, ceilMat);
-    this.ceilingMesh.receiveShadow = true;
-    this.ceilingMesh.position.set(0, ceilingHeight, 0);
-    this.group.add(this.ceilingMesh);
+    // ── Flat Ceiling (disabled for debugging) ─────────────────────
+    // TODO: re-enable ceiling once dungeon generation is validated
+    // const vaultSpanX = width  * tileSize;
+    // const vaultSpanZ = height * tileSize;
+    // const ceilGeo = new THREE.PlaneGeometry(vaultSpanX, vaultSpanZ);
+    // ceilGeo.rotateX(-Math.PI / 2);
+    // const ceilMat = new THREE.MeshStandardMaterial({
+    //   color: CEILING_COLOR, roughness: 0.95, metalness: 0.0, side: THREE.FrontSide,
+    // });
+    // this._applyCeilingClip(ceilMat);
+    // this.ceilingMesh = new THREE.Mesh(ceilGeo, ceilMat);
+    // this.ceilingMesh.receiveShadow = true;
+    // this.ceilingMesh.position.set(0, ceilingHeight, 0);
+    // this.group.add(this.ceilingMesh);
 
     // ── Vault Lighting ───────────────────────────────────────────────
     // Static indoor lights that don't change with time-of-day.
@@ -204,6 +205,113 @@ export class VaultRenderer {
       this.group.add(pointLight);
     }
 
+  }
+
+  /**
+   * Open a gate by converting its WALL tiles to FLOOR tiles and rebuilding
+   * the wall, floor, and collision meshes.
+   */
+  openGate(gateTiles: Array<{ row: number; col: number }>): void {
+    if (!this._tileData) return;
+
+    const { width, tiles } = this._tileData;
+
+    // Swap gate tiles from WALL → FLOOR in our mutable tile array
+    for (const { row, col } of gateTiles) {
+      const idx = row * width + col;
+      if (tiles[idx] === Tile.WALL) {
+        tiles[idx] = Tile.FLOOR;
+      }
+    }
+
+    // Rebuild floor, wall, and collision meshes from updated tile data
+    this._rebuildTileMeshes();
+  }
+
+  /**
+   * Rebuild floor/wall InstancedMeshes and collision mesh from current
+   * tile data. Called after openGate() modifies the tile array.
+   */
+  private _rebuildTileMeshes(): void {
+    if (!this._tileData) return;
+
+    const { width, height, tileSize, tiles, geometry } = this._tileData;
+    const wallHeight = geometry?.wallHeight ?? DEFAULT_WALL_HEIGHT;
+
+    // Remove old meshes (but keep lights and ceiling)
+    if (this.floorMesh) {
+      this.floorMesh.geometry.dispose();
+      (this.floorMesh.material as THREE.Material).dispose();
+      this.group.remove(this.floorMesh);
+      this.floorMesh = null;
+    }
+    if (this.wallMesh) {
+      this.wallMesh.geometry.dispose();
+      (this.wallMesh.material as THREE.Material).dispose();
+      this.group.remove(this.wallMesh);
+      this.wallMesh = null;
+    }
+    // NOTE: colliderMesh is NOT removed here — _buildCollisionMesh updates
+    // its geometry in-place so that PlayerEntity's cached reference stays valid.
+
+    // Recount
+    let floorCount = 0;
+    let wallCount  = 0;
+    for (const t of tiles) {
+      if (t === Tile.FLOOR) floorCount++;
+      else if (t === Tile.WALL) wallCount++;
+    }
+
+    // Rebuild floor
+    if (floorCount > 0) {
+      const floorGeo = new THREE.PlaneGeometry(tileSize, tileSize);
+      floorGeo.rotateX(-Math.PI / 2);
+      const floorMat = new THREE.MeshStandardMaterial({
+        color: FLOOR_COLOR, roughness: 0.9, metalness: 0.1,
+      });
+      this.floorMesh = new THREE.InstancedMesh(floorGeo, floorMat, floorCount);
+      this.floorMesh.receiveShadow = true;
+      const mat4 = new THREE.Matrix4();
+      let idx = 0;
+      for (let row = 0; row < height; row++) {
+        for (let col = 0; col < width; col++) {
+          if (tiles[row * width + col] !== Tile.FLOOR) continue;
+          const wx = (col - width / 2) * tileSize + tileSize / 2;
+          const wz = (row - height / 2) * tileSize + tileSize / 2;
+          mat4.makeTranslation(wx, 0, wz);
+          this.floorMesh.setMatrixAt(idx++, mat4);
+        }
+      }
+      this.floorMesh.instanceMatrix.needsUpdate = true;
+      this.group.add(this.floorMesh);
+    }
+
+    // Rebuild walls
+    if (wallCount > 0) {
+      const wallGeo = new THREE.BoxGeometry(tileSize, wallHeight, tileSize);
+      const wallMat = new THREE.MeshStandardMaterial({
+        color: WALL_COLOR, roughness: 0.95, metalness: 0.05,
+      });
+      this.wallMesh = new THREE.InstancedMesh(wallGeo, wallMat, wallCount);
+      this.wallMesh.castShadow = true;
+      this.wallMesh.receiveShadow = true;
+      const mat4 = new THREE.Matrix4();
+      let idx = 0;
+      for (let row = 0; row < height; row++) {
+        for (let col = 0; col < width; col++) {
+          if (tiles[row * width + col] !== Tile.WALL) continue;
+          const wx = (col - width / 2) * tileSize + tileSize / 2;
+          const wz = (row - height / 2) * tileSize + tileSize / 2;
+          mat4.makeTranslation(wx, wallHeight / 2, wz);
+          this.wallMesh.setMatrixAt(idx++, mat4);
+        }
+      }
+      this.wallMesh.instanceMatrix.needsUpdate = true;
+      this.group.add(this.wallMesh);
+    }
+
+    // Rebuild collision
+    this._buildCollisionMesh(width, height, tileSize, tiles, wallHeight);
   }
 
   dispose(): void {
@@ -269,6 +377,13 @@ export class VaultRenderer {
       0,
       camZ + t * (playerZ - camZ),
     );
+  }
+
+  /** Toggle ceiling mesh visibility (useful for top-down debugging). */
+  setCeilingVisible(visible: boolean): void {
+    if (this.ceilingMesh) {
+      this.ceilingMesh.visible = visible;
+    }
   }
 
   /**
@@ -376,20 +491,31 @@ export class VaultRenderer {
       }
     }
 
-    if (positions.length === 0) return;
+    if (positions.length === 0) {
+      // No collision geometry — clear the existing mesh if it has one
+      if (this.colliderMesh) {
+        this.colliderMesh.geometry.dispose();
+        this.colliderMesh.geometry = new THREE.BufferGeometry();
+      }
+      return;
+    }
 
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
     geo.setAttribute('normal',   new THREE.Float32BufferAttribute(normals,   3));
     geo.computeBoundingSphere();
 
-    // Invisible material — Mesh.raycast() doesn't check material.visible,
-    // so raycaster still hits the triangles while nothing renders.
-    const mat = new THREE.MeshBasicMaterial({ visible: false });
-
-    this.colliderMesh = new THREE.Mesh(geo, mat);
-    this.colliderMesh.name = 'vault_wall_collider';
-    this.group.add(this.colliderMesh);
+    if (this.colliderMesh) {
+      // Update geometry in-place so PlayerEntity's cached reference stays valid
+      this.colliderMesh.geometry.dispose();
+      this.colliderMesh.geometry = geo;
+    } else {
+      // First build — create the mesh
+      const mat = new THREE.MeshBasicMaterial({ visible: false });
+      this.colliderMesh = new THREE.Mesh(geo, mat);
+      this.colliderMesh.name = 'vault_wall_collider';
+      this.group.add(this.colliderMesh);
+    }
   }
 
   /** Push two triangles (one quad) with a flat normal into position/normal arrays. */

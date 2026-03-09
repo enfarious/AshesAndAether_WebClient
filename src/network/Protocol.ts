@@ -316,7 +316,7 @@ export interface CompanionCreateData {
 // ── Companion Config ─────────────────────────────────────────────────────────
 
 export type CompanionArchetype = 'scrappy_fighter' | 'cautious_healer' | 'opportunist' | 'tank';
-export type PreferredRange     = 'melee' | 'close' | 'mid' | 'far';
+export type PreferredRange     = 'close' | 'mid' | 'long';
 export type TargetPriority     = 'weakest' | 'nearest' | 'threatening_player';
 export type CombatStance       = 'aggressive' | 'cautious' | 'support';
 export type EngagementMode     = 'aggressive' | 'defensive' | 'passive';
@@ -912,4 +912,56 @@ export interface LibraryAssaultPayload {
   offlineHours?: number;
   message:      string;
   timestamp:    number;
+}
+
+// ── Vault events ────────────────────────────────────────────────────────────
+
+/** Server → Client: a vault gate has been opened. */
+export interface VaultGateOpenedPayload {
+  instanceId:    string;
+  corridorIndex: number;
+  gateIndex:     number;
+  position:      { x: number; z: number };
+  orientation:   'horizontal' | 'vertical';
+  tiles:         Array<{ row: number; col: number }>;
+  message:       string;
+}
+
+/** Server → Client: entered a new vault room. */
+export interface VaultRoomEnterPayload {
+  instanceId: string;
+  roomIndex:  number;
+  roomName:   string;
+  isBossRoom: boolean;
+  mobCount:   number;
+  message:    string;
+}
+
+/** Server → Client: a vault mob was killed. */
+export interface VaultMobKilledPayload {
+  instanceId:    string;
+  roomIndex:     number;
+  remainingMobs: number;
+}
+
+/** Server → Client: a vault room was cleared. */
+export interface VaultRoomClearedPayload {
+  instanceId: string;
+  roomIndex:  number;
+  roomName:   string;
+  message:    string;
+}
+
+/** Server → Client: vault completed successfully. */
+export interface VaultCompletePayload {
+  instanceId:  string;
+  goldAwarded: number;
+  message?:    string;
+  summary?:    unknown;
+}
+
+/** Server → Client: vault failed (party wipe). */
+export interface VaultFailedPayload {
+  instanceId: string;
+  message:    string;
 }

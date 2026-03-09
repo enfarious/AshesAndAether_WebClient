@@ -637,6 +637,27 @@ export class CompanionPanel {
         color: #cc4444;
         line-height: 1.5;
       }
+      .cp-arch-growth {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 4px;
+        margin-bottom: 4px;
+        font-size: 11px;
+      }
+      .cp-growth-label {
+        color: rgba(212,201,184,0.5);
+        margin-right: 2px;
+      }
+      .cp-growth-chip {
+        background: rgba(200,145,60,0.15);
+        border: 1px solid rgba(200,145,60,0.25);
+        border-radius: 3px;
+        padding: 1px 5px;
+        color: #d4c9b8;
+        font-size: 10px;
+        font-family: var(--font-mono, monospace);
+      }
 
       /* ── Identity editor ─────────────────────────────────────── */
       .cp-identity {
@@ -812,7 +833,7 @@ export class CompanionPanel {
 
     const archetypes: { id: CompanionArchetype; name: string; desc: string }[] = [
       { id: 'scrappy_fighter', name: 'Scrappy Fighter', desc: 'Aggressive melee, high damage' },
-      { id: 'cautious_healer', name: 'Cautious Healer', desc: 'Mid-range support, heals allies' },
+      { id: 'cautious_healer', name: 'Cautious Healer', desc: 'Long-range support, heals allies' },
       { id: 'opportunist',     name: 'Opportunist',     desc: 'Balanced, targets the weak' },
       { id: 'tank',            name: 'Tank',             desc: 'Melee defender, CC-focused' },
     ];
@@ -883,7 +904,7 @@ export class CompanionPanel {
           <div class="cp-section">Stance &amp; Positioning</div>
           ${this._segRow('Stance', 'stance', ['aggressive', 'cautious', 'support'], s.stance)}
           ${this._segRow('Priority', 'priority', ['weakest', 'nearest', 'threatening_player'], s.priority, ['Weakest', 'Nearest', 'Protect'])}
-          ${this._segRow('Range', 'range', ['melee', 'close', 'mid', 'far'], s.preferredRange)}
+          ${this._segRow('Range', 'range', ['close', 'mid', 'long'], s.preferredRange, ['Close', 'Mid', 'Long'])}
 
           <div class="cp-section">Retreat &amp; Recovery</div>
           ${this._sliderRow('Retreat', 'retreat', Math.round(s.retreatThreshold * 100), 0, 100, '%')}
@@ -1158,19 +1179,45 @@ export class CompanionPanel {
 
   // ── Archetype modifiers ──────────────────────────────────────────────────────
 
-  private static readonly ARCHETYPE_MODIFIERS: Record<CompanionArchetype, { label: string; buffs: string[]; debuffs: string[] }> = {
-    cautious_healer: { label: "Healer's Attunement", buffs: ['+15% Heal Potency', '+1 Mana Regen'], debuffs: [] },
-    opportunist:     { label: "Exploiter's Edge",    buffs: ['+5% Critical Hit'],                    debuffs: ['-4 Defense'] },
-    scrappy_fighter: { label: "Brawler's Tenacity",  buffs: ['+6 Attack', '+15 Max HP'],             debuffs: ['-20% Healing Received'] },
-    tank:            { label: "Guardian's Resolve",   buffs: ['+8 Defense', '+20 Max HP', '+50% Threat'], debuffs: ['-4 Attack', '-15% Healing Received'] },
+  private static readonly ARCHETYPE_MODIFIERS: Record<CompanionArchetype, {
+    label: string;
+    buffs: string[];
+    debuffs: string[];
+    /** Stat growth per level — displayed so players see what each archetype prioritises. */
+    growth: { stat: string; value: number }[];
+  }> = {
+    cautious_healer: {
+      label: "Healer's Attunement",
+      buffs: ['+15% Heal Potency', '+1 Mana Regen'], debuffs: [],
+      growth: [{ stat: 'VIT', value: 1 }, { stat: 'AGI', value: 1 }, { stat: 'INT', value: 1 }, { stat: 'WIS', value: 2 }],
+    },
+    opportunist: {
+      label: "Exploiter's Edge",
+      buffs: ['+5% Critical Hit'], debuffs: ['-4 Defense'],
+      growth: [{ stat: 'STR', value: 1 }, { stat: 'VIT', value: 1 }, { stat: 'DEX', value: 1 }, { stat: 'AGI', value: 2 }],
+    },
+    scrappy_fighter: {
+      label: "Brawler's Tenacity",
+      buffs: ['+6 Attack', '+15 Max HP'], debuffs: ['-20% Healing Received'],
+      growth: [{ stat: 'STR', value: 2 }, { stat: 'VIT', value: 1 }, { stat: 'DEX', value: 1 }, { stat: 'AGI', value: 1 }],
+    },
+    tank: {
+      label: "Guardian's Resolve",
+      buffs: ['+8 Defense', '+20 Max HP', '+50% Threat'], debuffs: ['-4 Attack', '-15% Healing Received'],
+      growth: [{ stat: 'STR', value: 1 }, { stat: 'VIT', value: 2 }, { stat: 'AGI', value: 1 }, { stat: 'WIS', value: 1 }],
+    },
   };
 
   private _renderArchetypeModifiers(archetype: CompanionArchetype): string {
     const mod = CompanionPanel.ARCHETYPE_MODIFIERS[archetype];
     if (!mod) return '';
+    const growthChips = mod.growth
+      .map(g => `<span class="cp-growth-chip">+${g.value} ${g.stat}</span>`)
+      .join(' ');
     return `
       <div class="cp-arch-mods">
         <div class="cp-arch-mod-title">${this._esc(mod.label)}</div>
+        <div class="cp-arch-growth"><span class="cp-growth-label">Per Level:</span> ${growthChips}</div>
         ${mod.buffs.map(b => `<div class="cp-arch-mod-buff">▲ ${this._esc(b)}</div>`).join('')}
         ${mod.debuffs.map(d => `<div class="cp-arch-mod-debuff">▼ ${this._esc(d)}</div>`).join('')}
       </div>

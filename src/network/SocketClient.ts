@@ -91,6 +91,8 @@ export class SocketClient {
       'companion_config', 'companion_status', 'companion_active_loadout', 'companion_passive_loadout',
       'companion_combat_trigger', 'companion_social_trigger',
       'beacon_alert', 'library_assault',
+      'vault_room_enter', 'vault_mob_killed', 'vault_room_cleared',
+      'vault_gate_opened', 'vault_complete', 'vault_failed', 'vault_player_left',
       'error',
       'pong',
       'command_response',

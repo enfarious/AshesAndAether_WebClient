@@ -27,11 +27,15 @@ class MovementInterpolator {
     current:    THREE.Vector3,
     target:     THREE.Vector3,
     durationMs: number,
+    from?:      THREE.Vector3,
   ): boolean {
-    const dist = current.distanceTo(target);
+    // Use server's previous position to check if this is a genuine large teleport,
+    // not the visual position (which may lag behind). The lerp itself always starts
+    // from the current visual position so there's no backwards snap.
+    const snapFrom = from ?? current;
+    const dist = snapFrom.distanceTo(target);
 
     if (dist > ClientConfig.movementSnapThreshold) {
-      // Too far — snap
       this.active = false;
       return false;
     }
@@ -111,21 +115,34 @@ export class RemoteEntity extends EntityObject {
 
     if (entity.modelAsset) {
       // GLB model — start with a small placeholder marker, swap when loaded
-      mesh = EntityObject._sphereMesh(0x8866aa, 0.25); // purple marker
+      mesh = EntityObject._sphereMesh(0xff8800, 0.25); // bright orange marker
       placeholderForModel = mesh;
+    } else if (entity.tag === 'vault_portal' || entity.tag === 'vault_exit_portal') {
+      // Custom: emissive ring + light column on the ground. Geometry lives
+      // directly in `root` so multiple meshes form the portal. Same visual
+      // for entry and exit; the action UI distinguishes them.
+      EntityObject._addVaultPortalToGroup(root);
+      mesh = null as unknown as THREE.Mesh;
     } else if (type === 'player' || type === 'companion') {
       mesh = EntityObject._capsuleMesh(EntityObject._entityColor(entity));
     } else if (type === 'wildlife') {
-      mesh = EntityObject._coneMesh(EntityObject._entityColor(entity));
+      mesh = EntityObject._animalMesh(entity.tag ?? '');
+    } else if (type === 'plant' && EntityObject.TREE_TAGS.has(entity.tag ?? '')) {
+      EntityObject._addTreeToGroup(root, entity.tag ?? '');
+      mesh = null as unknown as THREE.Mesh; // tree geometry goes directly into root
     } else if (type === 'plant') {
       const stage = (entity.currentAction as string | undefined) ?? 'mature';
       mesh = EntityObject._plantMesh(stage);
     } else {
       // npc, mob, and any unknown type → sphere
+      if (!type || (type !== 'npc' && type !== 'mob')) {
+        // eslint-disable-next-line no-console
+        console.warn('[RemoteEntity] Magenta-fallback for entity:', JSON.stringify(entity));
+      }
       mesh = EntityObject._sphereMesh(EntityObject._entityColor(entity));
     }
 
-    root.add(mesh);
+    if (mesh) root.add(mesh);
 
     if (entity.position) {
       root.position.set(entity.position.x, entity.position.y, entity.position.z);
@@ -139,7 +156,7 @@ export class RemoteEntity extends EntityObject {
 
     // Store for later updates
     this._entityType = type;
-    if (!placeholderForModel && type === 'plant') {
+    if (!placeholderForModel && type === 'plant' && mesh && !EntityObject.TREE_TAGS.has(entity.tag ?? '')) {
       this._plantMeshRef = mesh;
       this._plantStage   = (entity.currentAction as string | undefined) ?? 'mature';
     }
@@ -227,8 +244,9 @@ export class RemoteEntity extends EntityObject {
     position:  THREE.Vector3,
     heading?:  number,
     durationMs = 100,
+    from?:     THREE.Vector3,
   ): void {
-    const snapped = !this.interp.setTarget(this.object3d.position, position, durationMs);
+    const snapped = !this.interp.setTarget(this.object3d.position, position, durationMs, from);
     if (snapped) {
       this.object3d.position.copy(position);
     }

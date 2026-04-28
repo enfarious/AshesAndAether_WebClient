@@ -16,6 +16,7 @@ export interface SystemMenuCallbacks {
   guild:      () => void;
   party:      () => void;
   map:        () => void;
+  travel:     () => void;
   market:     () => void;
   layout:     () => void;
   settings:   () => void;
@@ -36,6 +37,7 @@ const ENTRIES: MenuEntry[] = [
   { id: 'guild',      icon: '\u269C', label: 'Guild',      keybind: 'G' },
   { id: 'party',      icon: '\u2630', label: 'Party',      keybind: 'P' },
   { id: 'map',        icon: '\u25CE', label: 'Map',        keybind: 'M' },
+  { id: 'travel',     icon: '\u2708', label: 'Travel',     keybind: 'R' },
   { id: 'market',     icon: '\u2696', label: 'Market',     keybind: 'Ctrl+M' },
   { id: 'layout',     icon: '\u2B1A', label: 'Layout',     keybind: 'F10' },
   { id: 'settings',   icon: '\u2699', label: 'Settings',   keybind: 'O' },

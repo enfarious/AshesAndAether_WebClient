@@ -81,6 +81,14 @@ export class HeightmapService {
 
   // ── Public API ─────────────────────────────────────────────────────────────
 
+  /** Half-extent of the DEM in world metres: { x: east-west, z: north-south }. */
+  get halfExtentM(): { x: number; z: number } {
+    return {
+      x: (this.meta.width  * this.meta.pixelSizeDeg * this.mPerDegLon) / 2,
+      z: (this.meta.height * this.meta.pixelSizeDeg * this.mPerDegLat) / 2,
+    };
+  }
+
   /**
    * Sample terrain elevation (metres) at world-space (X, Z).
    * Returns null outside the DEM bounds.
@@ -164,9 +172,11 @@ export class HeightmapService {
     const col = (lon - originLon) / pixelSizeDeg;
     const row = (originLat - lat) / pixelSizeDeg;
 
-    if (col < 0 || row < 0 || col >= width - 1 || row >= height - 1) return null;
+    if (col < 0 || row < 0 || col >= width || row >= height) return null;
 
-    const c0 = Math.floor(col), r0 = Math.floor(row);
+    // Clamp so bilinear reads c0+1 / r0+1 never exceed the last pixel.
+    const c0 = Math.min(Math.floor(col), width  - 2);
+    const r0 = Math.min(Math.floor(row), height - 2);
     const q11 = this._px(r0,   c0);
     const q21 = this._px(r0,   c0+1);
     const q12 = this._px(r0+1, c0);

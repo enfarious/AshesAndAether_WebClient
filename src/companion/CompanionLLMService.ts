@@ -11,6 +11,7 @@
 import type { SocketClient } from '@/network/SocketClient';
 import { ChatLogger, type ChatHistorySettings } from './ChatLogger';
 import { loadSettings, type CompanionLLMConfig, type CompanionIdentitySettings } from './CompanionSettings';
+import { CompanionMemoryStore, type MemoryEntry } from './CompanionMemoryStore';
 import type { CompanionConfigPayload } from '@/network/Protocol';
 
 // ── Trigger payload types (mirror server protocol) ───────────────────────
@@ -94,6 +95,7 @@ const KEYLESS_PROVIDERS = new Set(['ollama', 'lmstudio']);
 export class CompanionLLMService {
   private socket: SocketClient;
   private chatLogger: ChatLogger;
+  private memoryStore: CompanionMemoryStore;
   private lastCallAt = 0;
 
   /** Cached companion identity from companion_config (used as fallback for /cc). */
@@ -108,9 +110,10 @@ export class CompanionLLMService {
   /** Cached LM Studio model identifier (resolved once, reused). */
   private lmStudioModelCache: string | null = null;
 
-  constructor(socket: SocketClient, chatLogger: ChatLogger) {
+  constructor(socket: SocketClient, chatLogger: ChatLogger, memoryStore: CompanionMemoryStore) {
     this.socket = socket;
     this.chatLogger = chatLogger;
+    this.memoryStore = memoryStore;
   }
 
   /** Store companion identity data from companion_config events (fallback for /cc prompts). */
@@ -256,10 +259,13 @@ export class CompanionLLMService {
       return null;
     }
 
-    const chatHistory = await this.chatLogger.getFilteredHistory(settings.chatHistory);
+    const [chatHistory, memories] = await Promise.all([
+      this.chatLogger.getFilteredHistory(settings.chatHistory),
+      this.memoryStore.getMemories(this.companionKey()),
+    ]);
 
-    const { system, user } = this.buildChatPrompt(playerName, message, chatHistory, settings.identity);
-    console.log('[CompanionLLM] ── Chat /cc ──', `companion=${this.companionConfig.name}`);
+    const { system, user } = this.buildChatPrompt(playerName, message, chatHistory, settings.identity, memories);
+    console.log('[CompanionLLM] ── Chat /cc ──', `companion=${this.companionConfig.name}`, `memories=${memories.length}`);
     console.debug('[CompanionLLM] Chat system prompt:\n', system);
     console.debug('[CompanionLLM] Chat user prompt:\n', user);
 
@@ -267,8 +273,18 @@ export class CompanionLLMService {
       const response = await this.callLLM(settings.llm, system, user);
       if (!response) return null;
 
+      // Extract and persist memory tags (fire-and-forget)
+      const { display, facts } = this.extractMemoryTags(response.trim());
+      if (facts.length > 0) {
+        const key = this.companionKey();
+        for (const fact of facts) {
+          void this.memoryStore.addMemory(key, fact);
+        }
+        console.debug('[CompanionLLM] Memory facts extracted:', facts);
+      }
+
       // Clean up: strip any accidental prefixes or companion name echo
-      let cleaned = response.trim();
+      let cleaned = display;
       cleaned = cleaned.replace(/^(SAY|SHOUT|EMOTE|NONE):\s*/i, '');
       const namePrefix = `${this.companionConfig.name}:`;
       if (cleaned.startsWith(namePrefix)) {
@@ -292,6 +308,7 @@ export class CompanionLLMService {
     playerMessage: string,
     chatHistory: string[],
     identity: CompanionIdentitySettings,
+    memories: MemoryEntry[],
   ): { system: string; user: string } {
     const c = this.companionConfig!;
 
@@ -300,13 +317,32 @@ export class CompanionLLMService {
     const description = identity.description    || c.description     || 'a loyal companion';
     const traits      = identity.traits         || c.traits.join(', ') || 'loyal, curious';
 
-    const system = [
+    const systemParts: string[] = [
       `You are ${c.name}, ${description}.`,
       `Personality: ${personality}. Traits: ${traits}.`,
       `You are speaking privately with your partner, ${playerName}.`,
       `Respond in character with 1-2 short sentences.`,
       `Do not include any prefixes, formatting, or JSON — just speak naturally.`,
-    ].join(' ');
+    ];
+
+    if (memories.length > 0) {
+      systemParts.push('');
+      systemParts.push('Things you remember about your partner:');
+      for (const m of memories) {
+        systemParts.push(`- ${m.fact}`);
+      }
+      systemParts.push('');
+      systemParts.push(
+        'If this message reveals something new and notable about your partner (a preference, name, background detail, or important event), append [REMEMBER: fact] at the very end of your reply. Only tag facts not already in your memory above. Omit the tag if nothing new is worth remembering.',
+      );
+    } else {
+      systemParts.push('');
+      systemParts.push(
+        'If this message reveals something notable about your partner (a preference, name, background detail, or important event), append [REMEMBER: fact] at the very end of your reply.',
+      );
+    }
+
+    const system = systemParts.join('\n');
 
     const userLines: string[] = [];
     if (chatHistory.length > 0) {
@@ -319,6 +355,32 @@ export class CompanionLLMService {
     userLines.push(`Respond as ${c.name}:`);
 
     return { system, user: userLines.join('\n') };
+  }
+
+  // ── Memory tag extraction ───────────────────────────────────────────────
+
+  private companionKey(): string {
+    return (this.companionConfig?.name ?? 'unknown').toLowerCase().replace(/\s+/g, '_');
+  }
+
+  private extractMemoryTags(raw: string): { display: string; facts: string[] } {
+    const facts: string[] = [];
+    const TAG_RE = /\[REMEMBER:\s*([^\]]+)\]/gi;
+
+    let match: RegExpExecArray | null;
+    while ((match = TAG_RE.exec(raw)) !== null) {
+      const fact = match[1]!.trim();
+      if (fact.length > 0 && fact.length <= 200) {
+        facts.push(fact);
+      }
+    }
+
+    const display = raw
+      .replace(/\[REMEMBER:\s*[^\]]+\]/gi, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+
+    return { display, facts };
   }
 
   // ── Prompt builders ────────────────────────────────────────────────────

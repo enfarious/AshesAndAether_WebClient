@@ -246,7 +246,7 @@ export class LoginScreen {
         <div class="login-server">
           <span class="login-server-lbl">Server</span>
           <input class="login-server-input" id="login-server" type="text"
-                 placeholder="localhost:3100" spellcheck="false" autocomplete="off" />
+                placeholder="localhost:5000" spellcheck="false" autocomplete="off" />
         </div>
       </div>
     `;

@@ -7,8 +7,11 @@ import { PlayerState }        from '@/state/PlayerState';
 import { EntityRegistry }     from '@/state/EntityRegistry';
 import { WorldState }         from '@/state/WorldState';
 import { SceneManager }       from '@/world/SceneManager';
+import { WeatherEffects }     from '@/world/WeatherEffects';
+import { CloudLayer }         from '@/world/CloudLayer';
 import { AssetLoader }        from '@/world/AssetLoader';
 import { EntityFactory }      from '@/entities/EntityFactory';
+import { AutoAttackRing }     from '@/entities/AutoAttackRing';
 import { OrbitCamera }        from '@/camera/OrbitCamera';
 import { CameraInput }        from '@/camera/CameraInput';
 import { ClickMoveController } from '@/input/ClickMoveController';
@@ -29,6 +32,7 @@ import { ScriptEditor }      from '@/ui/ScriptEditor';
 import { PartyWindow }       from '@/ui/PartyWindow';
 import { ActionBar }          from '@/ui/ActionBar';
 import { Minimap }            from '@/ui/Minimap';
+import { VaultMinimap }       from '@/ui/VaultMinimap';
 import { LoginScreen }        from '@/ui/LoginScreen';
 import { CharacterSelect }    from '@/ui/CharacterSelect';
 import { SettingsWindow }     from '@/ui/SettingsWindow';
@@ -43,15 +47,23 @@ import { LayoutEditor }       from '@/ui/LayoutEditor';
 import { EnmityPanel }        from '@/ui/EnmityPanel';
 import { BuildPanel }         from '@/ui/BuildPanel';
 import { RegistrationModal }  from '@/ui/RegistrationModal';
+import { TravelPanel }        from '@/ui/TravelPanel';
+import { SystemToast }        from '@/ui/SystemToast';
+import { LevelUpToast }       from '@/ui/LevelUpToast';
+import { VaultCompleteToast } from '@/ui/VaultCompleteToast';
+import { SkyHint }            from '@/ui/SkyHint';
 import { CorpseSystem }       from '@/entities/CorpseSystem';
 import { CorruptionMiasma }  from '@/entities/CorruptionMiasma';
 import { WardBeaconManager } from '@/entities/WardBeacon';
 import { WaterRenderer }      from '@/world/WaterRenderer';
+import { ForestDebugRenderer } from '@/world/ForestDebugRenderer';
+import { ForestRenderer }      from '@/world/ForestRenderer';
 import { VaultRenderer }      from '@/world/VaultRenderer';
 import type { VaultTileData } from '@/world/VaultRenderer';
 import { PlacementMode }      from '@/village/PlacementMode';
 import { ChatLogger }         from '@/companion/ChatLogger';
 import { CompanionLLMService, type CompanionCombatTriggerPayload, type CompanionSocialTriggerPayload } from '@/companion/CompanionLLMService';
+import { CompanionMemoryStore } from '@/companion/CompanionMemoryStore';
 import { loadSettings }       from '@/companion/CompanionSettings';
 
 /**
@@ -78,13 +90,18 @@ export class App {
   private camInput: CameraInput;
   private assets:  AssetLoader;
   private factory: EntityFactory;
+  private autoAttackRing: AutoAttackRing;
   private corpses: CorpseSystem;
+  private weather: WeatherEffects;
+  private clouds:  CloudLayer;
   private worldRoot:  THREE.Group | null = null;
   private _heightmap: import('@/world/HeightmapService').HeightmapService | null = null;
   private miasma:     CorruptionMiasma | null = null;
   private beacons:    WardBeaconManager | null = null;
   private water:      WaterRenderer | null = null;
-  private _vaultRenderer: VaultRenderer | null = null;
+  private _forestDebug:    ForestDebugRenderer | null = null;
+  private _forestRenderer: ForestRenderer      | null = null;
+  private _vaultRenderer:  VaultRenderer       | null = null;
 
   // ── Input ─────────────────────────────────────────────────────────────────
   private clickMove: ClickMoveController;
@@ -104,16 +121,22 @@ export class App {
   private scriptEditor:    ScriptEditor    | null = null;
   private harvestToast:    HarvestToast    | null = null;
   private beaconToast:     BeaconToast     | null = null;
+  private systemToast:     SystemToast     | null = null;
+  private levelUpToast:    LevelUpToast    | null = null;
+  private vaultCompleteToast: VaultCompleteToast | null = null;
+  private skyHint:         SkyHint         | null = null;
   private abilityWindow:   AbilityWindow   | null = null;
   private characterSheet:  CharacterSheet  | null = null;
   private partyWindow:     PartyWindow     | null = null;
   private actionBar:       ActionBar       | null = null;
   private minimap:         Minimap         | null = null;
+  private vaultMinimap:    VaultMinimap    | null = null;
   private settingsWindow:  SettingsWindow  | null = null;
   private villagePanel:      VillagePanel      | null = null;
   private marketPanel:       MarketPanel       | null = null;
   private registrationModal: RegistrationModal  | null = null;
   private worldMapPanel:     WorldMapPanel      | null = null;
+  private travelPanel:       TravelPanel        | null = null;
   private guildPanel:        GuildPanel         | null = null;
   private companionPanel:    CompanionPanel     | null = null;
   private companionHUD:      CompanionHUD       | null = null;
@@ -125,6 +148,7 @@ export class App {
 
   // ── BYOLLM ──────────────────────────────────────────────────────────────
   private chatLogger:    ChatLogger           | null = null;
+  private memoryStore:   CompanionMemoryStore | null = null;
   private companionLLM:  CompanionLLMService  | null = null;
 
   // ── Environment tracking ─────────────────────────────────────────────────
@@ -176,13 +200,17 @@ export class App {
     this.camInput = new CameraInput(this.camera, canvas);
     this.assets  = new AssetLoader();
     this.factory = new EntityFactory(this.scene.scene, this.entities, this.player);
+    this.autoAttackRing = new AutoAttackRing(this.scene.scene, this.factory, this.player);
+    this._forestRenderer = new ForestRenderer(this.scene.scene, this.entities);
     this.corpses = new CorpseSystem(this.scene.scene, this.entities);
+    this.weather = new WeatherEffects(this.scene.scene);
+    this.clouds  = new CloudLayer(this.scene.scene);
 
     // Input
     this.clickMove = new ClickMoveController(
       canvas, this.camera, this.socket, this.player, this.entities, this.factory,
     );
-    this.wasd = new WASDController(this.camera, this.socket, this.player);
+    this.wasd = new WASDController(this.camera, this.socket, this.player, this.entities);
     this.gamepad = new GamepadController(this.camera, this.socket, this.player);
 
     // Asset loader status → loading screen
@@ -222,6 +250,9 @@ export class App {
 
       this._lastWeather  = wx;
       this._lastLighting = lit;
+
+      // Update precipitation visuals to match new weather/season
+      this.weather.setState(wx, this.world.season ?? 'summer');
     });
 
     // ── XP gain / level-up notifications ──────────────────────────────────
@@ -281,6 +312,34 @@ export class App {
       this.socket.connect();
     };
 
+    // ── Loading-screen server picker ─────────────────────────────────────
+    // Always-on server input + Reconnect button so a wrong/unreachable URL
+    // can be corrected without ever reaching the login screen.
+    const serverInput = document.getElementById('loading-server-input') as HTMLInputElement | null;
+    const serverBtn   = document.getElementById('loading-server-btn')   as HTMLButtonElement | null;
+    if (serverInput) {
+      serverInput.value = ClientConfig.serverUrl.replace(/^https?:\/\//, '');
+    }
+    const reconnectWithNewUrl = (): void => {
+      if (!serverInput) return;
+      const raw = serverInput.value.trim();
+      if (!raw) return;
+      ClientConfig.setServerUrl(raw);
+      retryCount    = 0;
+      triedFallback = false;
+      this.loading.setStatus(`Connecting to ${raw}…`);
+      this.socket.disconnect();
+      setTimeout(tryConnect, 200);
+    };
+    if (serverBtn) {
+      serverBtn.addEventListener('click', reconnectWithNewUrl);
+    }
+    if (serverInput) {
+      serverInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') reconnectWithNewUrl();
+      });
+    }
+
     const tryFallbackHost = (): boolean => {
       if (triedFallback) return false;
       const fallback = ClientConfig.getNextFallback();
@@ -332,6 +391,11 @@ export class App {
 
     tryConnect();
     this.rafId = requestAnimationFrame(this._loop);
+
+    // F8 — toggle OSM forest polygon debug overlay
+    window.addEventListener('keydown', (e: KeyboardEvent) => {
+      if (e.code === 'F8') this._forestDebug?.toggle();
+    });
   }
 
   dispose(): void {
@@ -344,7 +408,9 @@ export class App {
     this.miasma?.dispose();
     this.beacons?.dispose();
     this.water?.dispose();
+    this._forestDebug?.dispose();
     this.corpses.dispose();
+    this._forestRenderer?.dispose();
     this.factory.dispose();
     this.scene.dispose();
     this.socket.disconnect();
@@ -366,6 +432,7 @@ export class App {
     this.villagePanel?.dispose();
     this.marketPanel?.dispose();
     this.worldMapPanel?.dispose();
+    this.travelPanel?.dispose();
     this.guildPanel?.dispose();
     this.companionPanel?.dispose();
     this.enmityPanel?.dispose();
@@ -375,6 +442,7 @@ export class App {
     this.registrationModal?.dispose();
     this.placementMode?.dispose();
     this.settingsWindow?.dispose();
+    this.autoAttackRing.dispose();
   }
 
   // ── Chat command handlers ────────────────────────────────────────────────
@@ -416,14 +484,19 @@ export class App {
     if (this._fpsLimit > 0 && (now - this._lastRender) < this._frameInterval) return;
     this._lastRender = now;
 
-    // FPS counter + entity count debug
-    this.hud?.updateFps(now, this.factory?.getAllObjects().length ?? 0);
+    // FPS counter + entity count + position debug
+    const _debugPe = this.factory?.getPlayerEntity();
+    this.hud?.updateFps(now, this.factory?.getAllObjects().length ?? 0, _debugPe?.object3d.position);
 
     const dt = Math.min((now - this.lastTime) / 1000, 0.1);
     this.lastTime = now;
 
     // Tick entities
     this.factory.update(dt);
+    if (this._forestRenderer) {
+      const fp = this.factory.getPlayerEntity()?.object3d.position;
+      if (fp) this._forestRenderer.update(fp.x, fp.z);
+    }
 
     // Wire PlayerEntity to controllers once it exists
     if (!this._playerEntityWired) {
@@ -434,7 +507,14 @@ export class App {
         this.clickMove.setPlayerEntity(pe);
         // Pass physics data so the entity can do terrain following + wall collision.
         if (this._heightmap) pe.setHeightmap(this._heightmap);
-        if (this.worldRoot) pe.setWorldRoot(this.worldRoot);
+        if (this.worldRoot) {
+          pe.setWorldRoot(this.worldRoot);
+          this.camera.setWorldRoot(this.worldRoot);
+        }
+        if (this._forestRenderer) {
+          const fr = this._forestRenderer;
+          pe.setTreeQuery((x, z, rSq) => fr.queryNearby(x, z, rSq));
+        }
         this._playerEntityWired = true;
       }
     }
@@ -460,6 +540,13 @@ export class App {
       );
     }
 
+    // Sky-look hint visibility (driven by camera engagement state).
+    this.skyHint?.update(
+      this.camera.getSkyEngagement(),
+      this.camera.isSkyTargetActive(),
+      this.camera.isSkyLatched(),
+    );
+
     // Advance day/night / weather crossfade + sun orbit
     this.scene.tick(
       dt,
@@ -467,8 +554,37 @@ export class App {
       playerEntity?.cameraTarget,
     );
 
+    // Precipitation, lightning, snow — follows the player
+    if (playerEntity) {
+      this.weather.tick(dt, playerEntity.cameraTarget);
+
+      // Cloud layer — coverage derived from current weather, since the
+      // climate sim's cloud_cover float isn't currently surfaced.
+      const wx = this.world.zone?.weather ?? 'clear';
+      const cover =
+        wx === 'storm'  ? 1.00 :
+        wx === 'rain'   ? 0.85 :
+        wx === 'fog'    ? 0.85 :
+        wx === 'cloudy' ? 0.70 :
+        wx === 'mist'   ? 0.30 :
+                          0.05;
+      const wind = this.world.wind;
+      this.clouds.tick(
+        dt,
+        playerEntity.cameraTarget,
+        cover,
+        wind?.speed     ?? 1.5,
+        wind?.direction ?? 0,
+        this.scene.getSunDirection(),
+        wx,
+      );
+    }
+
     // Tick action bar cooldowns
     this.actionBar?.tick(dt);
+
+    // Tick auto-attack ring (lerp + reposition)
+    this.autoAttackRing.update(dt);
 
     // Tick corruption miasma (particles + fog based on distance from anchors)
     if (this.miasma && playerEntity) {
@@ -548,6 +664,18 @@ export class App {
         // Create ward beacons above civic anchors
         if (!this.beacons) {
           this.beacons = new WardBeaconManager(this.scene.scene);
+        }
+        // Vault zones are flat at Y=0. The previous overworld heightmap would
+        // otherwise still be in effect when the camera snaps and entities
+        // render — putting them hundreds of metres above the vault floor.
+        // Null the heightmap synchronously here, before any further setup.
+        if (this.world.zone?.id.startsWith('vault:')) {
+          this._heightmap = null;
+          this.clickMove.setHeightmap(null);
+          this.factory.setHeightmap(null);
+          this.autoAttackRing.setHeightmap(null);
+          const pe = this.factory.getPlayerEntity();
+          if (pe) pe.setHeightmap(null);
         }
         // Snap camera to player position on world entry
         this.camera.snapToTarget(
@@ -651,6 +779,59 @@ export class App {
       this.harvestToast = new HarvestToast(this.uiRoot);
       this.router.onHarvest(p => this.harvestToast!.show(p));
     }
+    if (!this.skyHint) {
+      this.skyHint = new SkyHint(this.uiRoot);
+    }
+    if (!this.systemToast) {
+      this.systemToast = new SystemToast(this.uiRoot);
+      this.router.onSystemToast(p => this.systemToast!.show(p));
+
+      // Vault completion celebration banner.
+      if (!this.vaultCompleteToast) this.vaultCompleteToast = new VaultCompleteToast(this.uiRoot);
+      this.router.onVaultComplete(p => {
+        this.vaultCompleteToast!.show({
+          goldAwarded: p.goldAwarded,
+          hasPortal:   !!p.exitPortal,
+        });
+      });
+
+      // Level-up celebration toast (player only — companion shows in chat already).
+      if (!this.levelUpToast) this.levelUpToast = new LevelUpToast(this.uiRoot);
+      this.router.onExperienceGained(p => {
+        if (p.entityType !== 'player' || !p.leveledUp) return;
+        this.levelUpToast!.show({
+          level:    p.level,
+          gainedAp: p.gainedAp ?? 0,
+          gainedSp: p.gainedSp ?? 0,
+        });
+      });
+
+      // Show a "forest generating" notice if no plants arrive within 3 s of
+      // world_entry. On cache-hit runs the first plant batch lands in < 1 s
+      // and the timer is cancelled before it fires — nothing shown.
+      //
+      // Skip the timer entirely for vault zones: the server doesn't stream
+      // plants there (no flora in a sealed dungeon), so the toast would
+      // appear and never dismiss.
+      let forestTimer: ReturnType<typeof setTimeout> | null = null;
+      let dismissForest: (() => void) | null = null;
+      this.router.onWorldEntry(() => {
+        if (forestTimer) { clearTimeout(forestTimer); forestTimer = null; }
+        if (dismissForest) { dismissForest(); dismissForest = null; }
+        if (this.world.zone?.id.startsWith('vault:')) return;
+        forestTimer = setTimeout(() => {
+          forestTimer = null;
+          dismissForest = this.systemToast!.showPersistent(
+            'Growing the forest for the first time — trees will appear shortly.',
+            'info',
+          );
+        }, 3_000);
+      });
+      this.router.onFirstPlant(() => {
+        if (forestTimer) { clearTimeout(forestTimer); forestTimer = null; }
+        if (dismissForest) { dismissForest(); dismissForest = null; }
+      });
+    }
     if (!this.beaconToast) {
       this.beaconToast = new BeaconToast(this.uiRoot);
       this.router.onBeaconAlert(p => this.beaconToast!.show(p));
@@ -663,17 +844,25 @@ export class App {
     }
     if (!this.abilityWindow) {
       this.abilityWindow = new AbilityWindow(this.uiRoot, this.player, this.socket, this.router);
+      this.abilityWindow.setBeaconRangeCheck(() =>
+        this.beacons?.isPositionInRange(this.player.position.x, this.player.position.z) ?? false,
+      );
       // Wire 'K' key to ability tree toggle via WASDController callback
       this.wasd.setAbilityToggle(() => this.abilityWindow!.toggle());
     }
     if (!this.characterSheet) {
       this.characterSheet = new CharacterSheet(this.uiRoot, this.player, this.socket);
+      this.characterSheet.setBeaconRangeCheck(() =>
+        this.beacons?.isPositionInRange(this.player.position.x, this.player.position.z) ?? false,
+      );
       this.wasd.setCharacterSheetToggle(() => this.characterSheet!.toggle());
     }
     if (!this.actionBar) {
       this.actionBar = new ActionBar(this.uiRoot, this.player, this.socket, this.entities);
       this.actionBar.onValidationError = (msg) => this.world.pushMessage('system', msg);
       this.wasd.setAbilitySlotCallback((idx) => this.actionBar!.activateSlot(idx));
+      this.router.onCombatOutcome((data) => this.actionBar!.flashOutcome(data));
+      this.router.onCombatError((err)    => this.actionBar!.flashError(err));
     }
     if (!this.partyWindow) {
       this.partyWindow = new PartyWindow(this.uiRoot, this.player, this.entities, this.socket);
@@ -690,6 +879,10 @@ export class App {
     if (!this.worldMapPanel) {
       this.worldMapPanel = new WorldMapPanel(this.uiRoot);
       this.wasd.setWorldMapToggle(() => this.worldMapPanel!.toggle());
+    }
+    if (!this.travelPanel) {
+      this.travelPanel = new TravelPanel(this.uiRoot, this.world, this.socket);
+      this.wasd.setTravelToggle(() => this.travelPanel!.toggle());
     }
     if (!this.guildPanel) {
       this.guildPanel = new GuildPanel(this.uiRoot, this.player, this.socket, this.router);
@@ -714,8 +907,12 @@ export class App {
         this.chatLogger!.write(entry.channel, entry.sender, entry.content);
       });
     }
+    if (!this.memoryStore) {
+      this.memoryStore = new CompanionMemoryStore();
+      void this.memoryStore.init();
+    }
     if (!this.companionLLM) {
-      this.companionLLM = new CompanionLLMService(this.socket, this.chatLogger!);
+      this.companionLLM = new CompanionLLMService(this.socket, this.chatLogger!, this.memoryStore);
 
       // Wire trigger handlers
       this.router.onCompanionCombatTrigger((p) => {
@@ -759,6 +956,7 @@ export class App {
         guild:      () => this.guildPanel?.toggle(),
         party:      () => this.partyWindow?.toggle(),
         map:        () => this.worldMapPanel?.toggle(),
+        travel:     () => this.travelPanel?.toggle(),
         market:     () => this.marketPanel?.toggle(),
         layout:     () => this.layoutEditor?.toggle(),
         settings:   () => this.settingsWindow?.toggle(),
@@ -791,6 +989,22 @@ export class App {
       this.wasd.setPartyTargetNext(() => this.tabTarget!.cyclePartyTarget(1));
       this.wasd.setPartyTargetPrev(() => this.tabTarget!.cyclePartyTarget(-1));
 
+      // Ctrl+F — toggle focus on the current main target. Skips self and any
+      // hostile/dead/non-existent entity; ally casts will fall back to the
+      // standard chain when no focus is set.
+      this.wasd.setToggleFocusOnTarget(() => {
+        const tid = this.player.targetId;
+        if (!tid || tid === this.player.id) return;
+        if (this.player.focusTargetId === tid) {
+          this.player.clearFocusTarget();
+          return;
+        }
+        const ent = this.entities.get(tid);
+        if (!ent || ent.isAlive === false) return;
+        if (ent.hostile) return;
+        this.player.setFocusTarget(tid, ent.name ?? tid);
+      });
+
       // Gamepad — same targeting callbacks + layout/menu awareness
       this.gamepad.setTabTargetNext(() => this.tabTarget!.cycleTarget(1));
       this.gamepad.setTabTargetPrev(() => this.tabTarget!.cycleTarget(-1));
@@ -803,6 +1017,7 @@ export class App {
         (this.abilityWindow?.isVisible   ?? false) ||
         (this.marketPanel?.isVisible     ?? false) ||
         (this.worldMapPanel?.isVisible   ?? false) ||
+        (this.travelPanel?.isVisible     ?? false) ||
         (this.guildPanel?.isVisible      ?? false) ||
         (this.companionPanel?.isVisible  ?? false) ||
         (this.partyWindow?.isVisible     ?? false) ||
@@ -821,9 +1036,26 @@ export class App {
       this.router.onVillagePlacementMode(p => this.placementMode!.enter(p));
     }
 
-    // Wire vault gate opened → update VaultRenderer tiles + collision
+    // Wire vault gate opened → update VaultRenderer tiles + collision +
+    // refresh client-side collision candidate caches (PlayerEntity and
+    // OrbitCamera both cache bounding spheres that are stale after the
+    // wall geometry changes).
     this.router.onVaultGateOpened(p => {
       this._vaultRenderer?.openGate(p.tiles);
+      if (this.worldRoot) {
+        const pe = this.factory.getPlayerEntity();
+        pe?.setWorldRoot(this.worldRoot);
+        this.camera.setWorldRoot(this.worldRoot);
+      }
+    });
+
+    // Player jump event — play the Y-arc visual on the matching entity.
+    // Self goes through the local PlayerEntity; remote players will need
+    // their own arc on RemoteEntity (deferred until we test multiplayer).
+    this.router.onPlayerJump((entityId) => {
+      if (entityId === this.player.id) {
+        this.factory.getPlayerEntity()?.playJump();
+      }
     });
 
     this.hud.show();
@@ -846,13 +1078,26 @@ export class App {
   // ── Asset loading ─────────────────────────────────────────────────────────
 
   private async _loadWorldAssets(zoneId: string): Promise<void> {
-    // Remove previous world geometry + water
+    // Remove previous world geometry + water + trees
     this.water?.clear();
+    this._forestDebug?.clear();
+    this._forestRenderer?.clear();
     this._vaultRenderer = null;
+
+    // Tear down the vault minimap whenever we change zones — if the new zone
+    // is also a vault, the post-fetch path below builds a fresh one against
+    // the new renderer + tile grid.
+    if (!zoneId.startsWith('vault:')) {
+      this.vaultMinimap?.dispose();
+      this.vaultMinimap = null;
+      this.minimap?.show();
+    }
+
     if (this.worldRoot) {
       this.scene.scene.remove(this.worldRoot);
       this.worldRoot = null;
       this.clickMove.clearWorldRoot();
+      this.camera.setWorldRoot(null);
     }
 
     // Village zones use procedural terrain instead of server-hosted GLBs
@@ -860,6 +1105,7 @@ export class App {
       this._buildVillageTerrain();
       // Re-show overworld effects hidden by vault zones
       this.beacons?.setVisible(true);
+      this.scene.setIndoorMode(false, this.camera.getCamera());
       return;
     }
 
@@ -867,9 +1113,19 @@ export class App {
     if (zoneId.startsWith('vault:')) {
       // Hide overworld effects that don't belong inside vaults
       this.beacons?.setVisible(false);
+      // Hide the overworld compass immediately — the vault minimap takes the
+      // same UI slot once the tile fetch completes. Avoids a flicker where
+      // the wrong widget is up during the (~few hundred ms) fetch window.
+      this.minimap?.hide();
+      // Tighten camera frustum + fog so the GPU isn't rasterising 2 km of
+      // off-screen vault hall behind walls. No occlusion culling in Three.js.
+      this.scene.setIndoorMode(true, this.camera.getCamera());
       await this._buildVaultTerrain(zoneId);
       return;
     }
+
+    // Open-world zones — restore outdoor camera/fog if we were in a vault.
+    this.scene.setIndoorMode(false, this.camera.getCamera());
 
     try {
       const { worldRoot: root, heightmap, origin } = await this.assets.loadZone(zoneId);
@@ -879,7 +1135,10 @@ export class App {
       this.clickMove.setHeightmap(heightmap);
       this.clickMove.setWorldRoot(root);  // no-op but kept for future mesh targets
       this.factory.setHeightmap(heightmap);
-      const pe = this.factory.getPlayerEntity();
+      this.autoAttackRing.setHeightmap(heightmap);
+      this._forestRenderer?.setHeightmap(heightmap);
+      this.camera.setWorldRoot(root);
+        const pe = this.factory.getPlayerEntity();
       if (pe) {
         pe.setHeightmap(heightmap);
         pe.setWorldRoot(root);
@@ -912,15 +1171,28 @@ export class App {
         console.log(`[App] Camera distance set to ${targetDist}m`);
       }
 
-      // Terrain is now in the scene — reposition beacons onto it.
-      // (Initial beacon raycast fires before GLBs load and misses.)
-      // Also re-show beacons in case they were hidden by a vault zone.
+      this.systemToast?.show({
+        type: 'success',
+        message: `${this.world.zone?.name ?? zoneId} — zone loaded.`,
+      });
+
+      // Terrain is now in the scene — load beacons and miasma anchors for
+      // this zone, then reposition beacons onto the terrain surface.
+      this.miasma?.loadForZone(zoneId);
+      this.beacons?.loadForZone(zoneId);
       this.beacons?.setVisible(true);
       this.beacons?.repositionOnTerrain();
 
       // Water rendering — animated shader surfaces from OSM polygon data
       if (!this.water) this.water = new WaterRenderer(this.scene.scene, heightmap);
+      else this.water.setHeightmap(heightmap);
       if (origin) await this.water.loadForZone(zoneId, origin.lat, origin.lon);
+
+      // Debug overlay — OSM forest polygons rendered as semi-transparent green shading.
+      // Toggle with F8. Polygons that appear far from the zone centre = coordinate mismatch.
+      if (!this._forestDebug) this._forestDebug = new ForestDebugRenderer(this.scene.scene, heightmap);
+      else this._forestDebug.setHeightmap(heightmap);
+      await this._forestDebug.loadForZone(zoneId);
     } catch (err) {
       console.error('[App] Zone asset load failed:', err);
     }
@@ -940,6 +1212,7 @@ export class App {
     this._heightmap = null;
     this.clickMove.setHeightmap(null);
     this.factory.setHeightmap(null);
+    this.autoAttackRing.setHeightmap(null);
     const peEarly = this.factory.getPlayerEntity();
     if (peEarly) peEarly.setHeightmap(null);
 
@@ -968,6 +1241,19 @@ export class App {
       root.add(renderer.group);
       this._vaultRenderer = renderer;
       console.log(`[App] Vault terrain built: ${tileData.width}×${tileData.height} tiles`);
+
+      // Swap the corner widget to the vault minimap. Overworld compass would
+      // be misleading underground (no entities, no cardinal context), and the
+      // vault map shows real layout instead.
+      this.minimap?.hide();
+      this.vaultMinimap?.dispose();
+      this.vaultMinimap = new VaultMinimap(
+        this.uiRoot,
+        this.player,
+        renderer,
+        this.router,
+        this.world.zone?.name ?? 'Vault',
+      );
     } else {
       // Fallback: simple grey plane (sized for multi-room vaults)
       const geo = new THREE.PlaneGeometry(200, 100);
@@ -986,6 +1272,7 @@ export class App {
     this.worldRoot = root;
     this.scene.scene.add(root);
     this.clickMove.setWorldRoot(root);
+    this.camera.setWorldRoot(root);
     // PlayerEntity may have been created during the async fetch — catch it now
     // and wire worldRoot (heightmap already nulled at method start).
     const pe = this.factory.getPlayerEntity();
@@ -1047,6 +1334,8 @@ export class App {
     this.clickMove.setHeightmap(null);
     this.clickMove.setWorldRoot(root);
     this.factory.setHeightmap(null);
+    this.autoAttackRing.setHeightmap(null);
+    this.camera.setWorldRoot(root);
     // Wire physics to player entity — village has no heightmap, but worldRoot
     // provides collision with placed structures.
     const pe = this.factory.getPlayerEntity();

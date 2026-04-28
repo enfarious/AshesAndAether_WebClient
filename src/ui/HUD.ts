@@ -145,29 +145,6 @@ export class HUD {
           pointer-events: none;
         }
 
-        .hud-combat {
-          display: flex;
-          gap: 6px;
-          width: 100%;
-        }
-
-        .hud-atb {
-          flex: 1;
-          height: 10px;
-          background: rgba(10,8,6,0.7);
-          border: 1px solid rgba(74,127,165,0.3);
-          position: relative;
-          overflow: hidden;
-        }
-
-        .hud-atb-fill {
-          position: absolute;
-          inset: 0;
-          transform-origin: left;
-          background: linear-gradient(90deg, #1a3a5a, #4a7fa5);
-          transition: transform 0.15s linear;
-        }
-
         /* ── Death overlay ────────────────────────────────────────────── */
         #hud-death {
           position: fixed;
@@ -434,6 +411,7 @@ export class HUD {
           <span class="hud-clock-period" id="hud-clock-period"></span>
         </div>
         <div class="hud-clock-env" id="hud-clock-env"></div>
+        <div class="hud-clock-env" id="hud-clock-climate"></div>
       </div>
 
       <div id="hud-death">
@@ -446,15 +424,6 @@ export class HUD {
         <button class="death-release-btn" id="hud-death-release">
           Release to Homepoint
         </button>
-      </div>
-
-      <div id="hud-combat" class="hud-combat" style="display:none">
-        <div class="hud-atb" title="ATB">
-          <div class="hud-atb-fill" id="hud-atb-fill"></div>
-        </div>
-        <div class="hud-atb" title="Auto Attack">
-          <div class="hud-atb-fill" id="hud-aa-fill" style="background: linear-gradient(90deg, #4a2a10, #c85a20)"></div>
-        </div>
       </div>
 
       <div id="hud-effects-wrapper">
@@ -545,6 +514,51 @@ export class HUD {
     } else {
       envEl.textContent = '';
     }
+
+    // ── Climate row: season · day · temp · wind ──────────────────────────────
+    const climateEl = this.clockEl.querySelector<HTMLElement>('#hud-clock-climate')!;
+    if (zone) {
+      const parts: string[] = [];
+      const season = HUD._seasonLabel(this.world.season);
+      const day    = this.world.dayOfYear ? `Day ${this.world.dayOfYear}` : null;
+      if (season) parts.push(season);
+      if (day)    parts.push(day);
+
+      const temp = this.world.temperature;
+      if (temp != null) parts.push(HUD._tempLabel(temp));
+
+      const wind = this.world.wind;
+      if (wind && wind.speed > 0.5) parts.push(HUD._windLabel(wind.speed, wind.direction));
+
+      climateEl.textContent = parts.join('  ·  ');
+    } else {
+      climateEl.textContent = '';
+    }
+  }
+
+  /** Season label with a small icon. */
+  private static _seasonLabel(season: string): string {
+    switch (season) {
+      case 'spring': return '✿ Spring';
+      case 'summer': return '☀ Summer';
+      case 'fall':   return '🍂 Fall';
+      case 'winter': return '❄ Winter';
+      default:       return '';
+    }
+  }
+
+  /** Temperature normalised −1 (cold) → 1 (hot) → readable °F-ish label. */
+  private static _tempLabel(t: number): string {
+    // Map -1..1 onto roughly 0°F..100°F
+    const f = Math.round(50 + t * 50);
+    return `${f}°`;
+  }
+
+  /** Compass arrow + speed. */
+  private static _windLabel(speed: number, direction: number): string {
+    const arrows = ['↓','↙','←','↖','↑','↗','→','↘']; // 8-way, starting at N (wind FROM N)
+    const idx = Math.round(((direction % 360) / 45)) % 8;
+    return `${arrows[idx]} ${speed.toFixed(1)}m/s`;
   }
 
   /** Map weather string to a compact unicode + text label. */
@@ -571,19 +585,6 @@ export class HUD {
     this._setBar('hud-hp-fill',   'hud-hp-text',   p.health,  'HP');
     this._setBar('hud-stam-fill', 'hud-stam-text', p.stamina, 'ST');
     this._setBar('hud-mp-fill',   'hud-mp-text',   p.mana,    'MP');
-
-    const combat = p.combat;
-    const combatEl = this.root.querySelector<HTMLElement>('#hud-combat')!;
-    combatEl.style.display = combat.inCombat ? '' : 'none';
-
-    if (combat.atb) {
-      const pct = combat.atb.max > 0 ? combat.atb.current / combat.atb.max : 0;
-      this._setFill('hud-atb-fill', pct);
-    }
-    if (combat.autoAttack) {
-      const pct = combat.autoAttack.max > 0 ? combat.autoAttack.current / combat.autoAttack.max : 0;
-      this._setFill('hud-aa-fill', pct);
-    }
 
     // ── Status effects ──────────────────────────────────────────────────────
     this._updateEffects();
@@ -756,7 +757,7 @@ export class HUD {
    * Called every frame from the game loop. Updates the FPS counter ~2×/sec.
    * @param entityCount — optional entity count for debug display
    */
-  updateFps(now: number, entityCount?: number): void {
+  updateFps(now: number, entityCount?: number, pos?: { x: number; y: number; z: number }): void {
     this._fpsFrames++;
     if (this._fpsTime === 0) { this._fpsTime = now; return; }
 
@@ -765,6 +766,7 @@ export class HUD {
       const fps = Math.round((this._fpsFrames * 1000) / elapsed);
       let text = `${fps} FPS`;
       if (entityCount !== undefined) text += ` · ${entityCount} ent`;
+      if (pos) text += ` · X:${pos.x.toFixed(1)} Y:${pos.y.toFixed(1)} Z:${pos.z.toFixed(1)}`;
       if (this.fpsEl) this.fpsEl.textContent = text;
       this._fpsFrames = 0;
       this._fpsTime   = now;

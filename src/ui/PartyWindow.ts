@@ -175,6 +175,16 @@ export class PartyWindow {
         .pw-member:hover .pw-name {
           color: var(--ember, #c86a2a);
         }
+        .pw-member.focused {
+          background: rgba(140, 200, 240, 0.06);
+          box-shadow: inset 2px 0 0 rgba(140, 200, 240, 0.55);
+          padding-left: 4px;
+        }
+        .pw-member.focused .pw-name::before {
+          content: '◆ ';
+          color: rgba(140, 200, 240, 0.85);
+          font-size: 10px;
+        }
 
         .pw-name-row {
           display: flex;
@@ -335,10 +345,18 @@ export class PartyWindow {
       roster.innerHTML = '';
       for (const m of members) {
         const card = this._buildMemberCard(m.id, m.name, leaderId);
-        // Click to target party member (skip self-targeting)
+        // Plain click → main target. Ctrl+click → set focus target (sticky
+        // sub-target for ally casts). Self can't be focused — Ctrl+click on
+        // your own card is a no-op for focus, falls through to plain target.
         if (m.id !== this.player.id) {
-          card.addEventListener('click', () => {
-            this.player.setTarget(m.id, m.name);
+          card.addEventListener('click', (e) => {
+            if (e.ctrlKey) {
+              // Toggle: clicking your current focus clears it.
+              if (this.player.focusTargetId === m.id) this.player.clearFocusTarget();
+              else                                    this.player.setFocusTarget(m.id, m.name);
+            } else {
+              this.player.setTarget(m.id, m.name);
+            }
           });
         }
         roster.appendChild(card);
@@ -352,13 +370,22 @@ export class PartyWindow {
       const entity = this.entities.get(id);
       const ally = allies.find(a => a.entityId === id);
 
-      // HP from entity registry (same zone)
+      // HP — prefer local entity (precise current/max), fall back to the
+      // server-supplied hpPct for cross-zone allies (no entity in registry).
       const hp = entity?.health;
-      const hpPct = hp && hp.max > 0 ? hp.current / hp.max : null;
-      const isAlive = entity?.isAlive !== false;
+      const hpPct = hp && hp.max > 0
+        ? hp.current / hp.max
+        : (ally?.hpPct !== undefined ? ally.hpPct / 100 : null);
+      // Same fallback chain for liveness so cross-zone corpses grey out too.
+      const isAlive = entity
+        ? entity.isAlive !== false
+        : ally?.isAlive !== false;
 
       // Toggle dead class
       card.classList.toggle('dead', !isAlive);
+      // Mark focused ally so the player can see at-a-glance who their heals
+      // / ally buffs land on by default.
+      card.classList.toggle('focused', this.player.focusTargetId === id);
 
       // HP % text
       const hpPctEl = card.querySelector<HTMLElement>('.pw-hp-pct');

@@ -32,6 +32,7 @@ export class CompanionPanel {
   private cleanup: (() => void)[] = [];
   private _visible = false;
   private _configRequested = false;
+  private _creating = false;  // true while name-entry form is showing
   private activeTab: 'general' | 'actives' | 'passives' | 'combat' | 'rules' = 'general';
 
   /** Loadout data received from server. */
@@ -819,10 +820,26 @@ export class CompanionPanel {
           <button class="cp-close" id="cp-close">&times;</button>
         </div>
         <div class="cp-body">
-          <div class="cp-empty">No companion found.</div>
+          <div class="cp-empty" style="padding:20px 0 10px">
+            You don't have a companion yet.<br/>
+            <span style="font-size:11px;color:rgba(212,201,184,0.35)">Give them a name to get started.</span>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:4px;">
+            <input type="text" class="cp-id-input" id="cp-create-name"
+              placeholder="Companion name" style="flex:1" maxlength="24" />
+            <button class="cp-btn" id="cp-create-btn">Create</button>
+          </div>
         </div>
       `;
       this._wireClose();
+      const doCreate = () => {
+        const input = this.root.querySelector<HTMLInputElement>('#cp-create-name');
+        const name = input?.value.trim();
+        if (name) this.socket.sendCompanionCreate(name);
+      };
+      this.root.querySelector('#cp-create-btn')?.addEventListener('click', doCreate);
+      this.root.querySelector<HTMLInputElement>('#cp-create-name')
+        ?.addEventListener('keydown', (e) => { if (e.key === 'Enter') doCreate(); });
       return;
     }
 
@@ -947,6 +964,7 @@ export class CompanionPanel {
 
       <!-- Mode controls (always visible) -->
       <div class="cp-modes">
+        <button class="cp-btn" data-mode="summon">Summon</button>
         <button class="cp-btn ${c.behaviorState === 'active' ? 'active' : ''}" data-mode="follow">Follow</button>
         <button class="cp-btn ${c.behaviorState === 'detached' ? 'active' : ''}" data-mode="detach">Detach</button>
         <button class="cp-btn" data-mode="recall">Recall</button>
@@ -1166,6 +1184,9 @@ export class CompanionPanel {
   }
 
   private _wireModes(): void {
+    this.root.querySelector('[data-mode="summon"]')?.addEventListener('click', () => {
+      this.socket.sendCompanionSummon();
+    });
     this.root.querySelector('[data-mode="follow"]')?.addEventListener('click', () => {
       this.socket.sendCompanionFollow();
     });
@@ -1179,32 +1200,35 @@ export class CompanionPanel {
 
   // ── Archetype modifiers ──────────────────────────────────────────────────────
 
+  // Stat growth values mirror the server-side multipliers in
+  // zone-server/companions/CompanionStats.ts (ARCHETYPE_MULTIPLIERS).
+  // Keep these in sync — they're what the player actually gains per level.
   private static readonly ARCHETYPE_MODIFIERS: Record<CompanionArchetype, {
     label: string;
     buffs: string[];
     debuffs: string[];
-    /** Stat growth per level — displayed so players see what each archetype prioritises. */
+    /** Per-level multipliers per stat. Stat = 10 + level × value. */
     growth: { stat: string; value: number }[];
   }> = {
     cautious_healer: {
       label: "Healer's Attunement",
-      buffs: ['+15% Heal Potency', '+1 Mana Regen'], debuffs: [],
-      growth: [{ stat: 'VIT', value: 1 }, { stat: 'AGI', value: 1 }, { stat: 'INT', value: 1 }, { stat: 'WIS', value: 2 }],
+      buffs: ['+15% Heal Potency'], debuffs: ['-30% Threat'],
+      growth: [{ stat: 'WIS', value: 0.7 }, { stat: 'INT', value: 0.5 }, { stat: 'VIT', value: 0.4 }, { stat: 'DEX', value: 0.2 }, { stat: 'AGI', value: 0.2 }, { stat: 'STR', value: 0.1 }],
     },
     opportunist: {
       label: "Exploiter's Edge",
-      buffs: ['+5% Critical Hit'], debuffs: ['-4 Defense'],
-      growth: [{ stat: 'STR', value: 1 }, { stat: 'VIT', value: 1 }, { stat: 'DEX', value: 1 }, { stat: 'AGI', value: 2 }],
+      buffs: [], debuffs: [],
+      growth: [{ stat: 'STR', value: 0.4 }, { stat: 'VIT', value: 0.4 }, { stat: 'DEX', value: 0.4 }, { stat: 'AGI', value: 0.4 }, { stat: 'INT', value: 0.2 }, { stat: 'WIS', value: 0.2 }],
     },
     scrappy_fighter: {
       label: "Brawler's Tenacity",
-      buffs: ['+6 Attack', '+15 Max HP'], debuffs: ['-20% Healing Received'],
-      growth: [{ stat: 'STR', value: 2 }, { stat: 'VIT', value: 1 }, { stat: 'DEX', value: 1 }, { stat: 'AGI', value: 1 }],
+      buffs: [], debuffs: [],
+      growth: [{ stat: 'STR', value: 0.7 }, { stat: 'DEX', value: 0.5 }, { stat: 'VIT', value: 0.4 }, { stat: 'AGI', value: 0.3 }, { stat: 'INT', value: 0.1 }, { stat: 'WIS', value: 0.1 }],
     },
     tank: {
       label: "Guardian's Resolve",
-      buffs: ['+8 Defense', '+20 Max HP', '+50% Threat'], debuffs: ['-4 Attack', '-15% Healing Received'],
-      growth: [{ stat: 'STR', value: 1 }, { stat: 'VIT', value: 2 }, { stat: 'AGI', value: 1 }, { stat: 'WIS', value: 1 }],
+      buffs: ['+50% Threat'], debuffs: [],
+      growth: [{ stat: 'VIT', value: 0.7 }, { stat: 'STR', value: 0.4 }, { stat: 'DEX', value: 0.3 }, { stat: 'AGI', value: 0.2 }, { stat: 'INT', value: 0.1 }, { stat: 'WIS', value: 0.1 }],
     },
   };
 

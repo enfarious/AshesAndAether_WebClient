@@ -43,6 +43,9 @@ const SECTOR_HUE: Record<Sector, string> = {
 const ACTIVE_SLOT_COUNT  = 8;
 const PASSIVE_SLOT_COUNT = 8;
 
+/** AP storage cap — must mirror @ashes/core Progression.AP_CAP. */
+const AP_CAP = 10;
+
 // ── Radial layout constants ──────────────────────────────────────────────────
 
 const SVG_SIZE = 560;
@@ -114,6 +117,11 @@ export class AbilityWindow {
   private _viewBoxH = SVG_SIZE;
   private _dragState: { startX: number; startY: number; vbX: number; vbY: number } | null = null;
 
+  /** Beacon-range check, supplied by app.ts. Drives the respec button's
+   *  enabled state — polled while the window is visible. */
+  private inBeaconRange: () => boolean = () => true;
+  private rangePoll: ReturnType<typeof setInterval> | null = null;
+
   constructor(
     private readonly mountEl: HTMLElement,
     private readonly player:  PlayerState,
@@ -143,10 +151,28 @@ export class AbilityWindow {
     this.pendingUnlock  = null;
     this.selectedSlot   = null;
     this._updateSlotHighlights();
+    this._refreshRespecButton();
+    this.rangePoll = setInterval(() => this._refreshRespecButton(), 1000);
   }
 
   hide(): void {
     this.root.style.display = 'none';
+    if (this.rangePoll) { clearInterval(this.rangePoll); this.rangePoll = null; }
+  }
+
+  /** Wire the beacon-range check from app.ts post-construction. */
+  setBeaconRangeCheck(check: () => boolean): void {
+    this.inBeaconRange = check;
+    this._refreshRespecButton();
+  }
+
+  private _refreshRespecButton(): void {
+    const btn = this.root.querySelector<HTMLButtonElement>('.aw-respec-btn');
+    if (!btn) return;
+    const enabled = this.inBeaconRange();
+    btn.disabled = !enabled;
+    btn.title = enabled ? 'Reset all abilities — free at any civic ward.'
+                        : 'Out of range — stand within a civic ward (townhall, hospital, etc.) to respec.';
   }
 
   toggle(): void {
@@ -204,6 +230,10 @@ export class AbilityWindow {
         color: rgba(200, 145, 60, 0.9);
         letter-spacing: 0.08em;
       }
+      #ability-window .aw-ap.aw-ap-capped {
+        color: rgba(220, 90, 60, 1);
+        text-shadow: 0 0 6px rgba(220, 90, 60, 0.4);
+      }
       #ability-window .aw-close {
         background: none;
         border: none;
@@ -229,9 +259,14 @@ export class AbilityWindow {
         transition: color 0.12s, border-color 0.12s;
         margin-left: 10px;
       }
-      #ability-window .aw-respec-btn:hover {
+      #ability-window .aw-respec-btn:hover:not(:disabled) {
         color: rgba(200, 98, 42, 0.9);
         border-color: rgba(200, 98, 42, 0.5);
+      }
+      #ability-window .aw-respec-btn:disabled {
+        color: rgba(150, 120, 100, 0.35);
+        border-color: rgba(150, 120, 100, 0.18);
+        cursor: not-allowed;
       }
 
       /* ── Tabs ── */
@@ -509,8 +544,9 @@ export class AbilityWindow {
     respecBtn.className = 'aw-respec-btn';
     respecBtn.textContent = 'Respec';
     respecBtn.addEventListener('click', () => {
-      if (confirm('Reset all abilities and refund AP? (1 hour cooldown)')) {
-        this.socket.sendRespecAbilities();
+      if (!this.inBeaconRange()) return;  // visually disabled, defensive guard
+      if (confirm('Reset all abilities and refund AP? (Free at any civic ward.)')) {
+        this.socket.sendCommand('/respec abilities');
       }
     });
     header.appendChild(respecBtn);
@@ -571,9 +607,14 @@ export class AbilityWindow {
   // ── Refresh ────────────────────────────────────────────────────────────────
 
   private _refresh(): void {
-    // Update AP display
+    // Update AP display — show cap so players know spending pressure exists.
     const apEl = document.getElementById('aw-ap-val');
-    if (apEl) apEl.textContent = `AP: ${this.player.abilityPoints}`;
+    if (apEl) {
+      const ap     = this.player.abilityPoints;
+      const atCap  = ap >= AP_CAP;
+      apEl.textContent = `AP: ${ap} / ${AP_CAP}`;
+      apEl.classList.toggle('aw-ap-capped', atCap);
+    }
 
     const content = document.getElementById('aw-content');
     if (!content) return;

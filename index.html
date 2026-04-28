@@ -121,6 +121,53 @@
       font-family: var(--font-mono);
       height: 1em;
     }
+
+    /* Always-visible server picker so a connection failure doesn't
+       trap the user — they can switch hosts without escaping to login. */
+    #loading-server {
+      margin-top: 2rem;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }
+    #loading-server label {
+      text-transform: uppercase;
+      letter-spacing: 0.18em;
+      color: rgba(212, 201, 184, 0.4);
+    }
+    #loading-server-input {
+      background: rgba(20, 14, 8, 0.6);
+      border: 1px solid rgba(200, 98, 42, 0.4);
+      color: var(--bone);
+      padding: 4px 8px;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      letter-spacing: 0.05em;
+      width: 220px;
+      outline: none;
+    }
+    #loading-server-input:focus {
+      border-color: var(--ember);
+      box-shadow: 0 0 8px rgba(200, 98, 42, 0.4);
+    }
+    #loading-server-btn {
+      background: rgba(200, 98, 42, 0.18);
+      border: 1px solid rgba(200, 98, 42, 0.45);
+      color: var(--bone);
+      padding: 4px 10px;
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      cursor: pointer;
+    }
+    #loading-server-btn:hover {
+      background: rgba(200, 98, 42, 0.32);
+    }
   </style>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -138,6 +185,13 @@
         <div id="loading-bar-fill"></div>
       </div>
       <div id="loading-status">initializing…</div>
+
+      <div id="loading-server">
+        <label for="loading-server-input">Server</label>
+        <input id="loading-server-input" type="text"
+               placeholder="localhost:5000" spellcheck="false" autocomplete="off" />
+        <button id="loading-server-btn" type="button">Reconnect</button>
+      </div>
     </div>
   </div>
 

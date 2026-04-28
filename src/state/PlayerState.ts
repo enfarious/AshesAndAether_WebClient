@@ -26,6 +26,17 @@ import {
 
 type Listener = () => void;
 
+export interface XpBreakdownInfo {
+  mobName:        string;
+  mobLevel:       number;
+  recipientLevel: number;
+  partySize:      number;
+  baseXp:         number;
+  conMult:        number;
+  partyMult:      number;
+  awardedXp:      number;
+}
+
 interface CombatGauges {
   atb:            StatBar | null;
   autoAttack:     StatBar | null;
@@ -66,6 +77,13 @@ export class PlayerState {
 
   private _coreStats:    CoreStats | null    = null;
   private _derivedStats: DerivedStats | null = null;
+  /** Per-stat passive bonuses on top of `_coreStats`. Drives the "(+N)"
+   *  column in CharacterSheet. Empty / null when no passives are unlocked. */
+  private _coreStatsBonuses:    Partial<CoreStats>    | null = null;
+  private _derivedStatsBonuses: Partial<DerivedStats> | null = null;
+
+  /** Last kill XP breakdown — surfaced by /xpinfo for live tuning. */
+  private _lastXpBreakdown: XpBreakdownInfo | null = null;
 
   private _corruption: number = 0;
   private _corruptionState: CorruptionState = 'CLEAN';
@@ -79,9 +97,20 @@ export class PlayerState {
     specialCharges:   {},
   };
 
+  /** Incremented on each applyCombatUpdate — see combatVersion getter. */
+  private _combatVersion = 0;
+
   private _targetId:     string | null = null;
   private _targetName:   string | null = null;
-  private _targetLocked: boolean       = false;
+
+  /**
+   * Locked main target. Distinct from `_targetId`: the player's current
+   * displayed main target can drift (Tab cycle, ally-targeted heal click)
+   * but the lock survives so post-cast snap-back returns here. When equal
+   * to `_targetId` the lock icon shows on the displayed target (closed).
+   */
+  private _lockedTargetId:   string | null = null;
+  private _lockedTargetName: string | null = null;
 
   private _focusTargetId:   string | null = null;
   private _focusTargetName: string | null = null;
@@ -143,6 +172,11 @@ export class PlayerState {
   get experience():    number  { return this._experience; }
   get abilityPoints(): number  { return this._abilityPoints; }
   get statPoints():    number  { return this._statPoints; }
+  get lastXpBreakdown(): XpBreakdownInfo | null { return this._lastXpBreakdown; }
+
+  setLastXpBreakdown(info: XpBreakdownInfo): void {
+    this._lastXpBreakdown = info;
+  }
   get isAlive():       boolean { return this._isAlive; }
   /** True when any active effect prevents movement (root, stun, etc.). */
   get isRooted():      boolean { return this._effects.some(e => e.id === 'rooted' || e.id === 'stunned'); }
@@ -161,13 +195,28 @@ export class PlayerState {
   get mana():     StatBar { return this._mana; }
   get coreStats():    CoreStats | null    { return this._coreStats; }
   get derivedStats(): DerivedStats | null { return this._derivedStats; }
+  get coreStatsBonuses():    Partial<CoreStats>    | null { return this._coreStatsBonuses; }
+  get derivedStatsBonuses(): Partial<DerivedStats> | null { return this._derivedStatsBonuses; }
   get corruption(): number { return this._corruption; }
   get corruptionState(): CorruptionState { return this._corruptionState; }
   get effects(): StatusEffect[] { return this._effects; }
   get combat():   CombatGauges { return this._combat; }
+  /** Bumps on every applyCombatUpdate. Lets consumers detect a fresh server
+   *  push even when the field values haven't changed (e.g. autoAttack timer
+   *  reset to 0 again after another swing fire). */
+  get combatVersion(): number { return this._combatVersion; }
   get targetId(): string | null { return this._targetId; }
   get targetName(): string | null { return this._targetName; }
-  get targetLocked(): boolean { return this._targetLocked; }
+  /** True only when the *displayed* main target IS the locked one. Tabbing
+   *  away leaves the lock intact but flips this false (open lock icon).
+   *  Use `lockedTargetId` to read the lock independently of what's displayed. */
+  get targetLocked(): boolean {
+    return this._lockedTargetId !== null && this._lockedTargetId === this._targetId;
+  }
+  /** The remembered locked main target, regardless of what's currently displayed.
+   *  Drives post-cast snap-back. */
+  get lockedTargetId():   string | null { return this._lockedTargetId; }
+  get lockedTargetName(): string | null { return this._lockedTargetName; }
   get focusTargetId(): string | null { return this._focusTargetId; }
   get focusTargetName(): string | null { return this._focusTargetName; }
   /** Unix-ms at which corpse auto-dissolves. null if alive. */
@@ -239,6 +288,8 @@ export class PlayerState {
     this._pendingInvite   = null;
     this._coreStats    = character.coreStats    ?? null;
     this._derivedStats = character.derivedStats ?? null;
+    this._coreStatsBonuses    = character.coreStatsBonuses    ?? null;
+    this._derivedStatsBonuses = character.derivedStatsBonuses ?? null;
     // Seed prediction speeds from derived stats so WASD & click-to-move
     // prediction is accurate from the first frame.
     if (this._derivedStats?.movementSpeed) {
@@ -276,7 +327,9 @@ export class PlayerState {
     abilityPoints?: number;
     statPoints?:    number;
     coreStats?:     CoreStats;
+    coreStatsBonuses?:    Partial<CoreStats>;
     derivedStats?:  DerivedStats;
+    derivedStatsBonuses?: Partial<DerivedStats>;
   }): void {
     if (update.health)               this._health   = { ...update.health };
     if (update.stamina)              this._stamina  = { ...update.stamina };
@@ -291,11 +344,17 @@ export class PlayerState {
     if (update.abilityPoints !== undefined) this._abilityPoints = update.abilityPoints;
     if (update.statPoints    !== undefined) this._statPoints    = update.statPoints;
     if (update.coreStats)    this._coreStats    = { ...update.coreStats };
+    if (update.coreStatsBonuses !== undefined) {
+      this._coreStatsBonuses = { ...update.coreStatsBonuses };
+    }
     if (update.derivedStats) {
       this._derivedStats = { ...update.derivedStats };
       if (update.derivedStats.movementSpeed) {
         this._baseMovementSpeed = update.derivedStats.movementSpeed;
       }
+    }
+    if (update.derivedStatsBonuses !== undefined) {
+      this._derivedStatsBonuses = { ...update.derivedStatsBonuses };
     }
     this._notify();
   }
@@ -322,6 +381,7 @@ export class PlayerState {
     if (combat.autoAttackTarget !== undefined) this._combat.autoAttackTarget = combat.autoAttackTarget;
     if (combat.specialCharges)  this._combat.specialCharges = { ...combat.specialCharges };
     if (combat.enmityList)      this._enmityList = combat.enmityList;
+    this._combatVersion++;
     this._notify();
   }
 
@@ -467,7 +527,11 @@ export class PlayerState {
   // ── Companion mutations ──────────────────────────────────────────────────
 
   applyCompanionConfig(payload: CompanionConfigPayload): void {
-    this._companion = { ...payload };
+    // Merge — different emitters send different subsets (gateway sends the
+    // full DB-backed config including abilities + derivedStats; zone sends
+    // partial updates after mutations). Replace would wipe fields the other
+    // side owns. New payload fields take precedence.
+    this._companion = { ...(this._companion ?? {}), ...payload } as CompanionConfigPayload;
     this._notify();
   }
 
@@ -500,6 +564,20 @@ export class PlayerState {
     this._notify();
   }
 
+  /**
+   * Stamp a transient action on the companion's lastAbility slot — used when a
+   * combat_hit / combat_miss event arrives with the companion as attacker, so
+   * the CompanionHUD shows it immediately rather than waiting for the ~1Hz status tick.
+   */
+  recordCompanionAction(abilityName: string, timestamp: number): void {
+    if (!this._companion) return;
+    this._companion = {
+      ...this._companion,
+      lastAbility: { abilityId: abilityName, abilityName, timestamp },
+    };
+    this._notify();
+  }
+
   setTarget(id: string | null, name: string | null): void {
     this._targetId   = id;
     this._targetName = name;
@@ -507,15 +585,38 @@ export class PlayerState {
   }
 
   clearTarget(): void {
-    this._targetId     = null;
-    this._targetName   = null;
-    this._targetLocked = false;
+    this._targetId         = null;
+    this._targetName       = null;
+    this._lockedTargetId   = null;
+    this._lockedTargetName = null;
     this._notify();
   }
 
+  /**
+   * Toggle lock on the *currently displayed* target.
+   *   - If the displayed target IS the locked one → unlock.
+   *   - Else → lock the displayed target (overwriting any prior lock).
+   *   - If no displayed target → unlock anything that was locked.
+   *
+   * To unlock without locking something else: tab back to your locked
+   * target, then press Y.
+   */
   toggleTargetLock(): void {
-    if (!this._targetId) return;
-    this._targetLocked = !this._targetLocked;
+    if (!this._targetId) {
+      if (this._lockedTargetId !== null) {
+        this._lockedTargetId   = null;
+        this._lockedTargetName = null;
+        this._notify();
+      }
+      return;
+    }
+    if (this._lockedTargetId === this._targetId) {
+      this._lockedTargetId   = null;
+      this._lockedTargetName = null;
+    } else {
+      this._lockedTargetId   = this._targetId;
+      this._lockedTargetName = this._targetName;
+    }
     this._notify();
   }
 

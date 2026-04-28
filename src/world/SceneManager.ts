@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { Sky } from 'three/examples/jsm/objects/Sky.js';
 import type { ZoneInfo } from '@/network/Protocol';
 
 /**
@@ -19,6 +20,16 @@ export class SceneManager {
   private hemiLight:        THREE.HemisphereLight;
   private directionalLight: THREE.DirectionalLight;
   private fillLight:        THREE.DirectionalLight;
+
+  /** Visible sun + moon discs that track the directional light. */
+  private sunMesh:          THREE.Mesh;
+  private moonMesh:         THREE.Mesh;
+
+  /** Atmospheric sky dome — procedurally tinted by sun direction each frame. */
+  private sky:              Sky;
+
+  /** Star field — visible only when the sun is below the horizon. */
+  private stars:            THREE.Points;
 
   // ── Environment transitions ────────────────────────────────────────────────
   private envTransition: {
@@ -50,8 +61,19 @@ export class SceneManager {
     this.renderer.toneMappingExposure = 1.2;
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x3a5070);
     this.scene.fog = new THREE.FogExp2(0x6080a0, 0.0014);
+
+    // Atmospheric sky — Rayleigh scattering, auto-tints from sun direction
+    // each frame.  Render at a large scale so it always sits "outside" the
+    // far plane.  Background gets the sky shader output via cube-render.
+    this.sky = new Sky();
+    this.sky.scale.setScalar(10_000);
+    const su = this.sky.material.uniforms;
+    su['turbidity']!.value          = 6;     // haze: 1 (clear) – 20 (smoggy)
+    su['rayleigh']!.value           = 1.6;   // blue scattering
+    su['mieCoefficient']!.value     = 0.005;
+    su['mieDirectionalG']!.value    = 0.85;
+    this.scene.add(this.sky);
 
     // ── Lighting ──────────────────────────────────────────────────────────
     // Hemisphere: sky colour from above, ground bounce from below.
@@ -73,10 +95,10 @@ export class SceneManager {
     this.directionalLight.shadow.mapSize.set(1024, 1024);
     this.directionalLight.shadow.camera.near = 1;
     this.directionalLight.shadow.camera.far  = 1200;
-    this.directionalLight.shadow.camera.left   = -300;
-    this.directionalLight.shadow.camera.right  = 300;
-    this.directionalLight.shadow.camera.top    = 300;
-    this.directionalLight.shadow.camera.bottom = -300;
+    this.directionalLight.shadow.camera.left   = -120;
+    this.directionalLight.shadow.camera.right  = 120;
+    this.directionalLight.shadow.camera.top    = 120;
+    this.directionalLight.shadow.camera.bottom = -120;
     this.directionalLight.shadow.bias = -0.0005;
     this.scene.add(this.directionalLight);
     this.scene.add(this.directionalLight.target);
@@ -85,6 +107,68 @@ export class SceneManager {
     this.fillLight = new THREE.DirectionalLight(0x4060a0, 0.4);
     this.fillLight.position.set(-150, 100, -200);
     this.scene.add(this.fillLight);
+
+    // ── Visible sun + moon discs ─────────────────────────────────────────
+    // MeshBasicMaterial — unlit, full brightness.  depthWrite:false so the
+    // sky/distant terrain don't get z-blocked by the disc; normal depthTest
+    // so trees & ground in front still occlude.  Sized big (radius 40) at
+    // distance 425 → ~10× real-sun apparent size, easy to spot in the sky.
+    this.sunMesh = new THREE.Mesh(
+      new THREE.SphereGeometry(40, 24, 24),
+      new THREE.MeshBasicMaterial({
+        color: 0xfff0c0, fog: false, depthWrite: false, transparent: true, opacity: 1,
+      }),
+    );
+    this.sunMesh.renderOrder = 1;  // draw after the Sky shader
+    this.scene.add(this.sunMesh);
+
+    this.moonMesh = new THREE.Mesh(
+      new THREE.SphereGeometry(28, 24, 24),
+      new THREE.MeshBasicMaterial({
+        color: 0xe0e8ff, fog: false, depthWrite: false, transparent: true, opacity: 1,
+      }),
+    );
+    this.moonMesh.renderOrder = 1;
+    this.scene.add(this.moonMesh);
+
+    // ── Stars ────────────────────────────────────────────────────────────
+    // Hemisphere of points at radius 9000 (just inside the Sky shader's
+    // 10000-scale dome).  Faded in/out by sun elevation each frame.
+    const STAR_COUNT = 2500;
+    const STAR_RADIUS = 9000;
+    const starPositions = new Float32Array(STAR_COUNT * 3);
+    const starColors    = new Float32Array(STAR_COUNT * 3);
+    for (let i = 0; i < STAR_COUNT; i++) {
+      // Spherical coords with elevation biased toward the upper hemisphere
+      const azimuth = Math.random() * Math.PI * 2;
+      const elevation = Math.acos(Math.random() * 0.95 + 0.05); // bias toward zenith but include some near-horizon
+      const r = STAR_RADIUS;
+      starPositions[i * 3 + 0] = r * Math.sin(elevation) * Math.cos(azimuth);
+      starPositions[i * 3 + 1] = r * Math.cos(elevation);
+      starPositions[i * 3 + 2] = r * Math.sin(elevation) * Math.sin(azimuth);
+      // Subtle warm/cool tinting
+      const tint = 0.85 + Math.random() * 0.15;
+      const warm = Math.random() < 0.3;
+      starColors[i * 3 + 0] = tint;
+      starColors[i * 3 + 1] = tint * (warm ? 0.95 : 1.0);
+      starColors[i * 3 + 2] = tint * (warm ? 0.85 : 1.0);
+    }
+    const starGeo = new THREE.BufferGeometry();
+    starGeo.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
+    starGeo.setAttribute('color',    new THREE.BufferAttribute(starColors,    3));
+    const starMat = new THREE.PointsMaterial({
+      size:             18,
+      sizeAttenuation:  true,
+      vertexColors:     true,
+      transparent:      true,
+      opacity:          0,    // faded by tick() based on sun elevation
+      depthWrite:       false,
+      fog:              false,
+    });
+    this.stars = new THREE.Points(starGeo, starMat);
+    this.stars.frustumCulled = false;
+    this.stars.renderOrder   = 0;  // before sun/moon (renderOrder 1) so they sit "behind"
+    this.scene.add(this.stars);
 
     window.addEventListener('resize', this._onResize);
   }
@@ -101,6 +185,38 @@ export class SceneManager {
     this._lighting = zone.lighting ?? 'normal';
     const tod = zone.timeOfDayValue ?? 0.5;
     this._applyPreset(_resolvePresetForTod(tod, this._weather, this._lighting));
+  }
+
+  /**
+   * Tighten the camera frustum + fog and disable outdoor-only lights for
+   * indoor scenes (vaults, dungeons). Three.js has no occlusion culling, so
+   * a 2 km far plane in a tight hall still rasterises everything in the
+   * frustum and overdraws walls behind walls.
+   *
+   * Disables:
+   *   - directionalLight shadow casting — sun isn't visible indoors, the
+   *     1024² shadow render is pure waste
+   *   - fillLight — outdoor rim/fill, redundant per-pixel sampling indoors
+   *
+   * Vault point-light shadows (the ominous-corners atmosphere) stay on.
+   *
+   * Call with `on=true` on vault entry, `on=false` on vault exit.
+   */
+  setIndoorMode(on: boolean, camera: THREE.PerspectiveCamera): void {
+    if (on) {
+      camera.far = 100;
+      // Fog density tuned so the far plane (~100m) fades into near-black;
+      // the shorter draw distance becomes invisible to the player.
+      (this.scene.fog as THREE.FogExp2).density = 0.036;
+      this.directionalLight.castShadow = false;
+      this.fillLight.visible = false;
+    } else {
+      camera.far = 2000;
+      (this.scene.fog as THREE.FogExp2).density = 0.0014;
+      this.directionalLight.castShadow = true;
+      this.fillLight.visible = true;
+    }
+    camera.updateProjectionMatrix();
   }
 
   /**
@@ -192,8 +308,8 @@ export class SceneManager {
    *   0.25  = 6 am  → moonset in the west     (low)
    */
   private _updateSunPosition(tod: number, focusPoint?: THREE.Vector3): void {
-    const SUN_DIST  = 500;  // distance from focus point
-    const SHADOW_SZ = 300;  // half-size of the shadow frustum
+    const SUN_DIST  = 500;  // orbital radius from zone centre
+    const SHADOW_SZ = 300;  // shadow ortho half-size in light-camera space
 
     // Sun orbit angle: 0 at sunrise (east), π/2 at noon (top), π at sunset
     const sunAngle = (tod - 0.25) * Math.PI * 2;
@@ -202,28 +318,27 @@ export class SceneManager {
     let lx: number, ly: number, lz: number;
 
     if (sunAboveHorizon) {
-      // Daytime — sun arc
       lx =  Math.cos(sunAngle) * SUN_DIST;
       ly =  Math.sin(sunAngle) * SUN_DIST;
-      lz = -0.3 * SUN_DIST; // slightly south (temperate latitude feel)
+      lz = -0.3 * SUN_DIST;
     } else {
-      // Nighttime — moon on the opposite arc, lower elevation
       const moonAngle = sunAngle + Math.PI;
-      const moonDist  = SUN_DIST * 0.7;        // feels closer / lower sky
+      const moonDist  = SUN_DIST * 0.7;
       lx =  Math.cos(moonAngle) * moonDist;
-      ly =  Math.sin(moonAngle) * moonDist * 0.6; // lower arc — moon never reaches full zenith
-      lz =  0.2 * moonDist;                     // slightly north (opposite to sun)
+      ly =  Math.sin(moonAngle) * moonDist * 0.6;
+      lz =  0.2 * moonDist;
     }
 
-    const fx = focusPoint?.x ?? 0;
-    const fy = focusPoint?.y ?? 0;
-    const fz = focusPoint?.z ?? 0;
-
-    this.directionalLight.position.set(fx + lx, fy + ly, fz + lz);
-    this.directionalLight.target.position.set(fx, fy, fz);
+    // Sun orbits the zone centre. Shadow camera must also follow the player so
+    // the 1 k shadow texels stay centred on the character. We keep the same
+    // direction (lx,ly,lz) and translate both position+target together.
+    const px = focusPoint?.x ?? 0;
+    const py = focusPoint?.y ?? 0;
+    const pz = focusPoint?.z ?? 0;
+    this.directionalLight.position.set(px + lx, py + ly, pz + lz);
+    this.directionalLight.target.position.set(px, py, pz);
     this.directionalLight.target.updateMatrixWorld();
 
-    // Shadow camera follows the player
     const cam = this.directionalLight.shadow.camera;
     cam.left   = -SHADOW_SZ;
     cam.right  =  SHADOW_SZ;
@@ -232,13 +347,94 @@ export class SceneManager {
     cam.near   = 1;
     cam.far    = SUN_DIST * 2;
     cam.updateProjectionMatrix();
+
+    // ── Place visible sun + moon discs ───────────────────────────────────
+    // Position both at the directional-light vector, at a fixed sky distance.
+    // Sun is visible when it's above the horizon; moon when below.  Cross-fade
+    // both at horizon so transitions don't pop.
+    const SKY_DIST = SUN_DIST * 0.85;
+    if (sunAboveHorizon) {
+      // Sun at light direction
+      this.sunMesh.position.set(px + lx, py + ly, pz + lz)
+        .sub(new THREE.Vector3(px, py, pz)).normalize()
+        .multiplyScalar(SKY_DIST).add(new THREE.Vector3(px, py, pz));
+      // Moon on the opposite side, lower
+      const mAng = sunAngle + Math.PI;
+      this.moonMesh.position.set(
+        px + Math.cos(mAng) * SKY_DIST,
+        py + Math.sin(mAng) * SKY_DIST * 0.6,
+        pz + 0.2 * SKY_DIST,
+      );
+    } else {
+      // Moon takes the directional-light direction at night
+      const mAng = sunAngle + Math.PI;
+      this.moonMesh.position.set(
+        px + Math.cos(mAng) * SKY_DIST,
+        py + Math.sin(mAng) * SKY_DIST * 0.6,
+        pz + 0.2 * SKY_DIST,
+      );
+      // Sun below horizon — push it under so it's invisible
+      this.sunMesh.position.set(
+        px + Math.cos(sunAngle) * SKY_DIST,
+        py + Math.sin(sunAngle) * SKY_DIST,
+        pz - 0.3 * SKY_DIST,
+      );
+    }
+
+    // Tint the sun: warm yellow at zenith, deep orange near the horizon.
+    // Old ceilings (g=0.95, b=0.75) produced a pale parchment disc that
+    // read as washed-out at any meaningful elevation. Pulling g and b down
+    // gives a recognisable yellow-morning sun without sacrificing the
+    // sunrise/sunset orange-red.
+    const horizonProx = 1 - Math.abs(Math.sin(sunAngle));  // 1 at horizon, 0 at zenith
+    const sunMat = this.sunMesh.material as THREE.MeshBasicMaterial;
+    const r = 1.0;
+    const g = 0.85 - 0.45 * horizonProx;   // 0.85 zenith → 0.40 horizon
+    const b = 0.55 - 0.55 * horizonProx;   // 0.55 zenith → 0.00 horizon
+    sunMat.color.setRGB(r, g, b);
+
+    // Fade sun in/out as it crosses the horizon (within ~10° of horizon)
+    const sunHorizonFade = Math.max(0, Math.min(1, Math.sin(sunAngle) * 6));
+    sunMat.opacity = sunHorizonFade;
+    this.sunMesh.visible = sunHorizonFade > 0.01;
+
+    const moonMat = this.moonMesh.material as THREE.MeshBasicMaterial;
+    const moonHorizonFade = Math.max(0, Math.min(1, -Math.sin(sunAngle) * 6));
+    moonMat.opacity = moonHorizonFade;
+    this.moonMesh.visible = moonHorizonFade > 0.01;
+
+    // Drive the Sky shader.  We feed it a unit vector pointing at the sun;
+    // when the sun is below the horizon, point it slightly above so the sky
+    // stays a deep night blue (the shader otherwise gives a flat black).
+    const skyAngle = sunAboveHorizon
+      ? sunAngle
+      : sunAngle + Math.PI;  // moon dir doubles as "where the dim ambient comes from"
+    const elev = sunAboveHorizon ? Math.sin(sunAngle) : -0.05;
+    const azim = sunAboveHorizon ? Math.cos(sunAngle) : Math.cos(skyAngle);
+    const sunUni = this.sky.material.uniforms['sunPosition']!;
+    sunUni.value.set(azim, Math.max(elev, -0.05), -0.3);
+    sunUni.value.normalize();
+
+    // ── Stars ────────────────────────────────────────────────────────────
+    // Centred on the player so the field never moves away as you walk.
+    // Opacity fades with sun elevation: full-bright once sun is well below
+    // the horizon, gone before sunrise/sunset twilight ends.
+    this.stars.position.set(px, py, pz);
+    const starMat = this.stars.material as THREE.PointsMaterial;
+    // sin(sunAngle) ranges -1 (deep night) → 0 (horizon) → 1 (zenith).
+    // We want opacity 0 above horizon, 1 well below.  Use −sin scaled.
+    const starsOn = Math.max(0, Math.min(1, -Math.sin(sunAngle) * 4 - 0.1));
+    starMat.opacity = starsOn;
+    this.stars.visible = starsOn > 0.01;
   }
 
   // ── Preset helpers ────────────────────────────────────────────────────────
 
   /** Write an EnvPreset directly to all lights / fog / renderer. */
   private _applyPreset(env: EnvPreset): void {
-    (this.scene.background as THREE.Color).set(env.skyColor);
+    // Sky background is now driven by the atmospheric Sky shader from sun
+    // position — env.skyColor is no longer used directly.  Fog still tints
+    // distance haze independent of the sky dome.
     (this.scene.fog as THREE.FogExp2).color.set(env.fogColor);
     (this.scene.fog as THREE.FogExp2).density = env.fogDensity;
 
@@ -261,7 +457,9 @@ export class SceneManager {
   /** Read current scene state back into an EnvPreset (for transition start). */
   private _capturePreset(): EnvPreset {
     return {
-      skyColor:         (this.scene.background as THREE.Color).getHex(),
+      // skyColor unused now (Sky shader drives background) but kept on the
+      // preset shape so existing presets compile unchanged.
+      skyColor:         0x000000,
       fogColor:         (this.scene.fog as THREE.FogExp2).color.getHex(),
       fogDensity:       (this.scene.fog as THREE.FogExp2).density,
       hemiSkyColor:     this.hemiLight.color.getHex(),
@@ -292,8 +490,7 @@ export class SceneManager {
     };
     const ln = (a: number, b: number): number => a + (b - a) * t;
 
-    (this.scene.background as THREE.Color).set(lc(from.skyColor, to.skyColor));
-
+    // Sky shader drives the background — no need to lerp skyColor any more.
     const fog = this.scene.fog as THREE.FogExp2;
     fog.color.set(lc(from.fogColor, to.fogColor));
     fog.density = ln(from.fogDensity, to.fogDensity);

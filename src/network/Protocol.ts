@@ -172,7 +172,13 @@ export interface CharacterState {
   stamina: StatBar;
   mana: StatBar;
   coreStats?: CoreStats;
+  /** Per-stat passive bonuses applied on top of `coreStats` (the base allocation).
+   *  Surfaces "STR 10 (+5)" displays in CharacterSheet — values are deltas, not totals. */
+  coreStatsBonuses?: Partial<CoreStats>;
   derivedStats?: DerivedStats;
+  /** Per-derived-stat bonuses from passives (and future gear/buff sources).
+   *  Same delta convention as coreStatsBonuses. */
+  derivedStatsBonuses?: Partial<DerivedStats>;
   corruption: CorruptionStatus;
   corruptionBenefits: CorruptionBenefits;
   unlockedFeats: string[];
@@ -192,6 +198,22 @@ export interface ZoneInfo {
   timeOfDayValue?: number;
   lighting: string;
   contentRating: ContentRating;
+  /** Current season from climate sim: 'spring' | 'summer' | 'fall' | 'winter' */
+  season?: string;
+  /** Day of year 1–365 from climate sim */
+  dayOfYear?: number;
+  /** Real seconds per in-game day. Server-authoritative — client uses this to
+   *  interpolate the sun smoothly between 1 Hz updates without hardcoding the rate. */
+  secsPerDay?: number;
+  /** Temperature normalized to -1.0 (cold) → 1.0 (hot) */
+  temperature?: number;
+  /** Surface wind. */
+  wind?: {
+    /** m/s */
+    speed: number;
+    /** Compass degrees 0–360 */
+    direction: number;
+  };
 }
 
 export interface Entity {
@@ -207,6 +229,7 @@ export interface Entity {
   animation?: string;
   /** For characters: the current animation action. For plants: the growth stage name ('sprout', 'mature', 'flowering', etc.). */
   currentAction?: AnimationAction | string;
+  fromPosition?: Vector3;
   movementDuration?: number;
   movementSpeed?: number;
   heading?: number;
@@ -214,6 +237,10 @@ export interface Entity {
   modelAsset?: string;
   /** Uniform scale multiplier for the GLB model (default 1). */
   modelScale?: number;
+  /** Species or sub-type identifier (e.g. "fox", "oak_tree"). Drives placeholder shape selection. */
+  tag?: string;
+  /** Visual variant index (0–4). Server-authoritative; drives pre-built geometry selection in ForestRenderer. */
+  variant?: number;
 }
 
 export interface Exit {
@@ -270,6 +297,11 @@ export interface StateUpdatePayload {
     level?: number;
     abilityPoints?: number;
     statPoints?: number;
+    // Stats — base + delta from passives (and future gear/buffs)
+    coreStats?:           CoreStats;
+    coreStatsBonuses?:    Partial<CoreStats>;
+    derivedStats?:        DerivedStats;
+    derivedStatsBonuses?: Partial<DerivedStats>;
     // Status effects
     effects?: StatusEffect[];
   };
@@ -281,12 +313,7 @@ export interface StateUpdatePayload {
     specialCharges?: Record<string, number>;
     enmityList?: EnmityEntry[];
   };
-  allies?: Array<{
-    entityId: string;
-    atb?: StatBar;
-    staminaPct?: number;
-    manaPct?: number;
-  }>;
+  allies?: PartyAllyState[];
   zone?: Partial<ZoneInfo>;
 }
 
@@ -298,7 +325,37 @@ export interface EventPayload {
   narrative?: string;
   animation?: string;
   sound?: string;
+  eventTypeData?: Record<string, unknown>;
   [key: string]: unknown;
+}
+
+/** Combat outcome shape carried inside EventPayload.eventTypeData for combat_hit/combat_miss. */
+export type CombatOutcome = 'hit' | 'crit' | 'glance' | 'penetrating' | 'deflected' | 'miss';
+
+export interface CombatHitData {
+  attackerId: string;
+  targetId:   string;
+  abilityId:  string;
+  amount:     number;
+  critical:   boolean;
+  outcome:    CombatOutcome;
+  /** Server-authoritative remaining cooldown in ms for the ability that just
+   *  resolved. Optional — older servers won't send it; clients should fall back
+   *  to the manifest's static cooldown. */
+  cooldownMs?: number;
+  /** True when this CombatHitData was synthesised from a `combat_heal` event
+   *  rather than a damage-dealing hit. Lets the UI use a heal-specific flash. */
+  isHeal?: boolean;
+}
+
+/** Sent only to the caster when a cast is rejected (OOM, range, on-CD, silenced, etc.). */
+export interface CombatErrorPayload {
+  code:    string;
+  message: string;
+  /** Server-authoritative remaining time in milliseconds for time-based rejections
+   *  (`on_cooldown`, `on_gcd`). Optional — older servers won't send it; clients
+   *  should fall back to a guess from the manifest. */
+  remainingMs?: number;
 }
 
 // ── Companion Creation ────────────────────────────────────────────────────────
@@ -597,8 +654,12 @@ export interface PartyMemberInfo {
 
 export interface PartyAllyState {
   entityId:    string;
+  /** 0-100. Used by the HUD when the ally is in a different zone (no local entity to read). */
+  hpPct?:      number;
   staminaPct?: number;
   manaPct?:    number;
+  /** False when the ally is a corpse — HUD greys the row. */
+  isAlive?:    boolean;
   atb?:        StatBar;
 }
 
@@ -700,6 +761,29 @@ export interface RespecResultPayload {
   type?:   'stats' | 'abilities';
   message?: string;
   error?:  string;
+}
+
+// ── Experience ────────────────────────────────────────────────────────────────
+
+export interface ExperienceGainedPayload {
+  entityType:  'player' | 'companion';
+  entityId:    string;
+  gainedXp:    number;
+  experience:  number;
+  level:       number;
+  leveledUp:   boolean;
+  gainedAp?:   number;     // player only — AP banked (level-up + post-cap XP→AP)
+  lostAp?:     number;     // player only — AP would-have-been but bank was full
+  gainedSp?:   number;     // player only
+  mobName:     string;
+  breakdown: {
+    mobLevel:       number;
+    recipientLevel: number;
+    partySize:      number;
+    baseXp:         number;
+    conMult:        number;
+    partyMult:      number;
+  };
 }
 
 // ── Corruption ────────────────────────────────────────────────────────────────
@@ -891,6 +975,15 @@ export interface EditorResultPayload {
   warnings: Array<{ line?: number; message: string }>;
 }
 
+// ── System Toasts ─────────────────────────────────────────────────────────────
+
+/** Server → Client: floating system notification (zone build progress, etc.) */
+export interface SystemToastPayload {
+  message:   string;
+  type:      'info' | 'success' | 'warning';
+  duration?: number;
+}
+
 // ── Beacon & Library Alerts ───────────────────────────────────────────────────
 
 /** Server → Client: guild beacon fuel / state alert. */
@@ -958,6 +1051,13 @@ export interface VaultCompletePayload {
   goldAwarded: number;
   message?:    string;
   summary?:    unknown;
+  /** Exit portal spawn — client synthesizes this entity locally. Optional
+   *  in case the vault has no tile grid (legacy, hand-authored rooms). */
+  exitPortal?: {
+    id:       string;
+    name:     string;
+    position: { x: number; y: number; z: number };
+  };
 }
 
 /** Server → Client: vault failed (party wipe). */

@@ -3,9 +3,21 @@ import type { EntityRegistry } from '@/state/EntityRegistry';
 import type { SocketClient }   from '@/network/SocketClient';
 import type { Entity }         from '@/network/Protocol';
 
-// How far to move the player when retreating (in server world units).
-// Server coordinates are in metres; 1 m steps the player back one pace.
-const RETREAT_UNITS = 2;
+/** How close the Approach button stops short of the target, in metres.
+ *  Tuned for a melee-weapon-length gap — close enough to swing, not face-to-face. */
+const APPROACH_STOP_DISTANCE = 1.5;
+
+/** Interact button: outside this range the button is disabled.  Prevents
+ *  cross-map exploit clicks while leaving plenty of room for normal play. */
+const INTERACT_MAX_DISTANCE = 10;
+/** Interact button: stop-and-fire distance after auto-approach. */
+const INTERACT_FIRE_DISTANCE = 2;
+/** Slack added to fire distance to tolerate path imperfections. */
+const INTERACT_FIRE_SLACK = 0.5;
+/** Cancel the pending interact if we haven't arrived in this long. */
+const INTERACT_APPROACH_TIMEOUT_MS = 6000;
+/** Polling cadence for the post-approach arrival check. */
+const INTERACT_POLL_MS = 150;
 
 interface MenuItem {
   label:    string;
@@ -33,6 +45,10 @@ export class TargetWindow {
   // Last target ID seen by _onTargetChange, so we only reset on an actual target swap
   private _lastTargetId: string | null = null;
 
+  // Pending auto-approach-then-interact action.  Cleared on target swap, dispose,
+  // arrival, or timeout.  Only one can be active at a time.
+  private _pendingInteract: { targetId: string; intervalId: number } | null = null;
+
   // ── Action definitions ────────────────────────────────────────────────────
 
   private _marketToggle: (() => void) | null = null;
@@ -44,11 +60,26 @@ export class TargetWindow {
   private readonly _menu: MenuItem[] = [
     {
       // Attack — mobs, wildlife, and any entity explicitly flagged hostile.
-      // Uses the direct combat_action socket event so the combat system picks
-      // it up immediately without routing through the text command pipeline.
+      // Hidden when this entity is already our auto-attack target; the
+      // Disengage item below takes its place so the same row toggles between
+      // engage/disengage based on combat state.
       label:   'Attack',
-      visible: e => !!(e.hostile || e.type === 'mob' || e.type === 'wildlife'),
+      visible: e => (
+        !!(e.hostile || e.type === 'mob' || e.type === 'wildlife')
+        && this.player.combat.autoAttackTarget !== e.id
+      ),
       execute: e => this.socket.sendCombatAction('basic_attack', e.id),
+    },
+    {
+      // Disengage — appears in place of Attack when we're auto-attacking this
+      // entity. Sends a synthetic 'disengage' abilityId that the server's
+      // handleCombatAction handles by clearing autoAttackTarget.
+      label:   'Disengage',
+      visible: e => (
+        !!(e.hostile || e.type === 'mob' || e.type === 'wildlife')
+        && this.player.combat.autoAttackTarget === e.id
+      ),
+      execute: e => this.socket.sendCombatAction('disengage', e.id),
     },
     {
       // Talk — NPCs and companions only; never mobs or wildlife.
@@ -88,6 +119,12 @@ export class TargetWindow {
       execute: _e => this.socket.sendCommand('/vault enter'),
     },
     {
+      // Leave Vault — exit portal spawned on vault completion.
+      label:   'Leave Vault',
+      visible: e => e.tag === 'vault_exit_portal',
+      execute: _e => this.socket.sendCommand('/vault leave'),
+    },
+    {
       // Market — opens market panel when targeting a market stall structure.
       label:   'Market',
       visible: e => e.type === 'structure' && /market\s*stall/i.test(e.name),
@@ -109,6 +146,76 @@ export class TargetWindow {
       },
     },
     {
+      // Interact — generic fallback for interactive entities (structures,
+      // scripted objects, items, etc.). Mirrors the F-key proximity-interact
+      // socket call ('use'). Disabled past 10 m so the button can't be used
+      // to fire interactions across the map. Within 10 m, auto-approaches to
+      // 2 m and fires the interact on arrival.
+      label:   'Interact',
+      visible: e => (
+        e.interactive !== false
+        && e.type !== 'mob'
+        && e.type !== 'wildlife'
+        && e.type !== 'player'
+      ),
+      disabled: e => this._distanceTo(e) > INTERACT_MAX_DISTANCE,
+      execute: e => {
+        const dist = this._distanceTo(e);
+        if (dist > INTERACT_MAX_DISTANCE) return;  // belt & suspenders past the disabled gate
+
+        if (dist <= INTERACT_FIRE_DISTANCE + INTERACT_FIRE_SLACK) {
+          // Already in range — fire directly.
+          this.socket.sendInteract(e.id, 'use');
+          return;
+        }
+
+        // Mid-range: send a move command toward a point INTERACT_FIRE_DISTANCE
+        // short of the target, then poll for arrival and fire the interact.
+        this._cancelPendingInteract();
+
+        const pp = this.player.position;
+        const ep = e.position;
+        const dx = ep.x - pp.x;
+        const dz = ep.z - pp.z;
+        const t = (dist - INTERACT_FIRE_DISTANCE) / dist;
+        this.socket.sendMovePosition({
+          x: pp.x + dx * t,
+          y: ep.y,
+          z: pp.z + dz * t,
+        }, 'jog');
+
+        const targetId = e.id;
+        const startedAt = Date.now();
+        const intervalId = window.setInterval(() => {
+          // Bail if the player switched targets or it was cleared.
+          if (this.player.targetId !== targetId) {
+            this._cancelPendingInteract();
+            return;
+          }
+          // Bail if the entity vanished (died, despawned, OOR).
+          const tgt = this.entities.get(targetId);
+          if (!tgt?.position) {
+            this._cancelPendingInteract();
+            return;
+          }
+          // Bail on timeout — player got stuck or path is taking too long.
+          if (Date.now() - startedAt > INTERACT_APPROACH_TIMEOUT_MS) {
+            this._cancelPendingInteract();
+            return;
+          }
+          // Fire when in range.
+          const ddx = tgt.position.x - this.player.position.x;
+          const ddz = tgt.position.z - this.player.position.z;
+          if (Math.hypot(ddx, ddz) <= INTERACT_FIRE_DISTANCE + INTERACT_FIRE_SLACK) {
+            this.socket.sendInteract(targetId, 'use');
+            this._cancelPendingInteract();
+          }
+        }, INTERACT_POLL_MS);
+
+        this._pendingInteract = { targetId, intervalId };
+      },
+    },
+    {
       // Examine — always available.
       // Routed as /look <id> (/examine and /exam are aliases).
       label:   'Examine',
@@ -118,43 +225,28 @@ export class TargetWindow {
     {
       label:   'Approach',
       visible: () => true,
-      execute: e => this.socket.sendMovePosition(e.position, 'jog'),
+      execute: e => {
+        const pp = this.player.position;
+        const ep = e.position;
+        const dx = ep.x - pp.x;
+        const dz = ep.z - pp.z;
+        const dist = Math.hypot(dx, dz);
+        if (dist <= APPROACH_STOP_DISTANCE) return;  // already close enough
+        const t = (dist - APPROACH_STOP_DISTANCE) / dist;
+        this.socket.sendMovePosition({
+          x: pp.x + dx * t,
+          y: ep.y,
+          z: pp.z + dz * t,
+        }, 'jog');
+      },
     },
     {
       label:   'Retreat',
       visible: () => true,
-      execute: e => {
-        const pp = this.player.position;
-        const ep = e.position;
-
-        // Vector pointing away from the entity (XZ plane).
-        const dx = pp.x - ep.x;
-        const dz = pp.z - ep.z;
-        const awayLen = Math.hypot(dx, dz) || 1;
-        const awayX = dx / awayLen;
-        const awayZ = dz / awayLen;
-
-        // Vector pointing backward relative to the player's facing direction.
-        // Server convention: heading 0° = North (+Z), 90° = East (+X).
-        // Forward = (sin(h), 0, cos(h)), so backward = (-sin(h), 0, -cos(h)).
-        const h = (this.player.heading * Math.PI) / 180;
-        const backX = -Math.sin(h);
-        const backZ = -Math.cos(h);
-
-        // Blend the two vectors and normalise.
-        const blendX = awayX + backX;
-        const blendZ = awayZ + backZ;
-        const blendLen = Math.hypot(blendX, blendZ) || 1;
-
-        this.socket.sendMovePosition(
-          {
-            x: pp.x + (blendX / blendLen) * RETREAT_UNITS,
-            y: pp.y,
-            z: pp.z + (blendZ / blendLen) * RETREAT_UNITS,
-          },
-          'run',
-        );
-      },
+      // Routes through the canonical /retreat back slash command — server
+      // does the burst dash with stamina + cast cancel + collision resolve.
+      // Same path the spacebar double-tap takes; one source of truth.
+      execute: _e => this.socket.sendCommand('/retreat back'),
     },
   ];
 
@@ -175,7 +267,11 @@ export class TargetWindow {
 
     const unsubPlayer = player.onChange(() => this._scheduleRefresh());
     const unsubUpdate = entities.onUpdate(e => {
-      if (e.id === player.targetId) this._scheduleRefresh();
+      if (e.id === player.targetId) {
+        // Auto-clear target when the targeted entity dies
+        if (e.isAlive === false) { player.clearTarget(); return; }
+        this._scheduleRefresh();
+      }
     });
     const unsubRemove = entities.onRemove(id => {
       if (id === player.targetId) player.clearTarget();
@@ -198,6 +294,7 @@ export class TargetWindow {
   hide():    void { this.root.style.display = 'none'; }
   dispose(): void {
     if (this._rafId !== null) { cancelAnimationFrame(this._rafId); this._rafId = null; }
+    this._cancelPendingInteract();
     this.cleanup.forEach(fn => fn());
     this.root.remove();
   }
@@ -407,6 +504,11 @@ export class TargetWindow {
   private _onTargetChange(): void {
     const newId = this.player.targetId;
 
+    // Any target swap (or clear) cancels an in-flight auto-approach interact.
+    if (newId !== this._pendingInteract?.targetId) {
+      this._cancelPendingInteract();
+    }
+
     if (!newId) {
       this.root.classList.add('tw-hidden');
       this._menuKey     = '';
@@ -468,13 +570,32 @@ export class TargetWindow {
     lockEl.innerHTML = locked ? '&#x1f512;' : '&#x1f513;';
 
     // Menu — only rebuild when the set of visible actions could have changed
-    // (target swap, type change, or hostile flag change). HP/distance ticks skip this.
+    // (target swap, type change, hostile flag change, crossing the Interact
+    // range threshold, or engaging/disengaging auto-attack on this entity).
+    // HP/distance-within-band ticks skip this.
     const inParty = entity ? this.player.partyMembers.some(m => m.id === entity.id) : false;
-    const newKey = `${id}|${entity?.type ?? ''}|${entity?.hostile ?? false}|${entity?.isAlive ?? true}|${entity?.interactive ?? ''}|${inParty}`;
+    const inInteractRange = entity ? this._distanceTo(entity) <= INTERACT_MAX_DISTANCE : false;
+    const isAutoAttackTarget = entity ? this.player.combat.autoAttackTarget === entity.id : false;
+    const newKey = `${id}|${entity?.type ?? ''}|${entity?.hostile ?? false}|${entity?.isAlive ?? true}|${entity?.interactive ?? ''}|${inParty}|${inInteractRange}|${isAutoAttackTarget}`;
     if (newKey !== this._menuKey) {
       this._menuKey = newKey;
       this._rebuildMenu(entity ?? null);
     }
+  }
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+
+  private _distanceTo(e: Entity): number {
+    if (!e.position) return Infinity;
+    const dx = e.position.x - this.player.position.x;
+    const dz = e.position.z - this.player.position.z;
+    return Math.hypot(dx, dz);
+  }
+
+  private _cancelPendingInteract(): void {
+    if (!this._pendingInteract) return;
+    clearInterval(this._pendingInteract.intervalId);
+    this._pendingInteract = null;
   }
 
   private _rebuildMenu(entity: Entity | null): void {

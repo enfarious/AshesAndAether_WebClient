@@ -295,7 +295,13 @@ export class RegistrationModal {
 
     this.submitBtn.disabled = true;
     this.submitBtn.textContent = 'Registering…';
-    this.socket.sendRegisterAccount(username, email, password);
+    // Guest sessions promote the existing account (preserving the character);
+    // anyone else creates a fresh account row.
+    if (this.player.isGuest) {
+      this.socket.sendRegisterFromGuest(username, email, password);
+    } else {
+      this.socket.sendRegisterAccount(username, email, password);
+    }
   }
 
   private _onResult(result: { success: boolean; username?: string; error?: string }): void {

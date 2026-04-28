@@ -7,6 +7,7 @@ import { RemoteEntity } from './RemoteEntity';
 import type { EntityObject } from './EntityObject';
 import { ClientConfig } from '@/config/ClientConfig';
 import type { Entity } from '@/network/Protocol';
+import { FOREST_SPECIES } from '@/world/ForestRenderer';
 
 /**
  * EntityFactory — bridges EntityRegistry events to Three.js scene objects.
@@ -18,8 +19,9 @@ import type { Entity } from '@/network/Protocol';
  * currently selected target each frame, spinning and pulsing opacity.
  */
 export class EntityFactory {
-  private objects = new Map<string, EntityObject>();
-  private player:  PlayerEntity | null = null;
+  private objects   = new Map<string, EntityObject>();
+  private plantIds  = new Set<string>();
+  private player:   PlayerEntity | null = null;
 
   // ── Heightmap (for snapping entities to rendered terrain surface) ─────────
   private heightmap: HeightmapService | null = null;
@@ -79,9 +81,12 @@ export class EntityFactory {
     }
   }
 
-  /** Draw distance² — entities beyond this are hidden AND unticked. */
   private static get DRAW_DIST_SQ(): number {
     return ClientConfig.drawDistance * ClientConfig.drawDistance;
+  }
+
+  private static get TREE_DIST_SQ(): number {
+    return ClientConfig.treeVisibleRange * ClientConfig.treeVisibleRange;
   }
 
   /** Called every frame — ticks all entity interpolators and the highlight ring. */
@@ -90,18 +95,22 @@ export class EntityFactory {
     const px = this.playerState.position.x;
     const pz = this.playerState.position.z;
 
-    for (const obj of this.objects.values()) {
+    const treeLimitSq = EntityFactory.TREE_DIST_SQ;
+    const drawLimitSq = EntityFactory.DRAW_DIST_SQ;
+
+    for (const [id, obj] of this.objects) {
       // Always tick the local player — skip distance check
       if (obj === this.player) { obj.update(dt); continue; }
 
-      // Draw-distance culling: hide AND skip tick for distant entities.
-      // Visible entities get their interpolation updated; hidden ones sit
-      // at their last position and snap when the player approaches.
       const ep = obj.object3d.position;
       const dx = ep.x - px;
       const dz = ep.z - pz;
       const distSq = dx * dx + dz * dz;
-      if (distSq > EntityFactory.DRAW_DIST_SQ) {
+
+      // Plants use a tighter, independently configurable visibility range.
+      const limitSq = this.plantIds.has(id) ? treeLimitSq : drawLimitSq;
+
+      if (distSq > limitSq) {
         if (obj.object3d.visible) obj.object3d.visible = false;
         continue;
       }
@@ -116,6 +125,7 @@ export class EntityFactory {
       obj.dispose();
     }
     this.objects.clear();
+    this.plantIds.clear();
     this.player = null;
 
     if (this.unsubTarget) { this.unsubTarget(); this.unsubTarget = null; }
@@ -131,6 +141,9 @@ export class EntityFactory {
   // ── Registry event handlers ───────────────────────────────────────────────
 
   private _onCreate(entity: Entity): void {
+    // Tree species (pine, oak, maple) are batched into InstancedMesh by ForestRenderer.
+    if (entity.type === 'plant' && FOREST_SPECIES.has(entity.tag ?? '')) return;
+
     // Guard: if an object already exists for this ID, dispose the orphan first
     // to prevent leaked Three.js objects accumulating in the scene graph.
     const stale = this.objects.get(entity.id);
@@ -172,10 +185,12 @@ export class EntityFactory {
       obj = new RemoteEntity(entity, this.scene);
     }
 
+    if (entity.type === 'plant') this.plantIds.add(entity.id);
     this.objects.set(entity.id, obj);
   }
 
   private _onUpdate(entity: Entity): void {
+    if (entity.type === 'plant' && FOREST_SPECIES.has(entity.tag ?? '')) return;
     const obj = this.objects.get(entity.id);
     if (!obj) {
       this._onCreate(entity);
@@ -191,9 +206,12 @@ export class EntityFactory {
         if (elev !== null) y = elev + EntityFactory.GROUND_CLEARANCE;
       }
       // PlayerEntity.setTargetPosition() buffers internally via its mode
-      // check — safe to call even during WASD/CLICK_MOVE prediction.
-      const pos = new THREE.Vector3(entity.position.x, y, entity.position.z);
-      obj.setTargetPosition(pos, entity.heading, entity.movementDuration);
+      // check — safe to call during WASD or IDLE.
+      const pos  = new THREE.Vector3(entity.position.x, y, entity.position.z);
+      const from = entity.fromPosition
+        ? new THREE.Vector3(entity.fromPosition.x, y, entity.fromPosition.z)
+        : undefined;
+      obj.setTargetPosition(pos, entity.heading, entity.movementDuration, from);
     }
 
     // Allow entity objects to react to non-position attribute changes
@@ -206,6 +224,7 @@ export class EntityFactory {
     if (!obj) return;
     obj.dispose();
     this.objects.delete(id);
+    this.plantIds.delete(id);
     if (obj === this.player) this.player = null;
   }
 

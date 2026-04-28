@@ -2,6 +2,11 @@ import type { OrbitCamera }    from '@/camera/OrbitCamera';
 import type { SocketClient }   from '@/network/SocketClient';
 import type { PlayerState }    from '@/state/PlayerState';
 import type { PlayerEntity }   from '@/entities/PlayerEntity';
+import type { EntityRegistry } from '@/state/EntityRegistry';
+
+/** F-key proximity-interact range, metres. */
+const F_INTERACT_RANGE = 5;
+const F_INTERACT_RANGE_SQ = F_INTERACT_RANGE * F_INTERACT_RANGE;
 
 /**
  * WASDController — keyboard movement + camera rotation.
@@ -43,6 +48,19 @@ export class WASDController {
   /** Direct reference to the player entity for driving position. */
   private _playerEntity: PlayerEntity | null = null;
 
+  /** Spacebar tap state machine — both fire eagerly.
+   *
+   *  Tap 1: fire /jump immediately (visual + server). Arm a window timer.
+   *  Tap 2 inside the window: fire /retreat <direction> on top of the
+   *  in-flight jump arc. Net effect = "leap dash": small Y pop into a
+   *  horizontal burst. Stamina cost 25 (5 + 20). With proper meshes, the
+   *  jump-start animation blends into the dash motion without a hitch.
+   *
+   *  After the window expires the timer just clears — next tap fires a
+   *  fresh /jump. */
+  private _spaceTapTimer: ReturnType<typeof setTimeout> | null = null;
+  private static readonly SPACE_DOUBLE_TAP_MS = 250;
+
   private inventoryToggle:      (() => void) | null = null;
   private abilityToggle:        (() => void) | null = null;
   private characterSheetToggle: (() => void) | null = null;
@@ -51,6 +69,7 @@ export class WASDController {
   private marketToggle:         (() => void) | null = null;
   private worldMapToggle:       (() => void) | null = null;
   private guildToggle:          (() => void) | null = null;
+  private travelToggle:         (() => void) | null = null;
   private companionToggle:      (() => void) | null = null;
   private buildToggle:              (() => void) | null = null;
   private settingsToggle:           (() => void) | null = null;
@@ -61,6 +80,7 @@ export class WASDController {
   private partyTargetPrev:          (() => void) | null = null;
   private layoutEditToggle:         (() => void) | null = null;
   private layoutEditActive:         (() => boolean) | null = null;
+  private toggleFocusOnTarget:      (() => void) | null = null;
 
   setInventoryToggle(fn: () => void):      void { this.inventoryToggle      = fn; }
   setAbilityToggle(fn: () => void):        void { this.abilityToggle        = fn; }
@@ -70,6 +90,7 @@ export class WASDController {
   setMarketToggle(fn: () => void):         void { this.marketToggle         = fn; }
   setWorldMapToggle(fn: () => void):       void { this.worldMapToggle       = fn; }
   setGuildToggle(fn: () => void):          void { this.guildToggle          = fn; }
+  setTravelToggle(fn: () => void):         void { this.travelToggle         = fn; }
   setCompanionToggle(fn: () => void):    void { this.companionToggle      = fn; }
   setBuildToggle(fn: () => void):       void { this.buildToggle          = fn; }
   setSettingsToggle(fn: () => void):   void { this.settingsToggle       = fn; }
@@ -80,14 +101,16 @@ export class WASDController {
   setPartyTargetPrev(fn: () => void):      void { this.partyTargetPrev      = fn; }
   setLayoutEditToggle(fn: () => void):     void { this.layoutEditToggle     = fn; }
   setLayoutEditActive(fn: () => boolean):  void { this.layoutEditActive     = fn; }
+  setToggleFocusOnTarget(fn: () => void):  void { this.toggleFocusOnTarget  = fn; }
 
   /** Wire the player entity after EntityFactory creates it. */
   setPlayerEntity(pe: PlayerEntity | null): void { this._playerEntity = pe; }
 
   constructor(
-    private readonly camera: OrbitCamera,
-    private readonly socket: SocketClient,
-    private readonly player: PlayerState,
+    private readonly camera:   OrbitCamera,
+    private readonly socket:   SocketClient,
+    private readonly player:   PlayerState,
+    private readonly entities: EntityRegistry,
   ) {
     window.addEventListener('keydown', this._onKeyDown);
     window.addEventListener('keyup',   this._onKeyUp);
@@ -99,15 +122,11 @@ export class WASDController {
     // Suppress all movement / camera input while layout edit mode is active.
     if (this.layoutEditActive?.()) return;
 
-    // Q / E — smooth camera yaw (every frame, dt-scaled)
+    // Q / E — smooth camera yaw (every frame, dt-scaled). Arrow keys are
+    // reserved for TargetWindow menu navigation — use Q/E for camera or the
+    // mouse for free look.
     if (this.held.has('q')) this.camera.addYaw(+QE_SPEED * dt);
     if (this.held.has('e')) this.camera.addYaw(-QE_SPEED * dt);
-
-    // Arrow keys — camera yaw + pitch
-    if (this.held.has('arrowleft'))  this.camera.addYaw(+QE_SPEED * dt);
-    if (this.held.has('arrowright')) this.camera.addYaw(-QE_SPEED * dt);
-    if (this.held.has('arrowup'))   this.camera.addPitch(+PITCH_SPEED * dt);
-    if (this.held.has('arrowdown')) this.camera.addPitch(-PITCH_SPEED * dt);
 
     // +/- — keyboard zoom
     if (this.held.has('=') || this.held.has('+')) this.camera.addZoom(+ZOOM_SPEED * dt);
@@ -145,9 +164,6 @@ export class WASDController {
       return;
     }
 
-    // Cancel any active click-move when WASD starts
-    this._playerEntity?.stopClickMove();
-
     // Rotate input by camera yaw -> world-space XZ direction.
     const yaw    = this.camera.getYaw();
     const worldX =  inputX * Math.cos(yaw) - inputZ * Math.sin(yaw);
@@ -160,24 +176,35 @@ export class WASDController {
     const normZ = worldZ / len;
 
     // ── Client-side prediction ───────────────────────────────────────────────
-    // Seed from entity position on the first frame of each movement burst.
-    if (this._localX === null && this._playerEntity) {
-      const p = this._playerEntity.object3d.position;
-      this._localX = p.x;
-      this._localY = p.y;
-      this._localZ = p.z;
-    }
+    // During a jump the entity is in JUMPING mode (set by playJump) which
+    // runs its own captured-velocity prediction. We must NOT call drivePosition
+    // here — that would flip the mode back to WASD and clobber the arc.
+    // Just clear our prediction state so the next post-jump frame re-seeds
+    // cleanly from wherever the entity actually landed.
+    if (this._playerEntity?.isJumping) {
+      if (this._localX !== null) {
+        this._localX = this._localY = this._localZ = null;
+      }
+    } else {
+      // Seed from entity position on the first frame of each movement burst.
+      if (this._localX === null && this._playerEntity) {
+        const p = this._playerEntity.object3d.position;
+        this._localX = p.x;
+        this._localY = p.y;
+        this._localZ = p.z;
+      }
 
-    if (this._localX !== null && this._localY !== null && this._localZ !== null) {
-      // Advance local position at the server's actual speed this frame.
-      const speedMPS = this.player.movementSpeedMPS || FALLBACK_SPEED_MPS;
-      this._localX += normX * speedMPS * dt;
-      this._localZ += normZ * speedMPS * dt;
-      // Y tracks server for terrain height
-      this._localY = this.player.position.y;
+      if (this._localX !== null && this._localY !== null && this._localZ !== null) {
+        // Advance local position at the server's actual speed this frame.
+        const speedMPS = this.player.movementSpeedMPS || FALLBACK_SPEED_MPS;
+        this._localX += normX * speedMPS * dt;
+        this._localZ += normZ * speedMPS * dt;
+        // Y tracks server for terrain height
+        this._localY = this.player.position.y;
 
-      // Drive the entity directly — no intermediary
-      this._playerEntity?.drivePosition(this._localX, this._localY, this._localZ);
+        // Drive the entity directly — no intermediary
+        this._playerEntity?.drivePosition(this._localX, this._localY, this._localZ);
+      }
     }
 
     // ── Continuous server send ──────────────────────────────────────────────────
@@ -217,6 +244,8 @@ export class WASDController {
   private _onKeyDown = (e: KeyboardEvent): void => {
     // Don't steal keys from text inputs / chat
     if (this._isTyping(e.target)) return;
+    // Guard against synthetic or non-standard events with no key value
+    if (!e.key) return;
 
     // Prevent browser scrolling for arrow keys and +/-
     const key = e.key.toLowerCase();
@@ -234,11 +263,31 @@ export class WASDController {
     // While layout edit is active, swallow all other game keys
     if (this.layoutEditActive?.()) return;
 
-    // Tab / Shift+Tab — cycle targets
+    // Tab — cycle targets. Ctrl branch hits party/companion; default branch
+    // walks hostile enemies. Shift reverses direction in either case.
+    //
+    // Caveat: Tauri (Edge WebView2) and many browsers swallow Ctrl+Tab for
+    // tab/focus traversal — the modifier never reaches the page. The
+    // backtick fallback below is the reliable ally-cycle keybind.
     if (key === 'tab') {
       e.preventDefault();
-      if (e.shiftKey) this.tabTargetPrev?.();
-      else            this.tabTargetNext?.();
+      if (e.ctrlKey) {
+        if (e.shiftKey) this.partyTargetPrev?.();
+        else            this.partyTargetNext?.();
+      } else {
+        if (e.shiftKey) this.tabTargetPrev?.();
+        else            this.tabTargetNext?.();
+      }
+      return;
+    }
+
+    // ` / ~ — ally cycle (works in Tauri where Ctrl+Tab is swallowed).
+    // Plain ` advances forward; Shift+` (~) goes backward. e.key reports
+    // the literal char so we match both shifted and unshifted forms.
+    if (key === '`' || key === '~') {
+      e.preventDefault();
+      if (e.shiftKey) this.partyTargetPrev?.();
+      else            this.partyTargetNext?.();
       return;
     }
 
@@ -260,81 +309,132 @@ export class WASDController {
       return;
     }
 
+    // Ctrl+F — toggle focus on the current main target (sticky sub-target).
+    // App layer validates that the target is a friendly non-self entity;
+    // this keybind is just a dispatcher.
+    if (e.ctrlKey && key === 'f') {
+      e.preventDefault();
+      this.toggleFocusOnTarget?.();
+      return;
+    }
+
+    // Spacebar — tap 1 fires /jump immediately; tap 2 inside the window
+    // adds a /retreat on top (leap dash). Repeat suppressed so holding
+    // space doesn't spam.
+    if (key === ' ' && !e.repeat) {
+      e.preventDefault();
+      if (this._spaceTapTimer !== null) {
+        // Within window — fire dash. Jump arc already in flight; the dash
+        // position update lays on top so the mesh pops up + slides over.
+        clearTimeout(this._spaceTapTimer);
+        this._spaceTapTimer = null;
+        this.socket.sendCommand(`/retreat ${this._currentDirectionFromHeld()}`);
+      } else {
+        // First tap: kick off client-predicted jump arc with captured
+        // velocity (matches the server's jump-momentum math), then send
+        // /jump. PlayerState.heading is the live movement direction;
+        // movementSpeedMPS is 0 when idle, run-speed when WASDing.
+        const speed = this.player.movementSpeedMPS;
+        const headingRad = this.player.heading * (Math.PI / 180);
+        const velX = speed > 0 ? Math.sin(headingRad) * speed : 0;
+        const velZ = speed > 0 ? Math.cos(headingRad) * speed : 0;
+        this._playerEntity?.playJump(velX, velZ);
+        this.socket.sendCommand('/jump');
+        this._spaceTapTimer = setTimeout(() => {
+          this._spaceTapTimer = null;
+        }, WASDController.SPACE_DOUBLE_TAP_MS);
+      }
+      return;
+    }
+
     // H — respawn when dead
-    if (e.key.toLowerCase() === 'h' && !this.player.isAlive) {
+    if (key === 'h' && !this.player.isAlive) {
       this.socket.sendRespawn();
       return;
     }
 
     // I — toggle inventory
-    if (e.key.toLowerCase() === 'i') {
+    if (key === 'i') {
       this.inventoryToggle?.();
       return;
     }
 
     // K — toggle ability tree
-    if (e.key.toLowerCase() === 'k') {
+    if (key === 'k') {
       this.abilityToggle?.();
       return;
     }
 
     // C — toggle character sheet
-    if (e.key.toLowerCase() === 'c') {
+    if (key === 'c') {
       this.characterSheetToggle?.();
       return;
     }
 
     // P — toggle party window
-    if (e.key.toLowerCase() === 'p') {
+    if (key === 'p') {
       this.partyToggle?.();
       return;
     }
 
     // L — toggle target lock-on
-    if (e.key.toLowerCase() === 'l') {
+    if (key === 'l') {
       this.player.toggleTargetLock();
       return;
     }
 
-    // F — set focus target (current target → focus)
-    if (e.key.toLowerCase() === 'f') {
-      this.player.focusCurrentTarget();
+    // F — proximity interact with the nearest interactable; falls back to
+    // "promote current target → focus target" if nothing is in reach.
+    // Range: 5 m. Skips the player themselves.
+    if (key === 'f') {
+      const nearest = this._findNearestInteractable();
+      if (nearest) {
+        this.socket.sendInteract(nearest.id, 'use');
+      } else {
+        this.player.focusCurrentTarget();
+      }
       return;
     }
 
     // G — toggle guild panel
-    if (e.key.toLowerCase() === 'g') {
+    if (key === 'g') {
       this.guildToggle?.();
       return;
     }
 
     // N — toggle companion panel
-    if (e.key.toLowerCase() === 'n') {
+    if (key === 'n') {
       this.companionToggle?.();
       return;
     }
 
     // B — toggle build panel (village owner only — checked in app.ts callback)
-    if (e.key.toLowerCase() === 'b') {
+    if (key === 'b') {
       this.buildToggle?.();
       return;
     }
 
     // Ctrl+M — toggle market panel
-    if (e.ctrlKey && e.key.toLowerCase() === 'm') {
+    if (e.ctrlKey && key === 'm') {
       e.preventDefault();
       this.marketToggle?.();
       return;
     }
 
     // M — toggle world map (plain M without Ctrl)
-    if (e.key.toLowerCase() === 'm' && !e.ctrlKey) {
+    if (key === 'm' && !e.ctrlKey) {
       this.worldMapToggle?.();
       return;
     }
 
+    // R — travel routes panel
+    if (key === 'r' && !e.ctrlKey && !e.shiftKey) {
+      this.travelToggle?.();
+      return;
+    }
+
     // O — toggle settings window
-    if (e.key.toLowerCase() === 'o') {
+    if (key === 'o') {
       this.settingsToggle?.();
       return;
     }
@@ -350,7 +450,7 @@ export class WASDController {
   };
 
   private _onKeyUp = (e: KeyboardEvent): void => {
-    this.held.delete(e.key.toLowerCase());
+    if (e.key) this.held.delete(e.key.toLowerCase());
   };
 
   private _isTyping(target: EventTarget | null): boolean {
@@ -361,5 +461,41 @@ export class WASDController {
       el instanceof HTMLTextAreaElement ||
       el.isContentEditable
     );
+  }
+
+  /** Map currently-held WASD to a /retreat direction. Priority W > S > A > D
+   *  for diagonals; defaults to 'back' when nothing is held (the user spec). */
+  private _currentDirectionFromHeld(): string {
+    if (this.held.has('w')) return 'forward';
+    if (this.held.has('s')) return 'back';
+    if (this.held.has('a')) return 'left';
+    if (this.held.has('d')) return 'right';
+    return 'back';
+  }
+
+  /**
+   * Find the nearest interactable entity within F_INTERACT_RANGE of the
+   * player. Skips the player themselves and entities without a position.
+   * Used by the F-key proximity-interact path.
+   */
+  private _findNearestInteractable(): { id: string } | null {
+    const px = this.player.position.x;
+    const pz = this.player.position.z;
+    let best: { id: string } | null = null;
+    let bestDistSq = Infinity;
+    for (const e of this.entities.getAll()) {
+      if (!e.interactive) continue;
+      if (e.id === this.player.id) continue;
+      if (!e.position) continue;
+      const dx = e.position.x - px;
+      const dz = e.position.z - pz;
+      const distSq = dx * dx + dz * dz;
+      if (distSq > F_INTERACT_RANGE_SQ) continue;
+      if (distSq < bestDistSq) {
+        best = { id: e.id };
+        bestDistSq = distSq;
+      }
+    }
+    return best;
   }
 }

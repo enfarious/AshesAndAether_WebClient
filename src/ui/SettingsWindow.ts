@@ -40,6 +40,7 @@ const KEY_YAW_SENS     = 'aa_camera_yaw_sens';
 const KEY_PITCH_SENS   = 'aa_camera_pitch_sens';
 const KEY_MASTER_VOL   = 'aa_master_volume';
 const KEY_SFX_VOL      = 'aa_sfx_volume';
+const KEY_TREE_RANGE   = 'aa_tree_visible_range';
 
 // ── Defaults ────────────────────────────────────────────────────────────────
 
@@ -52,6 +53,7 @@ const DEF_YAW_SENS     = 0.005;
 const DEF_PITCH_SENS   = 0.15;
 const DEF_MASTER_VOL   = 100;
 const DEF_SFX_VOL      = 100;
+const DEF_TREE_RANGE   = 1000;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -182,6 +184,9 @@ export class SettingsWindow {
     ClientConfig.cameraYawSensitivity  = loadNum(KEY_YAW_SENS, DEF_YAW_SENS);
     ClientConfig.cameraPitchSensitivity = loadNum(KEY_PITCH_SENS, DEF_PITCH_SENS);
 
+    // Tree visibility
+    ClientConfig.treeVisibleRange = Math.min(8000, Math.max(100, loadNum(KEY_TREE_RANGE, DEF_TREE_RANGE)));
+
     // Audio (localStorage only, no runtime effect yet)
   }
 
@@ -294,6 +299,18 @@ export class SettingsWindow {
         saveNum(KEY_DRAW_DIST, v);
         ClientConfig.drawDistance = v;
         this.callbacks.onDrawDistanceChange(v);
+      },
+    }));
+
+    // Tree visibility — plants beyond this distance are culled each frame.
+    page.appendChild(this._buildSlider({
+      label: 'Tree Visibility',
+      min: 100, max: 8000, step: 100,
+      initial: loadNum(KEY_TREE_RANGE, DEF_TREE_RANGE),
+      format: (v) => `${v >= 1000 ? (v / 1000).toFixed(1) + 'km' : v + 'm'}`,
+      onChange: (v) => {
+        saveNum(KEY_TREE_RANGE, v);
+        ClientConfig.treeVisibleRange = v;
       },
     }));
 

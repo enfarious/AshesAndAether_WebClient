@@ -293,13 +293,20 @@ export class WaterRenderer {
     }
     geo.attributes['position']!.needsUpdate = true;
     geo.computeVertexNormals();
+    // ShapeGeometry pre-computes its bounding sphere from 2D XY positions
+    // (worldX mapped to X, worldZ mapped to Y, all Z=0).  After remapping
+    // vertices to actual world XYZ, the cached sphere is stale and sits at
+    // roughly Y=worldZ instead of Y=waterY — causing incorrect frustum culling.
+    geo.computeBoundingBox();
+    geo.computeBoundingSphere();
 
     this._addMesh(geo, 'water-polygon');
   }
 
   /**
-   * Extrude an open linestring (river, stream) into a flat ribbon with
-   * miter-join normals at each vertex.
+   * Extrude an open linestring (river, stream) into a ribbon with
+   * miter-join normals at each vertex. Each cross-section follows
+   * the terrain so the ribbon flows downhill correctly.
    */
   private _buildRibbon(
     pts: Array<{ x: number; z: number }>,
@@ -309,7 +316,6 @@ export class WaterRenderer {
 
     const type = tags?.waterway ?? 'stream';
     const halfW = HALF_WIDTH[type] ?? DEFAULT_HALF_WIDTH;
-    const waterY = this._computeWaterLevel(pts);
 
     const vertCount = pts.length * 2;
     const positions = new Float32Array(vertCount * 3);
@@ -320,6 +326,8 @@ export class WaterRenderer {
 
     for (let i = 0; i < pts.length; i++) {
       const curr = pts[i]!;
+      // Per-vertex terrain height so the ribbon flows downhill naturally.
+      const waterY = (this._heightmap?.getElevation(curr.x, curr.z) ?? 0) + 0.15;
 
       // Tangent direction (averaged at interior points for miter)
       let tx: number, tz: number;

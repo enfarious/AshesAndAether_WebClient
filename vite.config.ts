@@ -87,20 +87,21 @@ export default defineConfig({
   },
   clearScreen: false,
   server: {
+    host: true,           // 0.0.0.0 — accept connections from LAN
     port: 5173,
     strictPort: true,
     proxy: {
       '/socket.io': {
-        target: 'http://localhost:3100',
+        target: 'http://localhost:5000',
         ws: true,
         changeOrigin: true,
       },
       '/world': {
-        target: 'http://localhost:3100',
+        target: 'http://localhost:5000',
         changeOrigin: true,
       },
       '/api': {
-        target: 'http://localhost:3100',
+        target: 'http://localhost:5000',
         changeOrigin: true,
       },
     },

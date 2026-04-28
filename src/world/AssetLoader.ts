@@ -28,6 +28,94 @@ export interface ZoneAssets {
   origin?:    { lat: number; lon: number } | undefined;
 }
 
+// ── Road geometry thickening ──────────────────────────────────────────────────
+
+const ROAD_THICKNESS_M = 0.2;
+
+/**
+ * Extrudes each mesh in `scene` downward by `thickness` (in GLB local units),
+ * turning each flat road surface into a 3D slab with top face, bottom face, and
+ * side walls.  Called once at load time for road GLBs so hills don't clip the road
+ * surface into invisibility.
+ */
+function thickenRoadScene(scene: THREE.Group, unitScale: number): void {
+  const t = ROAD_THICKNESS_M / (unitScale > 0 ? unitScale : 1);
+  scene.traverse(node => {
+    if (node instanceof THREE.Mesh) _thickenMesh(node, t);
+  });
+}
+
+function _thickenMesh(mesh: THREE.Mesh, thickness: number): void {
+  const geo     = mesh.geometry;
+  const posAttr = geo.attributes['position'] as THREE.BufferAttribute | undefined;
+  if (!posAttr) return;
+  const nVerts = posAttr.count;
+
+  // Resolve index buffer (handle non-indexed geometry)
+  let idxSrc: ArrayLike<number>;
+  if (geo.index) {
+    idxSrc = geo.index.array;
+  } else {
+    const tmp = new Uint32Array(nVerts);
+    for (let i = 0; i < nVerts; i++) tmp[i] = i;
+    idxSrc = tmp;
+  }
+  const nTris = Math.floor(idxSrc.length / 3);
+
+  // Find boundary edges (those belonging to exactly one triangle — the perimeter).
+  const edgeCount = new Map<string, number>();
+  const edgeVerts = new Map<string, [number, number]>();
+  for (let t2 = 0; t2 < nTris; t2++) {
+    const a = idxSrc[t2 * 3]!;
+    const b = idxSrc[t2 * 3 + 1]!;
+    const c = idxSrc[t2 * 3 + 2]!;
+    for (const [i, j] of [[a, b], [b, c], [c, a]] as [number, number][]) {
+      const key = i < j ? `${i},${j}` : `${j},${i}`;
+      edgeCount.set(key, (edgeCount.get(key) ?? 0) + 1);
+      if (!edgeVerts.has(key)) edgeVerts.set(key, [i, j]);
+    }
+  }
+  const boundary: [number, number][] = [];
+  for (const [key, cnt] of edgeCount) {
+    if (cnt === 1) boundary.push(edgeVerts.get(key)!);
+  }
+
+  // Build new position buffer: top vertices (unchanged) + bottom vertices (Y -= thickness).
+  const newPos = new Float32Array(nVerts * 2 * 3);
+  for (let i = 0; i < nVerts; i++) {
+    newPos[i * 3]              = posAttr.getX(i);
+    newPos[i * 3 + 1]          = posAttr.getY(i);
+    newPos[i * 3 + 2]          = posAttr.getZ(i);
+    newPos[(nVerts + i) * 3]     = posAttr.getX(i);
+    newPos[(nVerts + i) * 3 + 1] = posAttr.getY(i) - thickness;
+    newPos[(nVerts + i) * 3 + 2] = posAttr.getZ(i);
+  }
+
+  // Build index buffer: top (original winding) + bottom (flipped) + side quads.
+  const newIdxArr = new Uint32Array(nTris * 6 + boundary.length * 6);
+  let p = 0;
+
+  for (let i = 0; i < nTris * 3; i++) newIdxArr[p++] = idxSrc[i]!;
+
+  for (let t2 = 0; t2 < nTris; t2++) {
+    newIdxArr[p++] = nVerts + idxSrc[t2 * 3]!;
+    newIdxArr[p++] = nVerts + idxSrc[t2 * 3 + 2]!;  // flipped winding → normals face down
+    newIdxArr[p++] = nVerts + idxSrc[t2 * 3 + 1]!;
+  }
+
+  for (const [v0, v1] of boundary) {
+    newIdxArr[p++] = v0;           newIdxArr[p++] = v1;           newIdxArr[p++] = nVerts + v1;
+    newIdxArr[p++] = v0;           newIdxArr[p++] = nVerts + v1;  newIdxArr[p++] = nVerts + v0;
+  }
+
+  const newGeo = new THREE.BufferGeometry();
+  newGeo.setAttribute('position', new THREE.BufferAttribute(newPos, 3));
+  newGeo.setIndex(new THREE.BufferAttribute(newIdxArr, 1));
+  newGeo.computeVertexNormals();
+  geo.dispose();
+  mesh.geometry = newGeo;
+}
+
 // ── Semantic material palette ─────────────────────────────────────────────────
 
 const MAT: Record<string, THREE.MeshStandardMaterial> = {
@@ -84,7 +172,16 @@ export class AssetLoader {
   async loadZone(zoneId: string): Promise<ZoneAssets> {
     this._status(`Fetching manifest for ${zoneId}…`);
     const manifest = await this._fetchManifest(zoneId);
-    if (!manifest) throw new Error(`No manifest for "${zoneId}"`);
+    if (!manifest) {
+      // Zone not yet built — render a blank world so the player isn't stuck in a void.
+      console.warn(`[AssetLoader] No manifest for "${zoneId}" — rendering empty zone`);
+      const root = new THREE.Group();
+      root.name  = 'WorldRoot';
+      const flat = this._buildFlatTerrain();
+      flat.name  = 'flat_terrain_fallback';
+      root.add(flat);
+      return { worldRoot: root, heightmap: null };
+    }
 
     const unitScale  = resolveUnitScale(manifest.origin?.units);
     const originLat  = manifest.origin?.lat ?? 0;
@@ -125,6 +222,29 @@ export class AssetLoader {
       }
       loaded++;
       this._progress(total > 0 ? loaded / total : 1);
+    }
+
+    // ── OSM procedural assets (buildings_osm, roads_osm) ──────────────────────
+    const osmAssets = allAssets.filter(a => a.type === 'buildings_osm' || a.type === 'roads_osm');
+    for (const asset of osmAssets) {
+      this._status(`Building ${asset.type === 'buildings_osm' ? 'buildings' : 'roads'}…`);
+      try {
+        const mesh = asset.type === 'buildings_osm'
+          ? await this._buildOsmBuildings(asset, originLat, originLon)
+          : await this._buildOsmRoads(asset, originLat, originLon);
+        if (mesh) { mesh.name = asset.id; root.add(mesh); }
+      } catch (err) {
+        console.warn(`[AssetLoader] OSM asset ${asset.id} failed:`, err);
+      }
+    }
+
+    // Flat terrain fallback — added only when no GLB terrain and no DEM heightmap
+    const hasTerrainMesh = glbAssets.some(a => (a.type ?? '').includes('terrain'));
+    if (!heightmap && !hasTerrainMesh) {
+      const flat = this._buildFlatTerrain();
+      flat.name  = 'flat_terrain_fallback';
+      root.add(flat);
+      console.log('[AssetLoader] Added flat terrain fallback (no DEM)');
     }
 
     let meshCount = 0, vertCount = 0;
@@ -209,6 +329,7 @@ export class AssetLoader {
     let vertCount = 0;
 
     const isTerrain = mat === MAT['terrain'];
+    const isRoad    = mat === MAT['roads'];
     gltf.scene.traverse(child => {
       if (!(child instanceof THREE.Mesh)) return;
       meshCount++;
@@ -234,6 +355,9 @@ export class AssetLoader {
       }
     });
 
+    // Extrude road surfaces into 0.2 m slabs so they stay visible on slopes.
+    if (isRoad) thickenRoadScene(gltf.scene, unitScale);
+
     // Apply scale: zone unitScale × optional per-asset scale from manifest.
     const effectiveScale = unitScale * (asset.scale ?? 1);
     gltf.scene.scale.setScalar(effectiveScale);
@@ -256,6 +380,168 @@ export class AssetLoader {
     }
 
     return gltf.scene;
+  }
+
+  // ── OSM procedural mesh builders ──────────────────────────────────────────
+
+  private async _buildOsmBuildings(
+    asset: ManifestAsset,
+    originLat: number,
+    originLon: number,
+  ): Promise<THREE.Mesh | null> {
+    const res = await fetch(`${ClientConfig.serverUrl}${asset.path}`);
+    if (!res.ok) return null;
+    const features = await res.json() as OsmFeature[];
+
+    const DEG   = Math.PI / 180;
+    const R_lat = DEG * 6_378_137;
+    const R_lon = R_lat * Math.cos(originLat * DEG);
+
+    const positions: number[] = [];
+    const normals:   number[] = [];
+    const idxArr:    number[] = [];
+
+    for (const feat of features) {
+      const raw = feat.nodes ?? [];
+      if (raw.length < 3) continue;
+
+      // World XZ coordinates
+      let pts: [number, number][] = raw.map(n => [
+        (n.lon - originLon) * R_lon,
+        -(n.lat - originLat) * R_lat,
+      ]);
+
+      // Drop duplicate closing node
+      if (pts.length > 1) {
+        const [fx, fz] = pts[0]!;
+        const [lx, lz] = pts[pts.length - 1]!;
+        if (Math.abs(fx - lx) < 0.01 && Math.abs(fz - lz) < 0.01) pts.pop();
+      }
+      if (pts.length < 3) continue;
+
+      const h    = osmBuildingHeight(feat.tags);
+      const base = positions.length / 3;
+      const n    = pts.length;
+
+      // Interleaved: bottom (Y=0) + top (Y=h) for each footprint vertex
+      for (const [x, z] of pts) {
+        positions.push(x, 0, z);
+        normals.push(0, -1, 0);
+        positions.push(x, h, z);
+        normals.push(0,  1, 0);
+      }
+
+      // Side walls
+      for (let i = 0; i < n; i++) {
+        const j   = (i + 1) % n;
+        const b0  = base + i * 2;
+        const t0  = base + i * 2 + 1;
+        const b1  = base + j * 2;
+        const t1  = base + j * 2 + 1;
+        idxArr.push(b0, b1, t0, t0, b1, t1);
+      }
+
+      // Top cap — simple fan from first vertex
+      for (let i = 1; i < n - 1; i++) {
+        idxArr.push(
+          base + 1,           // top 0
+          base + i * 2 + 1,   // top i
+          base + (i + 1) * 2 + 1, // top i+1
+        );
+      }
+    }
+
+    if (positions.length === 0) return null;
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(positions), 3));
+    geo.setAttribute('normal',   new THREE.BufferAttribute(new Float32Array(normals),   3));
+    geo.setIndex(idxArr);
+    geo.computeVertexNormals();
+
+    const mat  = new THREE.MeshStandardMaterial({
+      color: 0xa09888, roughness: 0.80, metalness: 0.05,
+      side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.castShadow = mesh.receiveShadow = true;
+    console.log(`[AssetLoader] OSM buildings: ${features.length} footprints → ${positions.length / 3} verts`);
+    return mesh;
+  }
+
+  private async _buildOsmRoads(
+    asset: ManifestAsset,
+    originLat: number,
+    originLon: number,
+  ): Promise<THREE.Mesh | null> {
+    const res = await fetch(`${ClientConfig.serverUrl}${asset.path}`);
+    if (!res.ok) return null;
+    const features = await res.json() as OsmFeature[];
+
+    const DEG   = Math.PI / 180;
+    const R_lat = DEG * 6_378_137;
+    const R_lon = R_lat * Math.cos(originLat * DEG);
+
+    const positions: number[] = [];
+    const idxArr:    number[] = [];
+
+    for (const feat of features) {
+      const raw = feat.nodes ?? [];
+      if (raw.length < 2) continue;
+
+      const halfW = osmRoadWidth(feat.tags?.highway ?? '') / 2;
+      const pts   = raw.map(n => ({
+        x:  (n.lon - originLon) * R_lon,
+        z: -(n.lat - originLat) * R_lat,
+      }));
+
+      for (let i = 0; i < pts.length - 1; i++) {
+        const a  = pts[i]!;
+        const b  = pts[i + 1]!;
+        const dx = b.x - a.x;
+        const dz = b.z - a.z;
+        const len = Math.sqrt(dx * dx + dz * dz);
+        if (len < 0.01) continue;
+
+        // Perpendicular in XZ plane (right-hand rule, Z+ = south)
+        const px =  dz / len * halfW;
+        const pz = -dx / len * halfW;
+
+        const base = positions.length / 3;
+        // 0.05 m above ground to avoid z-fighting with flat terrain
+        positions.push(a.x + px, 0.05, a.z + pz);
+        positions.push(a.x - px, 0.05, a.z - pz);
+        positions.push(b.x + px, 0.05, b.z + pz);
+        positions.push(b.x - px, 0.05, b.z - pz);
+
+        idxArr.push(base, base + 2, base + 1, base + 1, base + 2, base + 3);
+      }
+    }
+
+    if (positions.length === 0) return null;
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(positions), 3));
+    geo.setIndex(idxArr);
+    geo.computeVertexNormals();
+
+    const mat  = new THREE.MeshStandardMaterial({
+      color: 0x252528, roughness: 0.85, metalness: 0.0,
+      side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.receiveShadow = true;
+    console.log(`[AssetLoader] OSM roads: ${features.length} ways → ${positions.length / 3} verts`);
+    return mesh;
+  }
+
+  private _buildFlatTerrain(): THREE.Mesh {
+    const geo = new THREE.PlaneGeometry(4000, 4000, 1, 1);
+    geo.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
+    const mat = new THREE.MeshStandardMaterial({ color: 0x6a9448, roughness: 0.95, metalness: 0.0 });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.receiveShadow = true;
+    return mesh;
   }
 
   // ── IndexedDB ──────────────────────────────────────────────────────────────
@@ -306,3 +592,34 @@ function resolveUnitScale(units?: string): number {
     default: return 1;
   }
 }
+
+// ── OSM helpers ───────────────────────────────────────────────────────────────
+
+function osmBuildingHeight(tags?: Record<string, string>): number {
+  if (!tags) return 5;
+  const h = parseFloat(tags['height'] ?? '');
+  if (Number.isFinite(h) && h > 0) return Math.min(h, 120);
+  const levels = parseInt(tags['building:levels'] ?? '', 10);
+  if (Number.isFinite(levels) && levels > 0) return Math.min(levels * 3.5, 120);
+  const type = tags['building'] ?? '';
+  if (type === 'church' || type === 'cathedral') return 15;
+  if (type === 'industrial' || type === 'warehouse') return 8;
+  return 5;
+}
+
+function osmRoadWidth(highway: string): number {
+  switch (highway) {
+    case 'motorway': case 'trunk':               return 12;
+    case 'primary':                               return 9;
+    case 'secondary':                             return 7;
+    case 'tertiary':                              return 6;
+    case 'residential': case 'unclassified':      return 5;
+    case 'service':                               return 4;
+    case 'footway': case 'path': case 'cycleway': return 2;
+    case 'track':                                 return 3;
+    default:                                      return 5;
+  }
+}
+
+interface OsmNode    { lat: number; lon: number; }
+interface OsmFeature { tags?: Record<string, string>; nodes?: OsmNode[]; }

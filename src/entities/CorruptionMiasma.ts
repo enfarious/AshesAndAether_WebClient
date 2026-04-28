@@ -27,8 +27,8 @@ interface AnchorData {
 
 /** Fallback anchors (Stephentown) if the API is unreachable. */
 const FALLBACK_ANCHORS: AnchorData[] = [
-  { worldX: 0, worldZ: 0, wardRadius: 500, wardStrength: -0.05 },           // Town Hall
-  { worldX: -125, worldZ: -70, wardRadius: 300, wardStrength: -0.03 },      // Library
+  { worldX: 0, worldZ: 0, wardRadius: 150, wardStrength: -0.05 },           // Town Hall
+  { worldX: -125, worldZ: -70, wardRadius: 50, wardStrength: -0.03 },       // Library
 ];
 
 // ── Tuning ───────────────────────────────────────────────────────────────────
@@ -59,30 +59,30 @@ const RISE_SPEED       = 0.1;
 const SIZE_MIN         = 3.0;
 const SIZE_MAX         = 7.0;
 
-/**
- * Max active particles at full corruption.
- * Kept moderate so high-corruption zones feel moody, not blinding.
- */
-const PARTICLES_AT_MAX = 80;
+/** Distance (metres) from a beacon at which corruption reaches 100%. */
+const CORRUPTION_FULL_DIST = 5000;
+
+/** Max active particles at full corruption. */
+const PARTICLES_AT_MAX = 120;
 
 /** Per-particle opacity at full corruption. */
-const OPACITY_AT_MAX   = 0.30;
+const OPACITY_AT_MAX   = 0.65;
 
 /** Fog density added at full corruption (scene baseline is ~0.00025). */
-const FOG_DENSITY_ADD  = 0.00025;
+const FOG_DENSITY_ADD  = 0.0012;
 
 /** Maximum fog color blend toward corruption tint (0–1). */
-const FOG_TINT_MAX     = 0.25;
+const FOG_TINT_MAX     = 0.85;
 
 // ── Colors ───────────────────────────────────────────────────────────────────
 
 /** Wisp color at low corruption (warm grey-green). */
 const COLOR_LOW  = new THREE.Color(0x889078);
-/** Wisp color at high corruption (sickly green). */
-const COLOR_HIGH = new THREE.Color(0x6a7840);
+/** Wisp color at high corruption (sickly green-black). */
+const COLOR_HIGH = new THREE.Color(0x1a2010);
 
-/** Fog tint target at max corruption. */
-const FOG_TINT   = new THREE.Color(0x202818);
+/** Fog tint target at max corruption — near black. */
+const FOG_TINT   = new THREE.Color(0x050805);
 
 // ── Particle state ───────────────────────────────────────────────────────────
 
@@ -113,6 +113,7 @@ export class CorruptionMiasma {
   /** Ward anchor positions in game-world coordinates. */
   private anchors: AnchorData[] = [];
   private anchorsLoaded = false;
+  private _fetchSeq = 0;
 
   constructor(
     private readonly scene: THREE.Scene,
@@ -158,18 +159,26 @@ export class CorruptionMiasma {
     this.baseFogColor   = fog ? fog.color.clone() : new THREE.Color(0x6080a0);
     this.baseFogDensity = fog ? fog.density : 0.00025;
 
-    // Fetch anchor data from server
-    this._fetchAnchors();
+    // Anchor data is loaded via loadForZone() once the zone is known
   }
 
   // ── Anchor fetch ───────────────────────────────────────────────────────────
 
-  private async _fetchAnchors(): Promise<void> {
+  /** Load anchors for the given zone. Safe to call on zone transitions. */
+  loadForZone(zoneId: string): void {
+    this.anchors = [];
+    this.anchorsLoaded = false;
+    this._intensity = 0;
+    void this._fetchAnchors(zoneId, ++this._fetchSeq);
+  }
+
+  private async _fetchAnchors(zoneId: string, seq: number): Promise<void> {
     try {
-      const res = await fetch('/api/map/anchors');
+      const res = await fetch(`/api/map/anchors?zoneId=${encodeURIComponent(zoneId)}`);
       if (res.ok) {
         const data = await res.json();
         const raw = data.anchors ?? [];
+        if (seq !== this._fetchSeq) return; // stale response from a previous zone
         this.anchors = raw.map((a: Record<string, number>) => ({
           worldX: a.worldX,
           worldZ: a.worldZ,
@@ -179,6 +188,7 @@ export class CorruptionMiasma {
       }
     } catch { /* fall through to fallback */ }
 
+    if (seq !== this._fetchSeq) return; // stale response from a previous zone
     if (this.anchors.length === 0) {
       this.anchors = FALLBACK_ANCHORS;
     }
@@ -190,41 +200,42 @@ export class CorruptionMiasma {
   /**
    * Compute visual corruption intensity (0–1) at a world position.
    *
-   * Uses distance ratio (dist / wardRadius) from the nearest anchor to
-   * drive the visual ramp.  This is intentionally decoupled from the
-   * corruption *rate* model so that wisps start appearing right at the
-   * ward boundary rather than 1000 m out:
+   * Each anchor projects a safe bubble of radius wardRadius (metres):
+   *   dist <= wardRadius        → fully clean (0)
+   *   wardRadius < dist < 5km  → smoothstep gradient toward full corruption
+   *   dist >= 5km              → full corruption (1) — lethal territory
    *
-   *   ratio <= 1.0  → inside ward: clean (0)
-   *   ratio  1–2    → fringe: first wisps appear
-   *   ratio  2–3    → wilds:  moderate, clearly corrupted
-   *   ratio  3+     → deep:   full miasma
+   * Ward radii by building type (set server-side, reflected in fallback):
+   *   Town Hall   150 m
+   *   Library      50 m
+   *   Post Office  25 m
    *
-   * Uses smoothstep for a natural onset (no hard pop-in).
-   * For a 500 m ward, first wisps at ~550 m, full intensity at ~2000 m.
+   * The best (lowest) intensity from any anchor wins, so overlapping wards
+   * extend their combined safe area naturally.
    */
   private _computeIntensity(wx: number, wz: number): number {
     if (!this.anchorsLoaded || this.anchors.length === 0) return 0;
 
-    // Find the best (smallest) distance ratio across all anchors.
-    // This means the closest/strongest ward wins at each point.
-    let bestRatio = Infinity;
+    let bestIntensity = 1;
     for (const a of this.anchors) {
       const dx = wx - a.worldX;
       const dz = wz - a.worldZ;
       const dist = Math.sqrt(dx * dx + dz * dz);
-      const ratio = dist / a.wardRadius;
-      if (ratio < bestRatio) bestRatio = ratio;
+
+      let local: number;
+      if (dist <= a.wardRadius) {
+        local = 0;
+      } else if (dist >= CORRUPTION_FULL_DIST) {
+        local = 1;
+      } else {
+        const t = (dist - a.wardRadius) / (CORRUPTION_FULL_DIST - a.wardRadius);
+        local = t * t * (3 - 2 * t); // smoothstep
+      }
+
+      if (local < bestIntensity) bestIntensity = local;
     }
 
-    // Inside any ward boundary → no corruption visuals.
-    if (bestRatio <= 1.0) return 0;
-
-    // Smoothstep ramp from ward edge (1.0) to deep wilderness (4.0).
-    // t goes from 0 at the boundary to 1 at 4x the ward radius.
-    // For a 500 m ward: first wisps at ~550 m, half at ~1250 m, full at ~2000 m.
-    const t = Math.min((bestRatio - 1.0) / 3.0, 1.0);
-    return t * t * (3 - 2 * t); // smoothstep: gradual onset, faster middle, soft cap
+    return bestIntensity;
   }
 
   // ── Frame update ───────────────────────────────────────────────────────────

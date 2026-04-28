@@ -4,15 +4,17 @@
  */
 
 const SERVER_STORAGE_KEY = 'aa_server_url';
-const DEFAULT_SERVER = 'http://localhost:3100';
+const DEFAULT_SERVER = 'http://localhost:5000';
 
 /**
  * Fallback servers to try when the primary is unreachable.
  * Tried in order after the primary exhausts its retries.
+ *
+ * Empty for now — the old `fusoya.servegame.com:3100` entry was stale and
+ * caused clients to silently connect to the wrong host when the LAN target
+ * was unreachable.  Add real production fallbacks here when they exist.
  */
-const FALLBACK_SERVERS = [
-  'http://fusoya.servegame.com:3100',
-];
+const FALLBACK_SERVERS: string[] = [];
 
 function _loadServerUrl(): string {
   // 1. localStorage (user chose a server in the login screen)
@@ -33,6 +35,7 @@ let _serverUrl = _loadServerUrl();
 let _drawDistance = 200;
 let _cameraYawSensitivity = 0.005;
 let _cameraPitchSensitivity = 0.15;
+let _treeVisibleRange = 1000;
 
 export const ClientConfig = {
   get serverUrl(): string { return _serverUrl; },
@@ -72,7 +75,9 @@ export const ClientConfig = {
   cameraElevation: 58,
 
   /** Min/max elevation (pitch) in degrees. */
-  cameraMinElevation: 15,
+  // Lower min so the camera can sit nearly on the horizon — lets you look up
+  // and see the sky, sun, moon, and storms.
+  cameraMinElevation: 3,
   cameraMaxElevation: 85,
 
   /** Initial camera distance from player. */
@@ -90,8 +95,10 @@ export const ClientConfig = {
   get cameraPitchSensitivity(): number { return _cameraPitchSensitivity; },
   set cameraPitchSensitivity(v: number) { _cameraPitchSensitivity = v; },
 
-  /** Movement interpolation: snap if server/client delta exceeds this (world units). */
-  movementSnapThreshold: 4,
+  /** Movement interpolation: snap if server/client delta exceeds this (world units).
+   *  Must cover the max per-tick displacement of the fastest entity at the slowest
+   *  expected tick rate (fleeing deer: 14 m/s × 0.5 s/tick = 7 m). */
+  movementSnapThreshold: 15,
 
   /** How much history to keep in the chat panel. */
   chatMaxLines: 200,
@@ -99,4 +106,8 @@ export const ClientConfig = {
   /** Draw distance for entities (metres). Adjustable via Settings. */
   get drawDistance(): number { return _drawDistance; },
   set drawDistance(v: number) { _drawDistance = v; },
+
+  /** Max distance (metres) at which plant entities (trees, shrubs) are rendered. */
+  get treeVisibleRange(): number { return _treeVisibleRange; },
+  set treeVisibleRange(v: number) { _treeVisibleRange = v; },
 };

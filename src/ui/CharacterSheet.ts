@@ -68,8 +68,17 @@ function formatStat(key: string, value: number): string {
   return String(Math.round(value));
 }
 
-function xpForLevel(level: number): number {
-  return Math.floor(1000 * Math.pow(level, 1.5));
+// XP curve — must match @ashes/core Progression.xpForNextLevel.
+// Banded linear, returns XP needed to advance from `currentLevel` to next.
+const LEVEL_CAP = 50;
+function xpForLevel(currentLevel: number): number {
+  if (currentLevel >= LEVEL_CAP) return 0;
+  const t = currentLevel;
+  if (t === 1) return 300;
+  if (t <= 10) return 300 + (t - 1) * 100;
+  if (t <= 20) return 1500 + Math.round((t - 11) * 333.33);
+  if (t <= 40) return 4800 + Math.round((t - 21) * 126.32);
+  return 9600 + Math.round((t - 41) * 600);
 }
 
 // ── Component ───────────────────────────────────────────────────────────────
@@ -78,10 +87,16 @@ export class CharacterSheet {
   private root:    HTMLElement;
   private visible  = false;
   private cleanup: (() => void)[] = [];
+  private rangePoll: ReturnType<typeof setInterval> | null = null;
 
   // Dirty-check cache — only rebuild when stat-relevant data changes
   private _lastCoreKey    = '';
   private _lastDerivedKey = '';
+
+  /** Callback that returns whether the player is currently inside a civic
+   *  ward (beacon range). Polled while the sheet is visible to enable/disable
+   *  the respec button without a server round-trip. */
+  private inBeaconRange: () => boolean = () => true;
 
   constructor(
     private readonly uiRoot:  HTMLElement,
@@ -97,6 +112,14 @@ export class CharacterSheet {
     this.cleanup.push(unsub);
   }
 
+  /** Wire the beacon-range check from app.ts post-construction (the beacon
+   *  manager isn't available when the sheet is built). Safe to call again
+   *  on zone change. */
+  setBeaconRangeCheck(check: () => boolean): void {
+    this.inBeaconRange = check;
+    if (this.visible) this._refreshRespecButton();
+  }
+
   // ── Public API ─────────────────────────────────────────────────────────────
 
   get isVisible(): boolean { return this.visible; }
@@ -110,12 +133,17 @@ export class CharacterSheet {
     requestAnimationFrame(() => this.root.classList.add('cs-visible'));
     this.visible = true;
     this._refresh();
+    // 1 Hz beacon-range poll — covers the case where the player walks in/out
+    // of range while the sheet is open. Player-position updates don't fire
+    // PlayerState.onChange, so a poll is the simplest reliable option.
+    this.rangePoll = setInterval(() => this._refreshRespecButton(), 1000);
   }
 
   hide(): void {
     this.root.classList.remove('cs-visible');
     this.root.style.display = 'none';
     this.visible = false;
+    if (this.rangePoll) { clearInterval(this.rangePoll); this.rangePoll = null; }
   }
 
   dispose(): void {
@@ -298,6 +326,17 @@ export class CharacterSheet {
           min-width: 24px;
           text-align: right;
         }
+        .cs-core-bonus {
+          font-family: var(--font-mono, monospace);
+          font-size: 11px;
+          color: rgba(120, 200, 120, 0.85);
+          margin-left: 4px;
+          min-width: 24px;
+          text-align: right;
+        }
+        .cs-core-bonus-neg {
+          color: rgba(200, 100, 90, 0.85);
+        }
 
         /* Core stat allocation button */
         .cs-core-btn {
@@ -341,9 +380,17 @@ export class CharacterSheet {
           text-transform: uppercase;
           transition: color 0.12s, border-color 0.12s;
         }
-        .cs-respec-btn:hover {
+        .cs-respec-btn:hover:not(:disabled) {
           color: rgba(200, 98, 42, 0.9);
           border-color: rgba(200, 98, 42, 0.5);
+        }
+        .cs-respec-btn:disabled {
+          color: rgba(150, 120, 100, 0.35);
+          border-color: rgba(150, 120, 100, 0.18);
+          cursor: not-allowed;
+        }
+        .cs-respec-btn[title]:disabled:hover::after {
+          content: attr(title);
         }
 
         /* Derived stat rows */
@@ -364,6 +411,17 @@ export class CharacterSheet {
           color: rgba(212,201,184,0.85);
           min-width: 50px;
           text-align: right;
+        }
+        .cs-derived-bonus {
+          font-family: var(--font-mono, monospace);
+          font-size: 11px;
+          color: rgba(120, 200, 120, 0.85);
+          margin-left: 6px;
+          min-width: 40px;
+          text-align: right;
+        }
+        .cs-derived-bonus-neg {
+          color: rgba(200, 100, 90, 0.85);
         }
       </style>
 
@@ -402,8 +460,9 @@ export class CharacterSheet {
     el.querySelector('#cs-backdrop')?.addEventListener('click', () => this.hide());
     el.querySelector('#cs-close-btn')?.addEventListener('click', () => this.hide());
     el.querySelector('#cs-respec-stats')?.addEventListener('click', () => {
-      if (confirm('Reset all stats to base values? (1 hour cooldown)')) {
-        this.socket.sendRespecStats();
+      if (!this.inBeaconRange()) return;  // visually disabled, defensive guard
+      if (confirm('Reset all stats to base values? (Free at any civic ward.)')) {
+        this.socket.sendCommand('/respec stats');
       }
     });
 
@@ -422,14 +481,17 @@ export class CharacterSheet {
     // XP
     const xpNeeded  = xpForLevel(p.level);
     const xpCurrent = p.experience;
-    const pct       = xpNeeded > 0 ? Math.min(100, (xpCurrent / xpNeeded) * 100) : 0;
+    const atCap     = p.level >= LEVEL_CAP;
+    const pct       = atCap ? 100 : (xpNeeded > 0 ? Math.min(100, (xpCurrent / xpNeeded) * 100) : 0);
     const fill = this.root.querySelector<HTMLElement>('#cs-xp-fill');
     if (fill) fill.style.width = `${pct.toFixed(1)}%`;
     this._setText('#cs-xp-label',
-      `${xpCurrent.toLocaleString()} / ${xpNeeded.toLocaleString()} XP`);
+      atCap
+        ? `Level ${LEVEL_CAP} (cap reached)`
+        : `${xpCurrent.toLocaleString()} / ${xpNeeded.toLocaleString()} XP`);
 
-    // Core stats — only rebuild when stat values or statPoints change
-    const coreKey = JSON.stringify(p.coreStats) + '|' + p.statPoints;
+    // Core stats — only rebuild when stat values, bonuses, or statPoints change
+    const coreKey = JSON.stringify(p.coreStats) + '|' + JSON.stringify(p.coreStatsBonuses) + '|' + p.statPoints;
     if (coreKey !== this._lastCoreKey) {
       this._lastCoreKey = coreKey;
       this._renderCoreStats();
@@ -443,18 +505,26 @@ export class CharacterSheet {
       spEl.classList.toggle('cs-has-points', sp > 0);
     }
 
-    // Respec button — always visible (server enforces cooldown)
+    // Respec button — always visible; enabled only when inside a civic ward.
+    this._refreshRespecButton();
     const respecEl = this.root.querySelector<HTMLElement>('#cs-respec-stats');
-    if (respecEl) {
-      respecEl.style.display = '';
-    }
+    if (respecEl) respecEl.style.display = '';
 
-    // Derived stats — only rebuild when derivedStats change
-    const derivedKey = JSON.stringify(p.derivedStats);
+    // Derived stats — rebuild when derived OR derived bonuses change
+    const derivedKey = JSON.stringify(p.derivedStats) + '|' + JSON.stringify(p.derivedStatsBonuses);
     if (derivedKey !== this._lastDerivedKey) {
       this._lastDerivedKey = derivedKey;
       this._renderDerivedStats();
     }
+  }
+
+  private _refreshRespecButton(): void {
+    const btn = this.root.querySelector<HTMLButtonElement>('#cs-respec-stats');
+    if (!btn) return;
+    const enabled = this.inBeaconRange();
+    btn.disabled = !enabled;
+    btn.title = enabled ? 'Reset all stats — free at any civic ward.'
+                        : 'Out of range — stand within a civic ward (townhall, hospital, etc.) to respec.';
   }
 
   private _renderCoreStats(): void {
@@ -462,7 +532,8 @@ export class CharacterSheet {
     if (!grid) return;
     grid.innerHTML = '';
 
-    const core = this.player.coreStats;
+    const core    = this.player.coreStats;
+    const bonuses = this.player.coreStatsBonuses;
     const hasPoints = this.player.statPoints > 0;
     const order: (keyof typeof CORE_STAT_ABBR)[] = [
       'strength', 'vitality', 'dexterity', 'agility', 'intelligence', 'wisdom',
@@ -472,11 +543,18 @@ export class CharacterSheet {
       const row = document.createElement('div');
       row.className = 'cs-core-row';
       const value = core ? (core as unknown as Record<string, number>)[key] ?? 0 : 0;
+      const bonus = bonuses ? (bonuses as unknown as Record<string, number>)[key] ?? 0 : 0;
+      const bonusHtml = bonus > 0
+        ? `<span class="cs-core-bonus" title="From passive abilities">+${bonus}</span>`
+        : bonus < 0
+          ? `<span class="cs-core-bonus cs-core-bonus-neg">${bonus}</span>`
+          : '';
       row.innerHTML = `
         <span class="cs-core-label">
           <span class="cs-core-abbr">${CORE_STAT_ABBR[key]}</span>${key}
         </span>
         <span class="cs-core-value">${value}</span>
+        ${bonusHtml}
       `;
 
       if (hasPoints) {
@@ -508,13 +586,19 @@ export class CharacterSheet {
       container.appendChild(label);
 
       // Stat rows
+      const bonuses = this.player.derivedStatsBonuses;
       for (const key of section.keys) {
         const row = document.createElement('div');
         row.className = 'cs-derived-row';
         const value = derived ? derived[key] ?? 0 : 0;
+        const bonus = bonuses ? (bonuses as Record<string, number>)[key] ?? 0 : 0;
+        const bonusHtml = bonus !== 0
+          ? `<span class="cs-derived-bonus${bonus < 0 ? ' cs-derived-bonus-neg' : ''}" title="From passive abilities">${bonus > 0 ? '+' : ''}${formatStat(key, bonus)}</span>`
+          : '';
         row.innerHTML = `
           <span class="cs-derived-label">${STAT_LABELS[key] ?? key}</span>
           <span class="cs-derived-value">${formatStat(key, value)}</span>
+          ${bonusHtml}
         `;
         container.appendChild(row);
       }

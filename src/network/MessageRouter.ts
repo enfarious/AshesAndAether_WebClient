@@ -3,6 +3,7 @@ import type { SessionState } from '@/state/SessionState';
 import type { PlayerState } from '@/state/PlayerState';
 import type { EntityRegistry } from '@/state/EntityRegistry';
 import type { WorldState } from '@/state/WorldState';
+import type { Entity } from './Protocol';
 import type {
   HandshakeAckPayload,
   AuthSuccessPayload,
@@ -14,6 +15,9 @@ import type {
   WorldEntryPayload,
   StateUpdatePayload,
   EventPayload,
+  CombatHitData,
+  CombatOutcome,
+  CombatErrorPayload,
   CommunicationPayload,
   ProximityRosterPayload,
   ProximityRosterDeltaPayload,
@@ -43,6 +47,7 @@ import type {
   GuildInvitePayload,
   GuildChatPayload,
   GuildFoundingNarrativePayload,
+  SystemToastPayload,
   BeaconAlertPayload,
   LibraryAssaultPayload,
   CompanionConfigPayload,
@@ -55,6 +60,7 @@ import type {
   VaultRoomClearedPayload,
   VaultCompletePayload,
   VaultFailedPayload,
+  ExperienceGainedPayload,
 } from './Protocol';
 
 /**
@@ -78,14 +84,25 @@ export class MessageRouter {
   private editorOpenListeners      = new Set<(p: EditorOpenPayload) => void>();
   private editorResultListeners    = new Set<(p: EditorResultPayload) => void>();
   private guildNarrativeListeners  = new Set<(p: GuildFoundingNarrativePayload) => void>();
+  private systemToastListeners     = new Set<(p: SystemToastPayload) => void>();
   private beaconAlertListeners     = new Set<(p: BeaconAlertPayload) => void>();
   private libraryAssaultListeners  = new Set<(p: LibraryAssaultPayload) => void>();
   private companionConfigListeners  = new Set<(p: CompanionConfigPayload) => void>();
   private companionLoadoutListeners = new Set<(p: CompanionLoadoutPayload) => void>();
   private companionCombatTriggerListeners = new Set<(p: unknown) => void>();
   private companionSocialTriggerListeners = new Set<(p: unknown) => void>();
+  private combatOutcomeListeners    = new Set<(p: CombatHitData) => void>();
+  private combatErrorListeners      = new Set<(p: CombatErrorPayload) => void>();
   private villageCatalogListeners   = new Set<(p: VillageCatalogPayload) => void>();
+  private playerJumpListeners        = new Set<(entityId: string) => void>();
   private vaultGateOpenedListeners  = new Set<(p: VaultGateOpenedPayload) => void>();
+  private vaultCompleteListeners    = new Set<(p: VaultCompletePayload) => void>();
+  private vaultRoomEnterListeners   = new Set<(p: VaultRoomEnterPayload) => void>();
+  private vaultRoomClearedListeners = new Set<(p: VaultRoomClearedPayload) => void>();
+  private experienceGainedListeners = new Set<(p: ExperienceGainedPayload) => void>();
+  private worldEntryListeners       = new Set<() => void>();
+  private firstPlantListeners       = new Set<() => void>();
+  private _firstPlantFired          = false;
 
   constructor(
     private readonly socket:   SocketClient,
@@ -115,6 +132,15 @@ export class MessageRouter {
     this.abilityUpdateListeners.add(fn);
     return () => this.abilityUpdateListeners.delete(fn);
   }
+
+  /** Subscribe to experience_gained events (player or companion). */
+  onExperienceGained(fn: (p: ExperienceGainedPayload) => void): () => void {
+    this.experienceGainedListeners.add(fn);
+    return () => this.experienceGainedListeners.delete(fn);
+  }
+
+  /** Last experience_gained breakdown received for the player — used by /xpinfo. */
+  lastPlayerXpBreakdown: ExperienceGainedPayload | null = null;
 
   onRegisterResult(fn: (p: RegisterResultPayload) => void): () => void {
     this.registerResultListeners.add(fn);
@@ -161,6 +187,21 @@ export class MessageRouter {
     return () => this.guildNarrativeListeners.delete(fn);
   }
 
+  onWorldEntry(fn: () => void): () => void {
+    this.worldEntryListeners.add(fn);
+    return () => this.worldEntryListeners.delete(fn);
+  }
+
+  onFirstPlant(fn: () => void): () => void {
+    this.firstPlantListeners.add(fn);
+    return () => this.firstPlantListeners.delete(fn);
+  }
+
+  onSystemToast(fn: (p: SystemToastPayload) => void): () => void {
+    this.systemToastListeners.add(fn);
+    return () => this.systemToastListeners.delete(fn);
+  }
+
   onBeaconAlert(fn: (p: BeaconAlertPayload) => void): () => void {
     this.beaconAlertListeners.add(fn);
     return () => this.beaconAlertListeners.delete(fn);
@@ -191,14 +232,52 @@ export class MessageRouter {
     return () => this.companionSocialTriggerListeners.delete(fn);
   }
 
+  /**
+   * Fires for every combat_hit / combat_miss event the client receives.
+   * Subscribers filter by attackerId (e.g. self for action-bar flash, companion for HUD).
+   */
+  onCombatOutcome(fn: (p: CombatHitData) => void): () => void {
+    this.combatOutcomeListeners.add(fn);
+    return () => this.combatOutcomeListeners.delete(fn);
+  }
+
+  /** Fires when the server rejects the player's cast (OOM, range, on-CD, silenced, etc.). */
+  onCombatError(fn: (p: CombatErrorPayload) => void): () => void {
+    this.combatErrorListeners.add(fn);
+    return () => this.combatErrorListeners.delete(fn);
+  }
+
   onVillageCatalog(fn: (p: VillageCatalogPayload) => void): () => void {
     this.villageCatalogListeners.add(fn);
     return () => this.villageCatalogListeners.delete(fn);
   }
 
+  /** Fires for any `player_jump` event broadcast by the zone. Receives the
+   *  jumping entity's id so consumers can play the visual on the right
+   *  PlayerEntity / RemoteEntity. */
+  onPlayerJump(fn: (entityId: string) => void): () => void {
+    this.playerJumpListeners.add(fn);
+    return () => this.playerJumpListeners.delete(fn);
+  }
+
   onVaultGateOpened(fn: (p: VaultGateOpenedPayload) => void): () => void {
     this.vaultGateOpenedListeners.add(fn);
     return () => this.vaultGateOpenedListeners.delete(fn);
+  }
+
+  onVaultComplete(fn: (p: VaultCompletePayload) => void): () => void {
+    this.vaultCompleteListeners.add(fn);
+    return () => this.vaultCompleteListeners.delete(fn);
+  }
+
+  onVaultRoomEnter(fn: (p: VaultRoomEnterPayload) => void): () => void {
+    this.vaultRoomEnterListeners.add(fn);
+    return () => this.vaultRoomEnterListeners.delete(fn);
+  }
+
+  onVaultRoomCleared(fn: (p: VaultRoomClearedPayload) => void): () => void {
+    this.vaultRoomClearedListeners.add(fn);
+    return () => this.vaultRoomClearedListeners.delete(fn);
   }
 
   mount(): void {
@@ -252,6 +331,8 @@ export class MessageRouter {
       this.entities.applyWorldEntry(payload.entities, payload.character.id);
       // setPhase last — listeners will find world.zone and player.position ready
       this.session.setPhase('in_world');
+      this._firstPlantFired = false;
+      this.worldEntryListeners.forEach(fn => fn());
     });
 
     s.on('state_update', (p) => {
@@ -276,6 +357,10 @@ export class MessageRouter {
         if (payload.entities.added) {
           for (const e of payload.entities.added) {
             this.entities.add(e);
+          }
+          if (!this._firstPlantFired && payload.entities.added.some((e: Entity) => e.type === 'plant')) {
+            this._firstPlantFired = true;
+            this.firstPlantListeners.forEach(fn => fn());
           }
         }
         if (payload.entities.updated) {
@@ -309,6 +394,51 @@ export class MessageRouter {
     s.on('event', (p) => {
       const payload = p as EventPayload;
       this.world.onGameEvent(payload);
+
+      // ── Combat outcomes (hit/miss/heal with structured eventTypeData) ───
+      if (
+        payload.eventType === 'combat_hit'
+        || payload.eventType === 'combat_miss'
+        || payload.eventType === 'combat_heal'
+      ) {
+        // Server places structured fields under eventTypeData; older builds may flatten.
+        // Heals use `healerId` instead of `attackerId` — normalize.
+        const data = (payload.eventTypeData ?? payload) as Partial<CombatHitData> & { healerId?: string };
+        const actorId = data.attackerId ?? data.healerId;
+        if (actorId && data.targetId && data.abilityId) {
+          // combat_miss payloads don't carry an outcome field (server quirk).
+          // combat_heal always lands. Default outcome from eventType when missing.
+          const outcome: CombatOutcome = data.outcome
+            ?? (payload.eventType === 'combat_miss' ? 'miss' : 'hit');
+          const hit: CombatHitData = {
+            attackerId: actorId,
+            targetId:   data.targetId,
+            abilityId:  data.abilityId,
+            amount:     data.amount   ?? 0,
+            critical:   data.critical ?? false,
+            outcome,
+            ...(data.cooldownMs !== undefined ? { cooldownMs: data.cooldownMs } : {}),
+            ...(payload.eventType === 'combat_heal' ? { isHeal: true } : {}),
+          };
+          this.combatOutcomeListeners.forEach(fn => fn(hit));
+
+          // If the player's companion is the actor, surface it on the CompanionHUD.
+          const companionId = this.player.companion?.companionId;
+          if (companionId && hit.attackerId === companionId) {
+            const label = hit.abilityId === 'auto_attack' ? 'Strike' : hit.abilityId;
+            this.player.recordCompanionAction(label, payload.timestamp ?? Date.now());
+          }
+        }
+      }
+
+      // ── Movement effects (jump / dash) ───────────────────────────────
+      if (payload.eventType === 'player_jump') {
+        const entityId = (payload.eventTypeData as { entityId?: string } | undefined)?.entityId;
+        if (entityId) this.playerJumpListeners.forEach(fn => fn(entityId));
+      }
+      // player_dash currently has no client-side visual — entity position
+      // updates broadcast through state_update handle the snap. Listener
+      // hook left for follow-up effects (motion blur / dust kick).
 
       // ── Party events ────────────────────────────────────────────────────
       if (payload.eventType?.startsWith('party_')) {
@@ -346,6 +476,21 @@ export class MessageRouter {
         this.world.pushMessage('system',
           `${payload['fromName']} invites you to a party. /party accept or /party decline`);
       }
+      if (payload.eventType === 'party_promoted') {
+        const memberId   = payload['memberId']   as string;
+        const memberName = payload['memberName'] as string;
+        const youAreLeader = memberId === this.player.id;
+        this.world.pushMessage('system',
+          youAreLeader
+            ? `You are now the party leader.`
+            : `${memberName} is now the party leader.`);
+      }
+    });
+
+    // Server-driven target switch (e.g. auto-retarget after current target dies).
+    s.on('target_set', (p) => {
+      const payload = p as { targetId: string; targetName: string };
+      this.player.setTarget(payload.targetId, payload.targetName);
     });
 
     s.on('communication', (p) => {
@@ -420,6 +565,10 @@ export class MessageRouter {
       if (text) this.world.pushMessage('system', text);
     });
 
+    s.on('system_toast', (p) => {
+      this.systemToastListeners.forEach(fn => fn(p as SystemToastPayload));
+    });
+
     s.on('error', (p) => {
       const payload = p as ErrorPayload;
       console.error(`[Server] ${payload.severity}: ${payload.code} — ${payload.message}`);
@@ -429,6 +578,12 @@ export class MessageRouter {
         // Surface non-fatal server errors in the chat log so the player sees them.
         this.world.pushMessage('system', payload.message);
       }
+    });
+
+    s.on('combat_error', (p) => {
+      const payload = p as CombatErrorPayload;
+      this.world.pushMessage('system', payload.message);
+      this.combatErrorListeners.forEach(fn => fn(payload));
     });
 
     s.on('loot_session_start', (p) => {
@@ -457,6 +612,37 @@ export class MessageRouter {
       if (!payload.success && payload.error) {
         this.world.pushMessage('system', payload.error);
       }
+    });
+
+    s.on('experience_gained', (p) => {
+      const payload = p as ExperienceGainedPayload;
+
+      // Update PlayerState only for player events (companion XP belongs to companion state).
+      if (payload.entityType === 'player') {
+        this.player.applyStateUpdate({
+          experience:    payload.experience,
+          level:         payload.level,
+          ...(payload.gainedAp !== undefined && payload.gainedAp > 0
+            ? { abilityPoints: this.player.abilityPoints + payload.gainedAp }
+            : {}),
+          ...(payload.gainedSp !== undefined && payload.gainedSp > 0
+            ? { statPoints: this.player.statPoints + payload.gainedSp }
+            : {}),
+        });
+        this.player.setLastXpBreakdown({
+          mobName:        payload.mobName,
+          mobLevel:       payload.breakdown.mobLevel,
+          recipientLevel: payload.breakdown.recipientLevel,
+          partySize:      payload.breakdown.partySize,
+          baseXp:         payload.breakdown.baseXp,
+          conMult:        payload.breakdown.conMult,
+          partyMult:      payload.breakdown.partyMult,
+          awardedXp:      payload.gainedXp,
+        });
+        this.lastPlayerXpBreakdown = payload;
+      }
+
+      this.experienceGainedListeners.forEach(fn => fn(payload));
     });
 
     s.on('respec_result', (p) => {
@@ -589,38 +775,45 @@ export class MessageRouter {
       this.villageCatalogListeners.forEach(fn => fn(p as VillageCatalogPayload));
     });
 
-    // ── Vault events ──────────────────────────────────────────────────────
+    // ── Vault events (vault progression goes to the System tab) ──────────
     s.on('vault_room_enter', (p) => {
       const payload = p as VaultRoomEnterPayload;
-      this.world.pushMessage('event', payload.message);
+      this.world.pushMessage('system', payload.message);
+      this.vaultRoomEnterListeners.forEach(fn => fn(payload));
     });
 
     s.on('vault_mob_killed', (p) => {
       const payload = p as VaultMobKilledPayload;
       if (payload.remainingMobs > 0) {
-        this.world.pushMessage('event', `${payload.remainingMobs} enemies remaining.`);
+        this.world.pushMessage('system', `${payload.remainingMobs} enemies remaining.`);
       }
     });
 
     s.on('vault_room_cleared', (p) => {
       const payload = p as VaultRoomClearedPayload;
-      this.world.pushMessage('event', payload.message);
+      this.world.pushMessage('system', payload.message);
+      this.vaultRoomClearedListeners.forEach(fn => fn(payload));
     });
 
     s.on('vault_gate_opened', (p) => {
       const payload = p as VaultGateOpenedPayload;
-      this.world.pushMessage('event', payload.message);
+      this.world.pushMessage('system', payload.message);
       this.vaultGateOpenedListeners.forEach(fn => fn(payload));
     });
 
     s.on('vault_complete', (p) => {
       const payload = p as VaultCompletePayload;
-      this.world.pushMessage('event', payload.message ?? 'Vault complete!');
+      this.world.pushMessage('system', payload.message ?? 'Vault complete!');
+      // Exit portal is now spawned server-side as a real Zone entity (see
+      // VaultManager.completeVault → Zone.spawnVaultExitPortal). It arrives
+      // via state_update.entities.added on the same broadcast cycle, and is
+      // included in the Redis snapshot so reconnecting players also see it.
+      this.vaultCompleteListeners.forEach(fn => fn(payload));
     });
 
     s.on('vault_failed', (p) => {
       const payload = p as VaultFailedPayload;
-      this.world.pushMessage('event', payload.message);
+      this.world.pushMessage('system', payload.message);
     });
 
     // ── Logout (return to character select) ─────────────────────────────────

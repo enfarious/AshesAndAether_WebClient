@@ -9,9 +9,15 @@ import type { PlayerState } from '@/state/PlayerState';
  */
 export class ChatPanel {
   private root:     HTMLElement;
+  private tabBar:   HTMLElement;
   private log:      HTMLElement;
   private input:    HTMLInputElement;
   private cleanup:  (() => void)[] = [];
+
+  /** Active tab id; affects which CSS class is on the root. */
+  private _activeTab: 'all' | 'chat' | 'events' | 'system' = 'all';
+  /** Per-tab unread counts (cleared when that tab becomes active). */
+  private _unread: Record<'chat' | 'events' | 'system', number> = { chat: 0, events: 0, system: 0 };
   private registerCallback:      (() => void) | null = null;
   private quitCallback:          (() => void) | null = null;
   private shutdownCallback:      (() => void) | null = null;
@@ -28,9 +34,10 @@ export class ChatPanel {
     private readonly socket: SocketClient,
     private readonly player: PlayerState,
   ) {
-    this.root  = document.createElement('div');
-    this.log   = document.createElement('div');
-    this.input = document.createElement('input');
+    this.root   = document.createElement('div');
+    this.tabBar = document.createElement('div');
+    this.log    = document.createElement('div');
+    this.input  = document.createElement('input');
     this._build();
     uiRoot.appendChild(this.root);
 
@@ -83,6 +90,50 @@ export class ChatPanel {
         scrollbar-color: var(--ember) transparent;
       }
 
+      /* ── Tabs ─────────────────────────────────────────────────────────── */
+      #chat-tabs {
+        display: flex;
+        gap: 2px;
+      }
+      .chat-tab {
+        flex: 1;
+        padding: 4px 8px;
+        background: rgba(8, 6, 4, 0.78);
+        border: 1px solid var(--ui-border);
+        border-bottom: none;
+        color: rgba(212, 201, 184, 0.75);
+        font-family: var(--font-body);
+        font-size: 13px;
+        letter-spacing: 0.06em;
+        text-align: center;
+        cursor: pointer;
+        position: relative;
+        user-select: none;
+        transition: background 0.15s ease, color 0.15s ease;
+      }
+      .chat-tab:hover { background: rgba(20, 14, 6, 0.9); color: rgba(232, 218, 188, 0.95); }
+      .chat-tab.active {
+        background: var(--ui-bg);
+        color: #f4d488;
+        border-color: var(--ember);
+      }
+      .chat-tab .chat-tab-dot {
+        display: none;
+        width: 6px; height: 6px;
+        border-radius: 50%;
+        background: #d4a04a;
+        margin-left: 6px;
+        vertical-align: middle;
+      }
+      .chat-tab.has-unread .chat-tab-dot { display: inline-block; }
+
+      /* Tab filtering — root carries an active class; CSS hides lines that
+         don't belong. Single underlying log preserves chronological order. */
+      #chat-panel.tab-active-chat   .chat-line:not(.tab-chat)   { display: none; }
+      #chat-panel.tab-active-events .chat-line:not(.tab-events) { display: none; }
+      #chat-panel.tab-active-system .chat-line:not(.tab-system) { display: none; }
+      /* tab-active-all shows everything (no rule needed) */
+
       #chat-log::-webkit-scrollbar { width: 4px; }
       #chat-log::-webkit-scrollbar-thumb { background: var(--ember); border-radius: 2px; }
 
@@ -134,14 +185,80 @@ export class ChatPanel {
 
     this.log.id = 'chat-log';
 
+    // Tab bar
+    this.tabBar.id = 'chat-tabs';
+    const tabs: { id: 'all' | 'chat' | 'events' | 'system'; label: string }[] = [
+      { id: 'all',    label: 'All' },
+      { id: 'chat',   label: 'Chat' },
+      { id: 'events', label: 'Events' },
+      { id: 'system', label: 'System' },
+    ];
+    for (const t of tabs) {
+      const btn = document.createElement('div');
+      btn.className = 'chat-tab';
+      btn.dataset['tab'] = t.id;
+      btn.innerHTML = `<span class="chat-tab-label">${t.label}</span><span class="chat-tab-dot"></span>`;
+      btn.addEventListener('click', () => this._switchTab(t.id));
+      this.tabBar.appendChild(btn);
+    }
+
     this.input.id          = 'chat-input';
     this.input.type        = 'text';
     this.input.placeholder = 'say, /shout, /emote, /p, /w, /r, /cc…';
     this.input.maxLength   = 512;
     this.input.addEventListener('keydown', this._onInputKey);
 
+    this.root.appendChild(this.tabBar);
     this.root.appendChild(this.log);
     this.root.appendChild(this.input);
+
+    this._switchTab('all');
+  }
+
+  /** Map a chat channel to which tabs the entry should appear in. */
+  private _tabsForChannel(channel: string): Array<'chat' | 'events' | 'system'> {
+    switch (channel) {
+      case 'say': case 'shout': case 'emote':
+      case 'party': case 'guild': case 'world':
+      case 'whisper': case 'companion':
+        return ['chat'];
+      case 'event': case 'cfh':
+        return ['events'];
+      case 'system':
+        return ['system'];
+      default:
+        // Unknown channel — surface in System so it's not silently filtered.
+        return ['system'];
+    }
+  }
+
+  private _switchTab(id: 'all' | 'chat' | 'events' | 'system'): void {
+    this._activeTab = id;
+    this.root.classList.remove('tab-active-all', 'tab-active-chat', 'tab-active-events', 'tab-active-system');
+    this.root.classList.add(`tab-active-${id}`);
+    // Mark active button + clear unread
+    const buttons = this.tabBar.querySelectorAll('.chat-tab');
+    buttons.forEach(btn => {
+      const tabId = (btn as HTMLElement).dataset['tab'];
+      btn.classList.toggle('active', tabId === id);
+      if (tabId === id && id !== 'all') {
+        btn.classList.remove('has-unread');
+        if (id === 'chat' || id === 'events' || id === 'system') {
+          this._unread[id] = 0;
+        }
+      }
+    });
+    // Scroll log to bottom on tab switch.
+    this.log.scrollTop = this.log.scrollHeight;
+  }
+
+  private _bumpUnread(tabs: Array<'chat' | 'events' | 'system'>): void {
+    for (const t of tabs) {
+      if (t === this._activeTab) continue;
+      this._unread[t] += 1;
+      const btn = this.tabBar.querySelector(`.chat-tab[data-tab="${t}"]`);
+      btn?.classList.add('has-unread');
+    }
   }
 
   private _onInputKey = (e: KeyboardEvent): void => {
@@ -162,9 +279,10 @@ export class ChatPanel {
   };
 
   // ── Global hot-keys that open chat ────────────────────────────────────────
-  // '/' focuses and seeds the command prefix.
-  // Enter / Space focus with a blank input.
-  // All three are suppressed when any text field already has focus.
+  // '/' focuses and seeds the command prefix. (Enter and Space were previously
+  // also chat openers, but Enter is now reserved for the TargetWindow menu's
+  // "fire selected action" affordance — Tab Tab Enter to engage a target.
+  // To open chat, press '/' or click the input.)
   private _onGlobalKey = (e: KeyboardEvent): void => {
     if (this.root.style.display === 'none') return;
     if (this._isTypingTarget(e.target)) return;
@@ -172,9 +290,6 @@ export class ChatPanel {
     if (e.key === '/') {
       // Let the '/' propagate naturally — the browser will insert it once the
       // input is focused (keypress / input fire after keydown).
-      this.input.focus();
-    } else if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault(); // prevent page scroll (Space) or form submission
       this.input.focus();
     }
   };
@@ -214,6 +329,23 @@ export class ChatPanel {
     if (text === '/shutdown') {
       this.world.pushMessage('system', 'Shutting down…');
       this.shutdownCallback?.();
+      return;
+    }
+
+    // /xpinfo — print the last kill's XP breakdown for live tuning.
+    if (text === '/xpinfo') {
+      const b = this.player.lastXpBreakdown;
+      if (!b) {
+        this.world.pushMessage('system', 'No kill XP recorded yet.');
+      } else {
+        const delta = b.mobLevel - b.recipientLevel;
+        const sign  = delta >= 0 ? '+' : '';
+        this.world.pushMessage(
+          'system',
+          `XP: ${b.awardedXp} from ${b.mobName} (Lv ${b.mobLevel}, you Lv ${b.recipientLevel}, ${sign}${delta}) — ` +
+          `base ${b.baseXp} × con ${b.conMult.toFixed(2)} × party ${b.partyMult.toFixed(2)} (size ${b.partySize})`,
+        );
+      }
       return;
     }
 
@@ -292,7 +424,11 @@ export class ChatPanel {
 
   private _appendEntry(entry: ChatEntry): void {
     const line = document.createElement('div');
-    line.className = `chat-line ${entry.channel}`;
+    const tabs = this._tabsForChannel(entry.channel);
+    const tabClasses = tabs.map(t => `tab-${t}`).join(' ');
+    line.className = `chat-line ${entry.channel} ${tabClasses}`;
+    // Bump unread on tabs that aren't currently active.
+    this._bumpUnread(tabs);
 
     if (entry.sender) {
       const sender = document.createElement('span');

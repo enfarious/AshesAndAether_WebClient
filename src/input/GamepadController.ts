@@ -161,9 +161,6 @@ export class GamepadController {
     const nx = lx / lMag;
     const nz = -ly / lMag;
 
-    // Cancel any active click-move
-    this._playerEntity?.stopClickMove();
-
     // Rotate by camera yaw → world-space (identical to WASDController)
     const yaw    = this.camera.getYaw();
     const worldX =  nx * Math.cos(yaw) - nz * Math.sin(yaw);

@@ -84,6 +84,7 @@ export class SocketClient {
       'loot_session_start', 'loot_item_result', 'loot_session_end',
       'ability_update',
       'stat_allocate_result', 'respec_result',
+      'experience_gained',
       'register_result',
       'zone_transfer', 'village_state', 'village_placement_mode', 'village_catalog',
       'editor_open', 'editor_result',
@@ -93,6 +94,7 @@ export class SocketClient {
       'beacon_alert', 'library_assault',
       'vault_room_enter', 'vault_mob_killed', 'vault_room_cleared',
       'vault_gate_opened', 'vault_complete', 'vault_failed', 'vault_player_left',
+      'combat_error',
       'error',
       'pong',
       'command_response',
@@ -216,9 +218,14 @@ export class SocketClient {
     this._send('interact', { targetId, action, timestamp: Date.now() });
   }
 
-  sendCombatAction(abilityId: string, targetId: string, position?: Vector3): void {
-    console.log(`[SocketClient] sendCombatAction → ability="${abilityId}" target="${targetId}"`, position ?? '');
-    this._send('combat_action', { abilityId, targetId, position, timestamp: Date.now() });
+  sendCombatAction(
+    abilityId:    string,
+    targetId:     string,
+    subTargetId?: string,
+    position?:    Vector3,
+  ): void {
+    console.log(`[SocketClient] sendCombatAction → ability="${abilityId}" target="${targetId}" sub="${subTargetId ?? ''}"`, position ?? '');
+    this._send('combat_action', { abilityId, targetId, subTargetId, position, timestamp: Date.now() });
   }
 
   sendCommand(
@@ -278,12 +285,13 @@ export class SocketClient {
     this._send('allocate_stat', { stat });
   }
 
-  sendRespecStats(): void {
-    this._send('respec_stats', {});
-  }
+  // Respec is reached via the /respec slash command (handled by zone server).
+  // See Zone._onRespecCommand. UI buttons call sendCommand('/respec stats|abilities').
 
-  sendRespecAbilities(): void {
-    this._send('respec_abilities', {});
+  /** Promote the current guest session to a permanent registered account.
+   *  Server keeps the existing character/companion/etc; only credentials change. */
+  sendRegisterFromGuest(username: string, email: string, password: string): void {
+    this._send('register_from_guest', { username, email, password });
   }
 
   sendRegisterAccount(username: string, email: string, password: string): void {
@@ -292,6 +300,16 @@ export class SocketClient {
 
   sendZoneTransferReady(): void {
     this._send('zone_transfer_ready', {});
+  }
+
+  sendTravelRequest(payload: {
+    destinationName:   string;
+    destinationZoneId: string | null;
+    routeRef:          string;
+    distanceMiles:     number;
+    hasToll:           boolean;
+  }): void {
+    this._send('travel_request', { ...payload, timestamp: Date.now() });
   }
 
   sendVillagePlaceConfirm(catalogId: string, posX: number, posZ: number, rotation: number): void {
@@ -375,6 +393,9 @@ export class SocketClient {
     const sub = web === 'active' ? 'abilities' : 'passives';
     this.sendCommand(`/companion ${sub} unslot ${slotIndex}`);
   }
+
+  sendCompanionSummon(): void { this.sendCommand('/companion summon'); }
+  sendCompanionCreate(name: string): void { this.sendCommand(`/companion create ${name.trim()}`); }
 
   sendCompanionFollow(): void { this.sendCommand('/companion follow'); }
   sendCompanionDetach(): void { this.sendCommand('/companion detach'); }

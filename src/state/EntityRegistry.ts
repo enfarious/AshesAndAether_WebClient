@@ -70,11 +70,12 @@ export class EntityRegistry {
   update(id: string, partial: Partial<Entity>): void {
     const existing = this._entities.get(id);
     if (!existing) {
-      // If we receive an update for an unknown entity, treat it as an add
-      if (partial.id && partial.position) {
-        const full = partial as Entity;
-        this.add(full);
-        return;
+      // Update for an unknown entity. Only synthesize if the payload carries
+      // enough info to render correctly (specifically `type` — without it the
+      // entity falls through to the magenta-alarm placeholder). Otherwise drop
+      // the update; the proper `added` payload will follow.
+      if (partial.id && partial.position && partial.type) {
+        this.add(partial as Entity);
       }
       return;
     }

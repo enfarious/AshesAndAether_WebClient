@@ -70,6 +70,11 @@ export class VaultRenderer {
   /** Stored tile data for rebuilding meshes when gates open. */
   private _tileData: VaultTileData | null = null;
 
+  /** Read-only access to the current tile data (mutated as gates open).
+   *  Consumed by the vault minimap so it sees the same opened-gate state
+   *  the 3D meshes do. Returns null until `build()` runs. */
+  get tileData(): VaultTileData | null { return this._tileData; }
+
   /**
    * XZ centre of the ceiling clip hole — updated every frame via
    * {@link setClipCenter}.  Shared by reference with the ceiling
@@ -205,6 +210,62 @@ export class VaultRenderer {
       this.group.add(pointLight);
     }
 
+    // ── Entrance marker ────────────────────────────────────────────────
+    // Visible-from-anywhere amber beacon at the entry chamber: emissive
+    // floor rune + tall light beam up through the ceiling so the player
+    // can spot it across the whole dungeon and never lose their bearings.
+    if (data.entrance) {
+      // Floor rune ring.
+      const markerGeo = new THREE.TorusGeometry(1.5, 0.12, 10, 32);
+      markerGeo.rotateX(-Math.PI / 2);
+      const markerMat = new THREE.MeshStandardMaterial({
+        color:             0x201808,
+        emissive:          0xffb04a,
+        emissiveIntensity: 1.6,
+        roughness:         0.5,
+        metalness:         0.6,
+      });
+      const marker = new THREE.Mesh(markerGeo, markerMat);
+      marker.position.set(data.entrance.x, 0.05, data.entrance.z);
+      this.group.add(marker);
+
+      // Light beam — translucent amber column rising to the ceiling, additive
+      // blended so it looks like volumetric light. Visible across the whole
+      // vault even through walls (no depth write).
+      const beamHeight = ceilingHeight + 4;
+      const beamGeo = new THREE.CylinderGeometry(0.6, 0.9, beamHeight, 16, 1, true);
+      const beamMat = new THREE.MeshBasicMaterial({
+        color:       0xffa040,
+        transparent: true,
+        opacity:     0.30,
+        side:        THREE.DoubleSide,
+        depthWrite:  false,
+        blending:    THREE.AdditiveBlending,
+      });
+      const beam = new THREE.Mesh(beamGeo, beamMat);
+      beam.position.set(data.entrance.x, beamHeight / 2, data.entrance.z);
+      this.group.add(beam);
+
+      // Brighter inner core for the beam.
+      const coreGeo = new THREE.CylinderGeometry(0.2, 0.3, beamHeight, 12, 1, true);
+      const coreMat = new THREE.MeshBasicMaterial({
+        color:       0xffe8c0,
+        transparent: true,
+        opacity:     0.55,
+        side:        THREE.DoubleSide,
+        depthWrite:  false,
+        blending:    THREE.AdditiveBlending,
+      });
+      const core = new THREE.Mesh(coreGeo, coreMat);
+      core.position.set(data.entrance.x, beamHeight / 2, data.entrance.z);
+      this.group.add(core);
+
+      // Floor halo light.
+      const markerLight = new THREE.PointLight(0xffa040, 2.2, 12, 1.6);
+      markerLight.position.set(data.entrance.x, 2, data.entrance.z);
+      this.lights.push(markerLight);
+      this.group.add(markerLight);
+    }
   }
 
   /**

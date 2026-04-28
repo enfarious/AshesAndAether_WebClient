@@ -89,10 +89,8 @@ export class ClickMoveController {
       const hit = this.heightmap.raycast(this.raycaster.ray);
       if (!hit) return;
       this.socket.sendMovePosition({ x: hit.x, y: hit.y, z: hit.z });
-      // Predict at the same speed the server will use: base × jog multiplier
-      // (sendMovePosition defaults to 'jog').
-      const speed = this.player.baseMovementSpeed * SPEED_MULTIPLIERS['jog'] || 5.0;
-      this._playerEntity?.startClickMove(new THREE.Vector3(hit.x, hit.y, hit.z), speed);
+      const walkSpeed = this.player.baseMovementSpeed * SPEED_MULTIPLIERS['walk'];
+      this._playerEntity?.kickClickPredict(new THREE.Vector3(hit.x, hit.y, hit.z), walkSpeed);
       return;
     }
 
@@ -101,8 +99,8 @@ export class ClickMoveController {
     const hit = new THREE.Vector3();
     if (this.raycaster.ray.intersectPlane(groundPlane, hit)) {
       this.socket.sendMovePosition({ x: hit.x, y: 0, z: hit.z });
-      const speed = this.player.baseMovementSpeed * SPEED_MULTIPLIERS['jog'] || 5.0;
-      this._playerEntity?.startClickMove(new THREE.Vector3(hit.x, 0, hit.z), speed);
+      const walkSpeed = this.player.baseMovementSpeed * SPEED_MULTIPLIERS['walk'];
+      this._playerEntity?.kickClickPredict(new THREE.Vector3(hit.x, 0, hit.z), walkSpeed);
     }
   };
 

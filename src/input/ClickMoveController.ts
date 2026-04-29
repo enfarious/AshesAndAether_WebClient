@@ -89,7 +89,7 @@ export class ClickMoveController {
       const hit = this.heightmap.raycast(this.raycaster.ray);
       if (!hit) return;
       this.socket.sendMovePosition({ x: hit.x, y: hit.y, z: hit.z });
-      const walkSpeed = this.player.baseMovementSpeed * SPEED_MULTIPLIERS['walk'];
+      const walkSpeed = this.player.baseMovementSpeed * SPEED_MULTIPLIERS['jog'];
       this._playerEntity?.kickClickPredict(new THREE.Vector3(hit.x, hit.y, hit.z), walkSpeed);
       return;
     }
@@ -99,7 +99,7 @@ export class ClickMoveController {
     const hit = new THREE.Vector3();
     if (this.raycaster.ray.intersectPlane(groundPlane, hit)) {
       this.socket.sendMovePosition({ x: hit.x, y: 0, z: hit.z });
-      const walkSpeed = this.player.baseMovementSpeed * SPEED_MULTIPLIERS['walk'];
+      const walkSpeed = this.player.baseMovementSpeed * SPEED_MULTIPLIERS['jog'];
       this._playerEntity?.kickClickPredict(new THREE.Vector3(hit.x, 0, hit.z), walkSpeed);
     }
   };

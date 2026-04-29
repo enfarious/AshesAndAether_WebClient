@@ -3,6 +3,7 @@ import type { SocketClient }   from '@/network/SocketClient';
 import type { PlayerState }    from '@/state/PlayerState';
 import type { PlayerEntity }   from '@/entities/PlayerEntity';
 import type { EntityRegistry } from '@/state/EntityRegistry';
+import { SPEED_MULTIPLIERS }   from '@/network/Protocol';
 
 /** F-key proximity-interact range, metres. */
 const F_INTERACT_RANGE = 5;
@@ -30,15 +31,41 @@ const F_INTERACT_RANGE_SQ = F_INTERACT_RANGE * F_INTERACT_RANGE;
 const QE_SPEED         = 1.8;   // camera yaw speed, radians / second
 const PITCH_SPEED      = 50;    // camera pitch speed, degrees / second
 const ZOOM_SPEED       = 30;    // camera zoom speed, units / second
-const FALLBACK_SPEED_MPS = 17.5; // conservative default: 5 m/s base x 3.5 run multiplier
+const FALLBACK_SPEED_MPS = 12.95; // conservative default: 7 m/s base x 1.85 sprint multiplier
 const HEADING_RESEND   = 3;     // degrees — resend heading if direction changed more than this
 const SEND_INTERVAL_MS = 100;   // min gap between heading sends (10 Hz)
+/** Local-prediction "moment of inertia" ramp. Each fresh movement burst
+ *  starts at INERTIA_RAMP_FROM × predicted speed and linearly ramps to 1.0
+ *  over INERTIA_RAMP_MS. Animation feel: takes a beat to get up to speed.
+ *  Side benefit: closes most of the client-prediction-ahead-of-server gap
+ *  during the first frame after movement starts. */
+const INERTIA_RAMP_MS   = 150;
+const INERTIA_RAMP_FROM = 0.5;
+/** Mirrors server `DASH_DISTANCE_M` in Zone.ts. Used for the local snap
+ *  prediction so the leap-dash visual lands instantly on second-tap. */
+const DASH_DISTANCE_M = 5;
+/** Mirrors server `JUMP_STAMINA_COST` and `DASH_STAMINA_COST` in Zone.ts.
+ *  Used to gate the local jump arc + dash-snap so we don't visually teleport
+ *  on actions the server will reject for stamina reasons. */
+const JUMP_STAMINA_COST = 5;
+const DASH_STAMINA_COST = 20;
 
 export class WASDController {
   private held              = new Set<string>();
   private lastSendAt        = 0;
   private lastSentHeading   = -999; // impossible heading -> forces first send
   private isMoving          = false;
+
+  /** Walk-mode toggle (z key / `/walk`). When true, default WASD speed is
+   *  `walk` instead of `jog`. Shift-hold still overrides to `sprint`. */
+  private walkMode          = false;
+  /** Last sent speed tier — used to force a resend when the tier changes
+   *  (e.g. release Shift mid-run, or toggle walk-mode). */
+  private lastSentTier: 'walk' | 'jog' | 'sprint' = 'jog';
+  /** Wall-clock when the current movement burst started. Resets every time
+   *  `_localX` gets seeded fresh (i.e. after stop / jump-end). Used to
+   *  compute the inertia-ramp factor. */
+  private _movementStartedAt = 0;
 
   /** Client-predicted local position while movement keys are held. */
   private _localX: number | null = null;
@@ -135,7 +162,7 @@ export class WASDController {
     // Gate on isAlive / isRooted — stop movement if dead or movement-impaired
     if (!this.player.isAlive || this.player.isRooted) {
       if (this.isMoving) {
-        this.socket.sendMoveStop();
+        this.socket.sendMoveStop(this._predictedFinalPosition());
         this.isMoving = false;
         this.lastSentHeading = -999;
       }
@@ -151,9 +178,12 @@ export class WASDController {
     const inputZ = (this.held.has('w') ? 1 : 0) - (this.held.has('s') ? 1 : 0);
 
     if (inputX === 0 && inputZ === 0) {
-      // No movement keys — stop server movement and clear prediction
+      // No movement keys — stop server movement and clear prediction. Pass
+      // the locally-predicted final position so the server can absorb it as
+      // authoritative within tolerance, killing the RTT-snap-back when IDLE
+      // mode takes over and lerps to a stale server position.
       if (this.isMoving) {
-        this.socket.sendMoveStop();
+        this.socket.sendMoveStop(this._predictedFinalPosition());
         this.isMoving = false;
         this.lastSentHeading = -999;
       }
@@ -192,11 +222,18 @@ export class WASDController {
         this._localX = p.x;
         this._localY = p.y;
         this._localZ = p.z;
+        this._movementStartedAt = performance.now();
       }
 
       if (this._localX !== null && this._localY !== null && this._localZ !== null) {
-        // Advance local position at the server's actual speed this frame.
-        const speedMPS = this.player.movementSpeedMPS || FALLBACK_SPEED_MPS;
+        // Advance local position at the server's actual speed this frame,
+        // scaled by the inertia ramp during the first INERTIA_RAMP_MS of
+        // each fresh burst. Linear from INERTIA_RAMP_FROM → 1.0.
+        const elapsedMs = performance.now() - this._movementStartedAt;
+        const ramp = elapsedMs >= INERTIA_RAMP_MS
+          ? 1.0
+          : INERTIA_RAMP_FROM + (1 - INERTIA_RAMP_FROM) * (elapsedMs / INERTIA_RAMP_MS);
+        const speedMPS = (this.player.movementSpeedMPS || FALLBACK_SPEED_MPS) * ramp;
         this._localX += normX * speedMPS * dt;
         this._localZ += normZ * speedMPS * dt;
         // Y tracks server for terrain height
@@ -213,22 +250,66 @@ export class WASDController {
     let headingDeg = Math.atan2(normX, normZ) * (180 / Math.PI);
     if (headingDeg < 0) headingDeg += 360;
 
+    // Tier resolution (priority: sprint hold > walk mode > jog default).
+    // Shift-hold also keeps the cap rolling — when stamina hits 0 the server
+    // clamps back to jog automatically; we keep sending 'sprint' so it
+    // resumes as soon as stamina regens.
+    const wantSprint: boolean = this.held.has('shift');
+    const tier: 'walk' | 'jog' | 'sprint' =
+      wantSprint        ? 'sprint' :
+      this.walkMode     ? 'walk'   :
+                          'jog';
+
     const now = Date.now();
     const headingDelta = Math.abs(headingDeg - this.lastSentHeading);
     // Wrap-around-safe delta (e.g. 359 -> 1 = 2, not 358)
     const wrappedDelta = Math.min(headingDelta, 360 - headingDelta);
 
-    // Send immediately on start, on heading change, or every 100 ms as heartbeat
+    // Send immediately on start, on heading change, on tier change, or every
+    // 100 ms as heartbeat.
     const shouldSend = !this.isMoving
       || wrappedDelta > HEADING_RESEND
+      || tier !== this.lastSentTier
       || now - this.lastSendAt >= SEND_INTERVAL_MS;
 
     if (shouldSend) {
-      this.socket.sendMoveContinuous(headingDeg, 'run');
+      this.socket.sendMoveContinuous(headingDeg, tier);
       this.lastSentHeading = headingDeg;
-      this.lastSendAt = now;
-      this.isMoving = true;
+      this.lastSentTier    = tier;
+      this.lastSendAt      = now;
+      this.isMoving        = true;
     }
+  }
+
+  /** Toggle walk mode (z key / `/walk`). Default WASD becomes `walk` instead of
+   *  `jog`; Shift-hold still overrides to `sprint`. Public so app-layer slash
+   *  command handlers can flip it from chat input. */
+  toggleWalkMode(): boolean {
+    this.walkMode = !this.walkMode;
+    // Force an immediate resend on next tick so the tier change is reflected.
+    this.lastSentTier = this.walkMode ? 'jog' : 'walk';
+    return this.walkMode;
+  }
+
+  /** Read-only walkMode flag — used by HUD indicators and `/sprint` command. */
+  get isWalkMode(): boolean { return this.walkMode; }
+
+  /** Force walkMode off (called by `/sprint` slash command). */
+  clearWalkMode(): void {
+    if (this.walkMode) {
+      this.walkMode = false;
+      this.lastSentTier = 'walk'; // force resend
+    }
+  }
+
+  /** Reset client-side WASD prediction state. Called after a server-driven
+   *  position teleport (dash, /retreat) so the next tick re-seeds `_localX`
+   *  from the entity's new position rather than continuing to drive forward
+   *  from the pre-dash _localX. Without this, drivePosition would yank the
+   *  entity back to where it was before the dash. */
+  clearPrediction(): void {
+    this._localX = this._localY = this._localZ = null;
+    this.lastSentHeading = -999;  // force a fresh heading send next tick
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
@@ -328,17 +409,56 @@ export class WASDController {
         // position update lays on top so the mesh pops up + slides over.
         clearTimeout(this._spaceTapTimer);
         this._spaceTapTimer = null;
-        this.socket.sendCommand(`/retreat ${this._currentDirectionFromHeld()}`);
+        const direction = this._currentDirectionFromHeld();
+        this.socket.sendCommand(`/retreat ${direction}`);
+        // Only snap locally when we have the stamina the server will
+        // require. Otherwise the server will reject the dash, and our
+        // local teleport leaves the entity off-position until settle
+        // expires and state_updates pull us back. Mirroring the
+        // server-side cost check keeps the visual honest.
+        if (this.player.stamina.current >= DASH_STAMINA_COST) {
+          this._localDashSnap(direction);
+        }
       } else {
         // First tap: kick off client-predicted jump arc with captured
         // velocity (matches the server's jump-momentum math), then send
-        // /jump. PlayerState.heading is the live movement direction;
-        // movementSpeedMPS is 0 when idle, run-speed when WASDing.
-        const speed = this.player.movementSpeedMPS;
-        const headingRad = this.player.heading * (Math.PI / 180);
-        const velX = speed > 0 ? Math.sin(headingRad) * speed : 0;
-        const velZ = speed > 0 ? Math.cos(headingRad) * speed : 0;
-        this._playerEntity?.playJump(velX, velZ);
+        // /jump.
+        //
+        // Capture from LOCAL INPUT, not round-tripped server state. Reading
+        // `this.player.movementSpeedMPS` here would lag by RTT + tick (~150–
+        // 300ms after movement starts) — pressing space within that window
+        // would capture 0 and produce a straight-up arc while the server
+        // (which has the WASD message processed by then) arcs forward,
+        // resulting in the "vertical first, horizontal kicks in late" feel.
+        // Computing from held keys + camera yaw + tier-speed mirrors what
+        // the server captures from the same WASD message.
+        const inputX = (this.held.has('d') ? 1 : 0) - (this.held.has('a') ? 1 : 0);
+        const inputZ = (this.held.has('w') ? 1 : 0) - (this.held.has('s') ? 1 : 0);
+        let velX = 0;
+        let velZ = 0;
+        if (inputX !== 0 || inputZ !== 0) {
+          const yaw    = this.camera.getYaw();
+          const worldX =  inputX * Math.cos(yaw) - inputZ * Math.sin(yaw);
+          const worldZ = -inputX * Math.sin(yaw) - inputZ * Math.cos(yaw);
+          const len    = Math.hypot(worldX, worldZ);
+          if (len > 0) {
+            const tier: 'walk' | 'jog' | 'sprint' =
+              this.held.has('shift') ? 'sprint' :
+              this.walkMode          ? 'walk'   :
+                                       'jog';
+            const speedMPS = this.player.baseMovementSpeed * SPEED_MULTIPLIERS[tier];
+            velX = (worldX / len) * speedMPS;
+            velZ = (worldZ / len) * speedMPS;
+          }
+        }
+        // Only kick off the local Y arc + JUMPING-mode prediction when we
+        // have the stamina the server will require. Without this, a no-
+        // stamina jump triggers the visual but the server rejects, and
+        // the prediction fights server's WASD-mode broadcasts until the
+        // arc duration ends.
+        if (this.player.stamina.current >= JUMP_STAMINA_COST) {
+          this._playerEntity?.playJump(velX, velZ);
+        }
         this.socket.sendCommand('/jump');
         this._spaceTapTimer = setTimeout(() => {
           this._spaceTapTimer = null;
@@ -439,6 +559,26 @@ export class WASDController {
       return;
     }
 
+    // Z — toggle walk mode. Default WASD speed becomes 'walk' instead of
+    // 'jog'; Shift-hold still overrides to 'sprint'. The slash command
+    // mirror lets the server log/echo the toggle and keeps slash-commands-
+    // first parity for future text clients.
+    if (key === 'z' && !e.ctrlKey && !e.shiftKey) {
+      this.toggleWalkMode();
+      this.socket.sendCommand('/walk');
+      return;
+    }
+
+    // Escape — cancel the in-flight cast. Server's /castcancel handler
+    // breaks the cast (MP gone, GCD fires). No-op if not casting. Per the
+    // slash-commands-first rule, this is a thin keybind around the
+    // canonical /castcancel command.
+    if (key === 'escape') {
+      e.preventDefault();
+      this.socket.sendCommand('/castcancel');
+      return;
+    }
+
     // 1-8 — action bar ability slots
     const num = parseInt(e.key, 10);
     if (num >= 1 && num <= 8) {
@@ -463,13 +603,74 @@ export class WASDController {
     );
   }
 
-  /** Map currently-held WASD to a /retreat direction. Priority W > S > A > D
-   *  for diagonals; defaults to 'back' when nothing is held (the user spec). */
+  /** Build a Vector3 from the active local prediction, or undefined if we
+   *  haven't predicted this burst yet. Used to ship the visually-final
+   *  position with sendMoveStop so the server can absorb it as ground truth
+   *  rather than reverting to its tick-quantized authoritative position. */
+  private _predictedFinalPosition(): { x: number; y: number; z: number } | undefined {
+    if (this._localX === null || this._localY === null || this._localZ === null) return undefined;
+    return { x: this._localX, y: this._localY, z: this._localZ };
+  }
+
+  /** Locally snap the entity DASH_DISTANCE_M in `direction` ('forward' or
+   *  'back') from current rendered position. World direction is computed
+   *  from currently-held WASD + camera yaw — same math as the heading sent
+   *  to the server, so the local snap lands at (or within RTT-tolerance of)
+   *  where the server's dash will resolve. Server's confirming player_dash
+   *  event re-snaps to the authoritative position; if it's within the
+   *  settle filter's drift threshold, the correction is invisible. */
+  private _localDashSnap(direction: string): void {
+    if (!this._playerEntity) return;
+    let dirX = 0;
+    let dirZ = 0;
+
+    const inputX = (this.held.has('d') ? 1 : 0) - (this.held.has('a') ? 1 : 0);
+    const inputZ = (this.held.has('w') ? 1 : 0) - (this.held.has('s') ? 1 : 0);
+
+    if (inputX !== 0 || inputZ !== 0) {
+      const yaw    = this.camera.getYaw();
+      const worldX =  inputX * Math.cos(yaw) - inputZ * Math.sin(yaw);
+      const worldZ = -inputX * Math.sin(yaw) - inputZ * Math.cos(yaw);
+      const len    = Math.hypot(worldX, worldZ);
+      if (len > 0) {
+        dirX = worldX / len;
+        dirZ = worldZ / len;
+      }
+    } else {
+      // No keys held → 'back' relative to last facing.
+      const headingRad = this.player.heading * Math.PI / 180;
+      dirX = -Math.sin(headingRad);
+      dirZ = -Math.cos(headingRad);
+    }
+
+    // Sign flips for 'back' even if WASD is held — keeps the keyword's
+    // semantics intact for any future caller that might pass 'back'.
+    const sign = direction === 'back' ? -1 : 1;
+    const cur = this._playerEntity.object3d.position;
+    this._playerEntity.snapTo(cur.x + dirX * DASH_DISTANCE_M * sign,
+                              cur.z + dirZ * DASH_DISTANCE_M * sign);
+  }
+
+  /** Pick a /retreat direction from currently-held WASD. Returns 'forward'
+   *  for any movement input, else 'back'.
+   *
+   *  Why not literal 'left'/'right'? Server's retreatDirectionVector reads
+   *  arg names as **player-facing-relative** (left = perpendicular to
+   *  player.heading). But the user's intent is **camera-relative** (A = my
+   *  movement direction is left-of-camera). Since player.heading is updated
+   *  on every WASD send to the player's current movement direction, the two
+   *  conventions reconcile by always asking the server for 'forward' — that
+   *  *is* the direction the player is currently moving in world coords.
+   *
+   *  Example with default camera (yaw 0, looking south):
+   *    Hold A → heading 270° (player faces west) → /retreat forward = west ✓
+   *    (Old code: /retreat left → server computes left-of-west = north,
+   *     which happened to be camera-forward, hence the "all dashes bump
+   *     toward W" symptom.) */
   private _currentDirectionFromHeld(): string {
-    if (this.held.has('w')) return 'forward';
-    if (this.held.has('s')) return 'back';
-    if (this.held.has('a')) return 'left';
-    if (this.held.has('d')) return 'right';
+    if (this.held.has('w') || this.held.has('a') || this.held.has('s') || this.held.has('d')) {
+      return 'forward';
+    }
     return 'back';
   }
 

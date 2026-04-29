@@ -201,7 +201,7 @@ export class GamepadController {
       || now - this._lastSendAt >= SEND_INTERVAL_MS;
 
     if (shouldSend) {
-      this.socket.sendMoveContinuous(headingDeg, 'run');
+      this.socket.sendMoveContinuous(headingDeg, 'jog');
       this._lastSentHeading = headingDeg;
       this._lastSendAt = now;
       this._isMoving = true;
@@ -299,7 +299,13 @@ export class GamepadController {
 
   private _stopMovement(): void {
     if (this._isMoving) {
-      this.socket.sendMoveStop();
+      // Pass the locally-predicted final position so the server can absorb
+      // it as authoritative within tolerance — kills the RTT-snap-back when
+      // IDLE mode takes over. Mirrors WASDController.
+      const finalPos = (this._localX !== null && this._localY !== null && this._localZ !== null)
+        ? { x: this._localX, y: this._localY, z: this._localZ }
+        : undefined;
+      this.socket.sendMoveStop(finalPos);
       this._isMoving = false;
       this._lastSentHeading = -999;
     }

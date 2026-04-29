@@ -41,6 +41,19 @@ export class HUD {
   private _fpsFrames = 0;
   private _fpsTime   = 0;
 
+  // ── Cast bar state ──────────────────────────────────────────────────
+  /** performance.now() at cast_start / channel_start receipt — drives the
+   *  local-only progress fill so the bar smooths between server events. */
+  private _castStartedAt = 0;
+  private _castDurationMs = 0;
+  private _castActive = false;
+  /** True while in channel-drain mode (1 → 0 instead of 0 → 1). Same widget,
+   *  same RAF loop — only the fill direction changes. */
+  private _castDrain = false;
+  private _castRafId: number | null = null;
+  /** Auto-hide timer for the brief complete/break flash. */
+  private _castFadeTimer: ReturnType<typeof setTimeout> | null = null;
+
   constructor(
     private readonly uiRoot:  HTMLElement,
     private readonly player:  PlayerState,
@@ -76,6 +89,8 @@ export class HUD {
     if (this.clockInterval   !== null) clearInterval(this.clockInterval);
     if (this.effectsInterval !== null) clearInterval(this.effectsInterval);
     if (this._rafId !== null) { cancelAnimationFrame(this._rafId); this._rafId = null; }
+    if (this._castRafId !== null) { cancelAnimationFrame(this._castRafId); this._castRafId = null; }
+    this._cancelCastFade();
     this.root.remove();
   }
 
@@ -86,6 +101,107 @@ export class HUD {
       this._rafId = null;
       this._refresh();
     });
+  }
+
+  // ── Cast bar API ────────────────────────────────────────────────────
+
+  /** Open the cast bar with the given ability + duration. Server emits
+   *  cast_start when a cast-time ability begins; app.ts router callback
+   *  forwards the payload here. Local performance.now() drives the smooth
+   *  fill — we don't need server progress polling. */
+  showCast(abilityName: string, durationMs: number): void {
+    this._cancelCastFade();
+    this._castStartedAt  = performance.now();
+    this._castDurationMs = durationMs;
+    this._castActive     = true;
+    this._castDrain      = false;
+
+    const bar = this.root.querySelector<HTMLElement>('#hud-cast');
+    const text = this.root.querySelector<HTMLElement>('#hud-cast-text');
+    if (!bar || !text) return;
+    bar.classList.remove('complete', 'broken', 'channel');
+    bar.classList.add('casting');
+    text.textContent = abilityName;
+    this._tickCastFill();
+  }
+
+  /** Open the cast bar in DRAIN mode for a channeled ability. Same widget
+   *  as showCast, just runs the fill from 1 → 0 over durationMs. Called on
+   *  channel_start receipt (cast_complete is also fired by the server but
+   *  the channel_start follows immediately and takes over the bar). */
+  showChannel(abilityName: string, durationMs: number): void {
+    this._cancelCastFade();
+    this._castStartedAt  = performance.now();
+    this._castDurationMs = durationMs;
+    this._castActive     = true;
+    this._castDrain      = true;
+
+    const bar = this.root.querySelector<HTMLElement>('#hud-cast');
+    const text = this.root.querySelector<HTMLElement>('#hud-cast-text');
+    if (!bar || !text) return;
+    bar.classList.remove('complete', 'broken');
+    bar.classList.add('casting', 'channel');
+    text.textContent = abilityName;
+    this._tickCastFill();
+  }
+
+  /** Cast resolved successfully — flash green, then fade out. */
+  completeCast(): void {
+    if (!this._castActive) return;
+    this._castActive = false;
+    if (this._castRafId !== null) { cancelAnimationFrame(this._castRafId); this._castRafId = null; }
+    const bar = this.root.querySelector<HTMLElement>('#hud-cast');
+    const fill = this.root.querySelector<HTMLElement>('#hud-cast-fill');
+    if (!bar || !fill) return;
+    fill.style.transform = 'scaleX(1)';
+    bar.classList.add('complete');
+    this._scheduleCastFade(250);
+  }
+
+  /** Cast interrupted — double-flash red across the full bar width, then
+   *  fade out. Scaling the fill to 1 first means the red flash covers the
+   *  whole bar regardless of how far the cast had progressed. The 600ms
+   *  hold matches the keyframes animation so the second flash actually
+   *  plays before the bar disappears. */
+  breakCast(): void {
+    if (!this._castActive) return;
+    this._castActive = false;
+    if (this._castRafId !== null) { cancelAnimationFrame(this._castRafId); this._castRafId = null; }
+    const bar  = this.root.querySelector<HTMLElement>('#hud-cast');
+    const fill = this.root.querySelector<HTMLElement>('#hud-cast-fill');
+    if (!bar || !fill) return;
+    fill.style.transform = 'scaleX(1)';
+    bar.classList.add('broken');
+    this._scheduleCastFade(650);
+  }
+
+  private _tickCastFill = (): void => {
+    if (!this._castActive) return;
+    const fill = this.root.querySelector<HTMLElement>('#hud-cast-fill');
+    if (fill) {
+      const elapsed = performance.now() - this._castStartedAt;
+      const ratio   = Math.min(1, this._castDurationMs > 0 ? elapsed / this._castDurationMs : 0);
+      // Cast: 0 → 1 fill. Channel (drain): 1 → 0.
+      const pct = this._castDrain ? 1 - ratio : ratio;
+      fill.style.transform = `scaleX(${pct})`;
+    }
+    this._castRafId = requestAnimationFrame(this._tickCastFill);
+  };
+
+  private _scheduleCastFade(delayMs: number): void {
+    this._cancelCastFade();
+    this._castFadeTimer = setTimeout(() => {
+      const bar = this.root.querySelector<HTMLElement>('#hud-cast');
+      if (bar) bar.classList.remove('casting', 'complete', 'broken');
+      this._castFadeTimer = null;
+    }, delayMs);
+  }
+
+  private _cancelCastFade(): void {
+    if (this._castFadeTimer !== null) {
+      clearTimeout(this._castFadeTimer);
+      this._castFadeTimer = null;
+    }
   }
 
   private _build(): HTMLElement {
@@ -130,6 +246,63 @@ export class HUD {
         .hud-bar-fill.hp   { background: linear-gradient(90deg, #5a0f0f, #8b2020); }
         .hud-bar-fill.mp   { background: linear-gradient(90deg, #0d2e4d, #1e4d7a); }
         .hud-bar-fill.stam { background: linear-gradient(90deg, #152e0a, #2d5a1e); }
+
+        /* ── Cast bar ──────────────────────────────────────────────────
+         * Floats above the action bar (which sits at viewport-bottom 104,
+         * 48px tall → top edge at 152). Cast bar's bottom relative to #hud
+         * (which is bottom: 24px) is 140 → bottom edge at viewport 164,
+         * giving ~12px clearance above the action bar. 2/3 of the HUD's
+         * 500px max width (333px / 60vw). Absolute-positioned so it's not
+         * part of the vitals flex column — when hidden, vitals stay put. */
+        .hud-cast {
+          position: absolute;
+          bottom: 140px;
+          left: 50%;
+          transform: translateX(-50%);
+          width: 67%;          /* ~2/3 of #hud's width — proportional at any viewport */
+          height: 22px;
+          background: rgba(10,8,6,0.7);
+          border: 1px solid rgba(220,170,60,0.35);
+          overflow: hidden;
+          z-index: 51;
+          display: none;  /* shown only during a cast */
+        }
+        .hud-cast.casting   { display: block; }
+        .hud-cast-fill {
+          position: absolute;
+          inset: 0;
+          transform: scaleX(0);
+          transform-origin: left;
+          background: linear-gradient(90deg, #5a3a0a, #d4a020);
+        }
+        .hud-cast.complete .hud-cast-fill { background: linear-gradient(90deg, #2a5a1a, #4d8a2a); }
+        .hud-cast.broken   .hud-cast-fill { background: linear-gradient(90deg, #5a1a1a, #8a3a3a); }
+        /* Channel mode — purple/blue to distinguish from the gold cast fill */
+        .hud-cast.channel  .hud-cast-fill { background: linear-gradient(90deg, #2a1a4a, #5a3a8a); }
+        .hud-cast.channel  { border-color: rgba(140,100,210,0.45); }
+        /* Double-flash on break — single solid red was too fast to register. */
+        @keyframes hud-cast-broken-flash {
+          0%   { opacity: 1; }
+          20%  { opacity: 0.15; }
+          40%  { opacity: 1; }
+          60%  { opacity: 0.15; }
+          80%  { opacity: 1; }
+          100% { opacity: 1; }
+        }
+        .hud-cast.broken { animation: hud-cast-broken-flash 0.6s ease-in-out; }
+        .hud-cast-text {
+          position: absolute;
+          inset: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-family: var(--font-mono);
+          font-size: 13px;
+          color: rgba(212,201,184,0.95);
+          letter-spacing: 0.05em;
+          text-shadow: 0 1px 3px #000;
+          pointer-events: none;
+        }
 
         .hud-bar-text {
           position: absolute;
@@ -429,6 +602,11 @@ export class HUD {
       <div id="hud-effects-wrapper">
         <div id="hud-buffs"></div>
         <div id="hud-debuffs"></div>
+      </div>
+
+      <div class="hud-cast" id="hud-cast">
+        <div class="hud-cast-fill" id="hud-cast-fill"></div>
+        <div class="hud-cast-text" id="hud-cast-text"></div>
       </div>
 
       <div class="hud-vitals">
@@ -744,8 +922,11 @@ export class HUD {
   private _setBar(fillId: string, textId: string, stat: { current: number; max: number }, label: string): void {
     const pct = stat.max > 0 ? stat.current / stat.max : 0;
     this._setFill(fillId, pct);
+    // Display int part only — sprint stamina drains by `5 * dt` per tick so
+    // `current` carries fractional values; the bar fill stays smooth (uses
+    // raw pct above) but the readout shouldn't show "76.43 / 100".
     const textEl = this.root.querySelector<HTMLElement>(`#${textId}`);
-    if (textEl) textEl.textContent = `${label} ${stat.current}/${stat.max}`;
+    if (textEl) textEl.textContent = `${label} ${Math.floor(stat.current)}/${Math.floor(stat.max)}`;
   }
 
   private _setFill(id: string, pct: number): void {

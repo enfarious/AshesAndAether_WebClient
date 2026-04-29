@@ -159,6 +159,26 @@ export class PlayerEntity extends EntityObject {
    *  (large drift) read as a brief rubber-band rather than a teleport. */
   private static readonly JUMP_DRIFT_RATE = 8;
 
+  /** Window (ms) after a mode anchor (stopWASD, jump-end, snapTo) during
+   *  which we reject incoming state_updates whose position deviates
+   *  meaningfully from the anchored `_serverPos`. Kills the "stale prior-tick
+   *  state_update arrives between anchor and stop-confirm = visible
+   *  forward→back→forward bounce" race. Tuned to one tick + a typical RTT
+   *  jitter window. */
+  private static readonly ANCHOR_SETTLE_MS    = 200;
+  private static readonly ANCHOR_SETTLE_DRIFT = 0.5;
+  private _settleUntil = 0;
+
+  /** Horizontal-prediction ramp during JUMPING mode. Linear from 0 → 1 over
+   *  this many ms after jump start. Reasoning: during the leap-dash window
+   *  (player might be about to second-tap for /retreat), we don't want to
+   *  predict much horizontal motion — pre-snap motion + a 5m teleport reads
+   *  as a "jerk forward at the end of dash." Tuned to match
+   *  `WASDController.SPACE_DOUBLE_TAP_MS` (250ms): leap-dashes inside the
+   *  window have minimal pre-motion → snap dominates the visual; solo jumps
+   *  ramp into full horizontal velocity by the time the window closes. */
+  private static readonly JUMP_HORIZONTAL_RAMP_MS = 250;
+
   /** Drift threshold below which we don't correct at all (squared metres).
    *  Client begins prediction the instant `/jump` is sent; server begins
    *  ~RTT/2 later when the message arrives. So even with perfect math both
@@ -408,12 +428,28 @@ export class PlayerEntity extends EntityObject {
   }
 
   /**
-   * Called by WASDController when movement keys are released.
-   * Entity starts lerping toward the latest server position.
+   * Called by WASDController when movement keys are released. Anchors the
+   * snapshot buffer to the current rendered (predicted) position so the
+   * IDLE-mode snapshot interp doesn't yank us back to a stale `_serverPos`
+   * that's RTT/2 worth of velocity behind where we visually stopped. The
+   * next state_update from the server (which has been told the predicted
+   * stop position via `sendMoveStop` and accepted it within tolerance) will
+   * roll into the buffer cleanly with no visible motion.
    */
   stopWASD(): void {
     if (this._mode === PlayerMoveMode.WASD) {
       this._mode = PlayerMoveMode.IDLE;
+      // Anchor both snapshot slots to where we are now. The IDLE branch will
+      // compute t over [prev → curr] and produce current position (no lerp).
+      const now = performance.now();
+      this._prevServerPos.copy(this.object3d.position);
+      this._serverPos.copy(this.object3d.position);
+      this._prevServerTime = now - PlayerEntity.TICK_MS;
+      this._serverPosTime  = now;
+      // Open a settle window: reject in-flight stale state_updates that
+      // would yank us backward off the anchor before the stop-confirm
+      // state_update arrives.
+      this._settleUntil = now + PlayerEntity.ANCHOR_SETTLE_MS;
     }
   }
 
@@ -444,17 +480,72 @@ export class PlayerEntity extends EntityObject {
     this._kickActive = true;
   }
 
+  /** Server-authoritative teleport (used by /retreat dash). Snaps XZ to the
+   *  given coordinates immediately and anchors the snapshot buffer to the
+   *  new position so the upcoming state_update — which carries the same
+   *  position — produces zero motion when it rolls into the buffer. Without
+   *  this, the snapshot interp would lerp the 5m gap over ~100ms (≈ 50 m/s
+   *  slide).
+   *
+   *  Preserves the body-mesh Y arc when JUMPING (leap-dash combo) — the
+   *  visual is "jump arc on top of dashed position", not "dash cancels
+   *  jump". We just stop the JUMPING-mode XZ velocity prediction (server
+   *  has already snapped us to the dashed position; further client-side
+   *  advance would just drag us off it). */
+  snapTo(x: number, z: number): void {
+    const elev = this._getGroundHeight(x, z);
+    const y    = elev !== null ? elev : this.object3d.position.y;
+    this.object3d.position.set(x, y, z);
+
+    const now = performance.now();
+    this._serverPos.set(x, y, z);
+    this._prevServerPos.set(x, y, z);
+    this._serverPosTime  = now;
+    this._prevServerTime = now - PlayerEntity.TICK_MS;
+    // Settle window: in-flight pre-dash state_updates would otherwise lerp
+    // us back to the pre-snap position briefly.
+    this._settleUntil = now + PlayerEntity.ANCHOR_SETTLE_MS;
+
+    if (this._mode === PlayerMoveMode.JUMPING) {
+      // Stop XZ prediction, but leave the Y arc running — _tickJumpArc
+      // will reset _bodyMesh.y to BODY_BASE_Y when the arc finishes naturally.
+      this._jumpVelX = 0;
+      this._jumpVelZ = 0;
+    }
+    this._mode = PlayerMoveMode.IDLE;
+    this._kickActive = false;
+    this._kickTarget = null;
+  }
+
   /** Trigger a parabolic Y arc on the body mesh AND begin client-prediction
    *  of XZ via captured velocity (matching the server's jump branch math).
    *  `velX`/`velZ` are world-space metres/sec; defaults to zero (jump in
    *  place from idle). Server advances by the same captured velocity, so
    *  prediction is deterministic except for collision divergence. */
   playJump(velX = 0, velZ = 0, durationMs = 800, apexHeight = 1.0): void {
-    this._jumpStartedAt   = performance.now();
+    const now = performance.now();
+    this._jumpStartedAt   = now;
     this._jumpDurationMs  = durationMs;
     this._jumpApex        = apexHeight;
     this._jumpVelX        = velX;
     this._jumpVelZ        = velZ;
+
+    // Anchor _serverPos / _prevServerPos to where we visually are *now*.
+    // Without this, JUMPING-mode drift correction can pull the entity
+    // toward a stale reference left over from a quick stop+restart-then-
+    // jump pattern (e.g. A→release→D→jump): the settle filter held
+    // _serverPos at an out-of-date position, and the first post-jump
+    // snapshot pair computes a confused velocity from (stale → real
+    // server jump pos), projecting in the wrong direction. Anchoring
+    // here gives drift correction a clean reference to start from.
+    // Also closes the settle window — JUMPING is its own mode and doesn't
+    // need the IDLE-lerp protection that opened the window in stopWASD.
+    this._serverPos.copy(this.object3d.position);
+    this._prevServerPos.copy(this.object3d.position);
+    this._serverPosTime  = now;
+    this._prevServerTime = now - PlayerEntity.TICK_MS;
+    this._settleUntil    = 0;
+
     this._mode            = PlayerMoveMode.JUMPING;
   }
 
@@ -508,9 +599,18 @@ export class PlayerEntity extends EntityObject {
         break;
 
       case PlayerMoveMode.JUMPING: {
-        // Predict the same captured-velocity advance the server is running.
-        this.object3d.position.x += this._jumpVelX * dt;
-        this.object3d.position.z += this._jumpVelZ * dt;
+        // Predict the same captured-velocity advance the server is running,
+        // ramped 0 → 1 over JUMP_HORIZONTAL_RAMP_MS so leap-dashes within
+        // the double-tap window have negligible pre-snap motion. Solo
+        // jumps reach full horizontal velocity by the time the window
+        // closes; the brief drift during the ramp stays within
+        // JUMP_DRIFT_TOLERANCE_SQ (~1m²) so drift correction doesn't fire.
+        const elapsed = performance.now() - this._jumpStartedAt;
+        const horizRamp = elapsed >= PlayerEntity.JUMP_HORIZONTAL_RAMP_MS
+          ? 1.0
+          : elapsed / PlayerEntity.JUMP_HORIZONTAL_RAMP_MS;
+        this.object3d.position.x += this._jumpVelX * dt * horizRamp;
+        this.object3d.position.z += this._jumpVelZ * dt * horizRamp;
         // Y stays terrain-bound; mesh-local arc handles the visual hop.
         const elev = this._getGroundHeight(this.object3d.position.x, this.object3d.position.z);
         if (elev !== null) this.object3d.position.y = elev;
@@ -562,10 +662,15 @@ export class PlayerEntity extends EntityObject {
           this._jumpVelZ = 0;
           // Anchor the snapshot buffer to the landed position so the IDLE
           // branch doesn't yank us back to a stale pre-jump _serverPos.
+          const landNow = performance.now();
           this._prevServerPos.copy(this.object3d.position);
           this._serverPos.copy(this.object3d.position);
-          this._prevServerTime = performance.now() - PlayerEntity.TICK_MS;
-          this._serverPosTime  = performance.now();
+          this._prevServerTime = landNow - PlayerEntity.TICK_MS;
+          this._serverPosTime  = landNow;
+          // Settle window: same race as stopWASD — server's last in-jump
+          // _advancePlayer broadcast may still be in flight and would lerp
+          // us back briefly without this filter.
+          this._settleUntil = landNow + PlayerEntity.ANCHOR_SETTLE_MS;
         }
         break;
       }
@@ -818,6 +923,24 @@ export class PlayerEntity extends EntityObject {
     );
 
     const now = performance.now();
+
+    // Settle window after stopWASD / jump-end / snapTo — reject the in-flight
+    // prior-tick state_update that would lerp us backward off the anchor
+    // before the stop-confirmation state_update arrives. Teleport-magnitude
+    // updates always pass (handled below) so a real warp during settle still
+    // works. Within tolerance, accept normally — that's the stop-confirm.
+    if (now < this._settleUntil && xzDist <= PlayerEntity.TELEPORT_DIST) {
+      const dx = position.x - this._serverPos.x;
+      const dz = position.z - this._serverPos.z;
+      if (Math.hypot(dx, dz) > PlayerEntity.ANCHOR_SETTLE_DRIFT) {
+        // Stale broadcast from before the anchor — drop it.
+        // Update heading though, since rotation can keep updating during settle.
+        if (heading !== undefined) {
+          this.object3d.rotation.y = THREE.MathUtils.degToRad(-heading);
+        }
+        return;
+      }
+    }
 
     // Teleport detection — large XZ jump (zone change, GM warp).
     // Do NOT snap Y: substitute terrain height so the player lands on the

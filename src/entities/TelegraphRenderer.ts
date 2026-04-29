@@ -19,12 +19,14 @@ import type { TelegraphRegisterPayload, AoeShape } from '@/network/Protocol';
  * Affinity colour, resolved per-viewer (the local player decides what's
  * relevant to them):
  *   - Red    — hostile caster's hostile AoE (it will hit me).
- *   - Green  — friendly caster's friendly AoE (heal/buff zone I can stand in)
- *              OR my own friendly self-cast.
- *   - Blue   — my own hostile AoE (positioning aid so I can aim).
- *   - Skip   — anything that won't affect me and I didn't cast: ally's
- *              damage AoE on enemies, mob's self-buff, etc. No telegraph
- *              renders. Cuts visual noise to "things my position matters for".
+ *   - Green  — friendly caster's friendly AoE (heal/buff zone I can stand in).
+ *   - Blue   — my own hostile AoE (positioning aid so I can aim — the
+ *              radius around me/my anchor isn't where *I* am, it's where
+ *              the damage lands, so the ring is genuine new info).
+ *   - Skip   — won't affect me and I didn't cast it (ally's damage AoE on
+ *              enemies, mob's self-buff). Also: my own friendly AoE
+ *              (auras, self-buff zones) — I'm already at the centre, so
+ *              the ring is just noise; allies still see it as green.
  *
  * Anchor model:
  *   - origin set      → static worldspace XZ (snapshot channel anchor).
@@ -211,10 +213,13 @@ export class TelegraphRenderer {
   private _classify(p: TelegraphRegisterPayload): TelegraphRole {
     const myId = this.player.id;
 
-    // I cast it — show regardless of whether it'd hit me. Blue for offence
-    // so I can aim; green for self-buffs / heal AoEs.
+    // I cast it. Hostile self-casts get blue (ring shows where the damage
+    // lands — useful for aiming, even though I'm at the centre). Friendly
+    // self-casts (auras, self-buff zones) skip: I'm already at the centre,
+    // so the radius doesn't tell me anything I don't know. Allies still
+    // see it as green.
     if (p.casterId === myId) {
-      return p.affinity === 'hostile' ? 'own_offense' : 'beneficial';
+      return p.affinity === 'hostile' ? 'own_offense' : 'skip';
     }
 
     // Someone else cast it — does it actually affect me? Look up caster

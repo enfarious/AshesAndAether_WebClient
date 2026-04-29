@@ -22,11 +22,13 @@ export class ChatPanel {
   private quitCallback:          (() => void) | null = null;
   private shutdownCallback:      (() => void) | null = null;
   private companionChatCallback: ((message: string) => void) | null = null;
+  private telegraphToggleCallback: ((on: boolean) => void) | null = null;
 
   setRegisterCallback(fn: () => void): void      { this.registerCallback = fn; }
   setQuitCallback(fn: () => void): void           { this.quitCallback = fn; }
   setShutdownCallback(fn: () => void): void       { this.shutdownCallback = fn; }
   setCompanionChatCallback(fn: (message: string) => void): void { this.companionChatCallback = fn; }
+  setTelegraphToggleCallback(fn: (on: boolean) => void): void { this.telegraphToggleCallback = fn; }
 
   constructor(
     private readonly uiRoot: HTMLElement,
@@ -329,6 +331,17 @@ export class ChatPanel {
     if (text === '/shutdown') {
       this.world.pushMessage('system', 'Shutting down…');
       this.shutdownCallback?.();
+      return;
+    }
+
+    // /telegraphs on|off — client-side render toggle for AoE warning rings.
+    // No server round-trip: telegraphs are emitted to everyone in zone; this
+    // just hides the local renderer for players who find them noisy.
+    if (text === '/telegraphs' || text.startsWith('/telegraphs ')) {
+      const arg = text.slice('/telegraphs'.length).trim().toLowerCase();
+      const on  = arg === '' ? true : (arg === 'on' || arg === '1' || arg === 'true');
+      this.telegraphToggleCallback?.(on);
+      this.world.pushMessage('system', `AoE telegraphs ${on ? 'shown' : 'hidden'}.`);
       return;
     }
 

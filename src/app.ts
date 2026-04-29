@@ -12,6 +12,7 @@ import { CloudLayer }         from '@/world/CloudLayer';
 import { AssetLoader }        from '@/world/AssetLoader';
 import { EntityFactory }      from '@/entities/EntityFactory';
 import { AutoAttackRing }     from '@/entities/AutoAttackRing';
+import { TelegraphRenderer } from '@/entities/TelegraphRenderer';
 import { OrbitCamera }        from '@/camera/OrbitCamera';
 import { CameraInput }        from '@/camera/CameraInput';
 import { ClickMoveController } from '@/input/ClickMoveController';
@@ -92,6 +93,7 @@ export class App {
   private assets:  AssetLoader;
   private factory: EntityFactory;
   private autoAttackRing: AutoAttackRing;
+  private telegraphs: TelegraphRenderer;
   private corpses: CorpseSystem;
   private weather: WeatherEffects;
   private clouds:  CloudLayer;
@@ -203,6 +205,7 @@ export class App {
     this.assets  = new AssetLoader();
     this.factory = new EntityFactory(this.scene.scene, this.entities, this.player);
     this.autoAttackRing = new AutoAttackRing(this.scene.scene, this.factory, this.player);
+    this.telegraphs     = new TelegraphRenderer(this.scene.scene, this.router, this.factory, this.entities, this.player);
     this._forestRenderer = new ForestRenderer(this.scene.scene, this.entities);
     this.corpses = new CorpseSystem(this.scene.scene, this.entities);
     this.weather = new WeatherEffects(this.scene.scene);
@@ -446,6 +449,7 @@ export class App {
     this.placementMode?.dispose();
     this.settingsWindow?.dispose();
     this.autoAttackRing.dispose();
+    this.telegraphs.dispose();
   }
 
   // ── Chat command handlers ────────────────────────────────────────────────
@@ -589,6 +593,10 @@ export class App {
     // Tick auto-attack ring (lerp + reposition)
     this.autoAttackRing.update(dt);
 
+    // Tick AoE telegraphs (reposition follow-anchors, advance cast fill,
+    // decay tick pulses, dispose naturally-expired entries)
+    this.telegraphs.update(dt);
+
     // Tick corruption miasma (particles + fog based on distance from anchors)
     if (this.miasma && playerEntity) {
       this.miasma.update(dt, playerEntity.cameraTarget);
@@ -677,6 +685,7 @@ export class App {
           this.clickMove.setHeightmap(null);
           this.factory.setHeightmap(null);
           this.autoAttackRing.setHeightmap(null);
+    this.telegraphs.setHeightmap(null);
           const pe = this.factory.getPlayerEntity();
           if (pe) pe.setHeightmap(null);
         }
@@ -731,6 +740,7 @@ export class App {
       this.chatPanel = new ChatPanel(this.uiRoot, this.world, this.socket, this.player);
       this.chatPanel.setQuitCallback(() => this._handleQuit());
       this.chatPanel.setShutdownCallback(() => this._handleShutdown());
+      this.chatPanel.setTelegraphToggleCallback((on) => this.telegraphs.setVisible(on));
 
       // Wire /cc to client-side BYOLLM
       this.chatPanel.setCompanionChatCallback((message: string) => {
@@ -1190,6 +1200,7 @@ export class App {
       this.clickMove.setWorldRoot(root);  // no-op but kept for future mesh targets
       this.factory.setHeightmap(heightmap);
       this.autoAttackRing.setHeightmap(heightmap);
+      this.telegraphs.setHeightmap(heightmap);
       this._forestRenderer?.setHeightmap(heightmap);
       this.camera.setWorldRoot(root);
         const pe = this.factory.getPlayerEntity();
@@ -1267,6 +1278,7 @@ export class App {
     this.clickMove.setHeightmap(null);
     this.factory.setHeightmap(null);
     this.autoAttackRing.setHeightmap(null);
+    this.telegraphs.setHeightmap(null);
     const peEarly = this.factory.getPlayerEntity();
     if (peEarly) peEarly.setHeightmap(null);
 
@@ -1389,6 +1401,7 @@ export class App {
     this.clickMove.setWorldRoot(root);
     this.factory.setHeightmap(null);
     this.autoAttackRing.setHeightmap(null);
+    this.telegraphs.setHeightmap(null);
     this.camera.setWorldRoot(root);
     // Wire physics to player entity — village has no heightmap, but worldRoot
     // provides collision with placed structures.

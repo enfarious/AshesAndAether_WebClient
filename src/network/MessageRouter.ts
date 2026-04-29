@@ -25,6 +25,8 @@ import type {
   ChannelTickPayload,
   ChannelCompletePayload,
   ChannelBreakPayload,
+  TelegraphRegisterPayload,
+  TelegraphCancelPayload,
   AIDebugTickPayload,
   CommunicationPayload,
   ProximityRosterPayload,
@@ -111,6 +113,8 @@ export class MessageRouter {
   private channelTickListeners       = new Set<(p: ChannelTickPayload) => void>();
   private channelCompleteListeners   = new Set<(p: ChannelCompletePayload) => void>();
   private channelBreakListeners      = new Set<(p: ChannelBreakPayload) => void>();
+  private telegraphRegisterListeners = new Set<(p: TelegraphRegisterPayload) => void>();
+  private telegraphCancelListeners   = new Set<(p: TelegraphCancelPayload) => void>();
   private aiDebugTickListeners       = new Set<(p: AIDebugTickPayload) => void>();
   private vaultGateOpenedListeners  = new Set<(p: VaultGateOpenedPayload) => void>();
   private vaultCompleteListeners    = new Set<(p: VaultCompletePayload) => void>();
@@ -320,6 +324,18 @@ export class MessageRouter {
   onChannelBreak(fn: (p: ChannelBreakPayload) => void): () => void {
     this.channelBreakListeners.add(fn);
     return () => this.channelBreakListeners.delete(fn);
+  }
+
+  /** AoE telegraphs — server-authoritative ground rings warning of
+   *  incoming AoE. Renderer subscribes to register/cancel; natural expiry
+   *  is client-side from `endsAt` (no event needed). */
+  onTelegraphRegister(fn: (p: TelegraphRegisterPayload) => void): () => void {
+    this.telegraphRegisterListeners.add(fn);
+    return () => this.telegraphRegisterListeners.delete(fn);
+  }
+  onTelegraphCancel(fn: (p: TelegraphCancelPayload) => void): () => void {
+    this.telegraphCancelListeners.add(fn);
+    return () => this.telegraphCancelListeners.delete(fn);
   }
 
   /** Subscribe to /aidebug ticks. Server only emits when at least one
@@ -666,6 +682,13 @@ export class MessageRouter {
     });
     s.on('cast_break', (p) => {
       this.castBreakListeners.forEach(fn => fn(p as CastBreakPayload));
+    });
+
+    s.on('telegraph_register', (p) => {
+      this.telegraphRegisterListeners.forEach(fn => fn(p as TelegraphRegisterPayload));
+    });
+    s.on('telegraph_cancel', (p) => {
+      this.telegraphCancelListeners.forEach(fn => fn(p as TelegraphCancelPayload));
     });
 
     s.on('channel_start', (p) => {

@@ -419,6 +419,52 @@ export interface ChannelBreakPayload {
   timestamp: number;
 }
 
+// ── AoE telegraphs (server-authoritative warning windows) ────────────────────
+
+/** AoE footprint — mirrors the server's AoeShape. Cone/line are scaffolded
+ *  even though no current ability uses them; the renderer supports all three
+ *  so future abilities don't require a wire-format change. */
+export type AoeShape =
+  | { shape: 'circle'; radius: number }
+  | { shape: 'cone';   length: number; angle: number }
+  | { shape: 'line';   length: number; width: number };
+
+/** Broadcast when a cast/channel-phase AoE warning ring should appear on
+ *  the ground. Either `origin` (static worldspace XZ for snapshot anchors)
+ *  or `anchorEntityId` (dynamic — client lerps from its entity store) is
+ *  set, never both.
+ *
+ *  Affinity drives colour: `hostile` = red ring on a damage AoE that the
+ *  player should leave; `friendly` = green ring on a beneficial zone they
+ *  may want to stand in.
+ *
+ *  Phase distinguishes the lifecycle: `cast` rings fill 0→1 over the cast
+ *  duration as a wind-up ramp; `channel` rings hold steady and pulse on
+ *  each channel_tick. */
+export interface TelegraphRegisterPayload {
+  id:           string;
+  casterId:     string;
+  abilityId:    string;
+  abilityName:  string;
+  shape:        AoeShape;
+  origin?:      { x: number; z: number };
+  anchorEntityId?: string;
+  heading?:     number;
+  startedAt:    number;
+  endsAt:       number;
+  affinity:     'hostile' | 'friendly';
+  phase:        'cast' | 'channel';
+}
+
+/** Broadcast when a telegraph is removed before its natural endsAt — cast/
+ *  channel break, caster death, etc. Natural expiry doesn't broadcast: the
+ *  renderer disposes from `endsAt` on its own. */
+export interface TelegraphCancelPayload {
+  id:        string;
+  reason:    string;
+  timestamp: number;
+}
+
 // ── AI debug panel (/aidebug) ────────────────────────────────────────────────
 
 export interface AIDebugSnapshotEntity {

@@ -510,8 +510,14 @@ export class CharacterSheet {
     const respecEl = this.root.querySelector<HTMLElement>('#cs-respec-stats');
     if (respecEl) respecEl.style.display = '';
 
-    // Derived stats — rebuild when derived OR derived bonuses change
-    const derivedKey = JSON.stringify(p.derivedStats) + '|' + JSON.stringify(p.derivedStatsBonuses);
+    // Derived stats — rebuild when derived stats, passive bonuses, or
+    // active-buff statMods change. Effect signature is just (id, statMods)
+    // pairs — duration ticks and counts that don't shift the magnitudes
+    // shouldn't trigger a re-render.
+    const buffSig = JSON.stringify(
+      p.effects.map(e => [e.id, e.statMods ?? null]),
+    );
+    const derivedKey = JSON.stringify(p.derivedStats) + '|' + JSON.stringify(p.derivedStatsBonuses) + '|' + buffSig;
     if (derivedKey !== this._lastDerivedKey) {
       this._lastDerivedKey = derivedKey;
       this._renderDerivedStats();
@@ -577,6 +583,19 @@ export class CharacterSheet {
     container.innerHTML = '';
 
     const derived = this.player.derivedStats;
+    const passiveBonuses = this.player.derivedStatsBonuses ?? {};
+    // Aggregate active-buff statMods so the +nn column shows passive +
+    // buff in one place. Each effect carries its own (already-flat) mods
+    // from the server — sum across to handle multi-buff overlap.
+    const buffBonuses: Record<string, number> = {};
+    for (const effect of this.player.effects) {
+      if (!effect.statMods) continue;
+      for (const [k, v] of Object.entries(effect.statMods)) {
+        if (typeof v === 'number') {
+          buffBonuses[k] = (buffBonuses[k] ?? 0) + v;
+        }
+      }
+    }
 
     for (const section of DERIVED_SECTIONS) {
       // Section label
@@ -586,14 +605,22 @@ export class CharacterSheet {
       container.appendChild(label);
 
       // Stat rows
-      const bonuses = this.player.derivedStatsBonuses;
       for (const key of section.keys) {
         const row = document.createElement('div');
         row.className = 'cs-derived-row';
-        const value = derived ? derived[key] ?? 0 : 0;
-        const bonus = bonuses ? (bonuses as Record<string, number>)[key] ?? 0 : 0;
-        const bonusHtml = bonus !== 0
-          ? `<span class="cs-derived-bonus${bonus < 0 ? ' cs-derived-bonus-neg' : ''}" title="From passive abilities">${bonus > 0 ? '+' : ''}${formatStat(key, bonus)}</span>`
+        const passive = (passiveBonuses as Record<string, number>)[key] ?? 0;
+        const buff    = buffBonuses[key] ?? 0;
+        const total   = passive + buff;
+        // Effective value for the centre column = base derived + the bonus
+        // we're displaying. The server's `derivedStats` already folds in
+        // passives; we add buff mods on top so the value matches the +nn.
+        const baseValue = derived ? (derived[key] ?? 0) : 0;
+        const value     = baseValue + buff;
+        const tooltip   = buff !== 0 && passive !== 0 ? `From passives +${passive}, buffs ${buff > 0 ? '+' : ''}${buff}`
+                        : buff !== 0                  ? `From active buffs`
+                        :                                `From passive abilities`;
+        const bonusHtml = total !== 0
+          ? `<span class="cs-derived-bonus${total < 0 ? ' cs-derived-bonus-neg' : ''}" title="${tooltip}">${total > 0 ? '+' : ''}${formatStat(key, total)}</span>`
           : '';
         row.innerHTML = `
           <span class="cs-derived-label">${STAT_LABELS[key] ?? key}</span>

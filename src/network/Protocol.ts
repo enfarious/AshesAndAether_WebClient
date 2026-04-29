@@ -159,6 +159,11 @@ export interface StatusEffect {
   duration: number;            // remaining seconds
   type?: 'buff' | 'debuff';   // display coloring; defaults to 'buff'
   description?: string;        // hover tooltip text
+  /** Flat stat additions this effect grants the recipient. Mirrors
+   *  ActiveBuff.statMods on the server. Used by the character sheet to
+   *  fold buff contributions into the `+nn` column on top of the passive
+   *  bonuses (which arrive separately as derivedStatsBonuses). */
+  statMods?: Record<string, number>;
 }
 
 export interface CharacterState {

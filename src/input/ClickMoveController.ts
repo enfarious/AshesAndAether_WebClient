@@ -82,15 +82,19 @@ export class ClickMoveController {
     // ── 2. Terrain hit? ─────────────────────────────────────────────────────
     // WASD has priority over click-to-move
     if (this._playerEntity?.mode === PlayerMoveMode.WASD) return;
-    // Block movement while rooted or dead
-    if (!this.player.isAlive || this.player.isRooted) return;
+    // Bail entirely when stunned or mid-cast (no rotation either).
+    if (!this.player.isAlive || this.player.isRotationLocked) return;
 
     if (this.heightmap) {
       const hit = this.heightmap.raycast(this.raycaster.ray);
       if (!hit) return;
       this.socket.sendMovePosition({ x: hit.x, y: hit.y, z: hit.z });
-      const walkSpeed = this.player.baseMovementSpeed * SPEED_MULTIPLIERS['jog'];
-      this._playerEntity?.kickClickPredict(new THREE.Vector3(hit.x, hit.y, hit.z), walkSpeed);
+      // Skip local kick-prediction when rooted — server will rotate the
+      // player toward the click without moving them.
+      if (!this.player.isMovementLocked) {
+        const walkSpeed = this.player.baseMovementSpeed * SPEED_MULTIPLIERS['jog'];
+        this._playerEntity?.kickClickPredict(new THREE.Vector3(hit.x, hit.y, hit.z), walkSpeed);
+      }
       return;
     }
 

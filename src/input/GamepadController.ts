@@ -141,8 +141,10 @@ export class GamepadController {
     // ── D-pad ─────────────────────────────────────────────────────────────
     this._tickDpad(snap);
 
-    // ── Death / root gate ────────────────────────────────────────────────
-    if (!this.player.isAlive || this.player.isRooted) {
+    // ── Rotation-locked gate (stunned / mid-cast) ───────────────────────
+    // Movement-only-locked (rooted) is handled below: server accepts the
+    // heading update from sendMoveContinuous and turns the player in place.
+    if (!this.player.isAlive || this.player.isRotationLocked) {
       this._stopMovement();
       return;
     }

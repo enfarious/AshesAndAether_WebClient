@@ -15,13 +15,11 @@ import type { PlayerState }      from '@/state/PlayerState';
  * a no-op — rotate the camera/character and try again.
  */
 export class TabTargetService {
-  /** Cone gate as cos(half-angle). 0.0 = 180° total (full forward hemisphere
-   *  anchored at the character, not the camera) — feels right for a 3rd-person
-   *  WASD game where the model's facing is the source of truth. Tighten by
-   *  raising (0.5 = 120°, 0.707 = 90°). */
-  private static readonly TAB_CONE_HALF_COS = 0.0;
   /** Max XZ distance for Tab candidates, in metres. Beyond this, the entity
-   *  is invisible enough that auto-targeting it would feel arbitrary. */
+   *  is invisible enough that auto-targeting it would feel arbitrary. No
+   *  forward-cone gate — ASD-strafing means the model rarely points where
+   *  the player is engaging from, and the camera/model are independent.
+   *  Tab cycles all hostiles in range, hostile-first by distance. */
   private static readonly TAB_RANGE_M       = 50;
   constructor(
     private readonly entities:          EntityRegistry,
@@ -86,21 +84,16 @@ export class TabTargetService {
 
   /* ── Internals ─────────────────────────────────────────────────────────── */
 
-  /** Tab cycles "engagement candidates" — non-ally entities inside a forward
-   *  120° cone, within 50m. Hostile-first sort, then distance. If the cone
-   *  is empty, the cycle is empty and Tab is a no-op. Tweakable via the
-   *  `TAB_CONE_HALF_COS` / `TAB_RANGE_M` class constants. */
+  /** Tab cycles "engagement candidates" — non-ally entities within 50m.
+   *  Hostile-first sort, then by distance. No facing/cone gate: the player's
+   *  model rotation rarely matches camera or intent during ASD strafing,
+   *  and using camera heading would still miss anything not directly under
+   *  the cursor. Modern WoW-style "cycle nearest enemy" is the simpler fit. */
   private _buildEnemyCandidates(): Entity[] {
     const playerPos = this.getPlayerPosition();
     const playerId  = this.entities.playerId;
     const allyIds   = this._allyIds();
-
-    // Forward direction from player heading. Heading 0 = +Z (south), CW.
-    // dirX = sin(h), dirZ = cos(h) — matches the server's heading convention.
-    const headingRad = (this.player.heading) * Math.PI / 180;
-    const dirX       = Math.sin(headingRad);
-    const dirZ       = Math.cos(headingRad);
-    const rangeSq    = TabTargetService.TAB_RANGE_M * TabTargetService.TAB_RANGE_M;
+    const rangeSq   = TabTargetService.TAB_RANGE_M * TabTargetService.TAB_RANGE_M;
 
     const candidates = this.entities.getAll().filter(e => {
       if (e.id === playerId)    return false;
@@ -116,17 +109,10 @@ export class TabTargetService {
         default:           return false;
       }
 
-      // Range gate (XZ).
+      // Range gate (XZ) only.
       const dx = e.position.x - playerPos.x;
       const dz = e.position.z - playerPos.z;
-      const distSq = dx * dx + dz * dz;
-      if (distSq > rangeSq) return false;
-      if (distSq < 1e-4)    return true;  // standing inside us — always include
-
-      // Forward cone gate. dot(toEntity_norm, forward) ≥ cos(half-angle).
-      const dist = Math.sqrt(distSq);
-      const dot  = (dx * dirX + dz * dirZ) / dist;
-      return dot >= TabTargetService.TAB_CONE_HALF_COS;
+      return (dx * dx + dz * dz) <= rangeSq;
     });
 
     // Hostile mobs sort first so combat tabs feel responsive; everything

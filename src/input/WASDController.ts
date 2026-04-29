@@ -159,8 +159,10 @@ export class WASDController {
     if (this.held.has('=') || this.held.has('+')) this.camera.addZoom(+ZOOM_SPEED * dt);
     if (this.held.has('-'))                       this.camera.addZoom(-ZOOM_SPEED * dt);
 
-    // Gate on isAlive / isRooted — stop movement if dead or movement-impaired
-    if (!this.player.isAlive || this.player.isRooted) {
+    // Gate on isAlive / isRotationLocked — stunned or mid-cast bails
+    // entirely (no input registered). Rooted alone is handled below: input
+    // accepted but only the rotation half is applied locally.
+    if (!this.player.isAlive || this.player.isRotationLocked) {
       if (this.isMoving) {
         this.socket.sendMoveStop(this._predictedFinalPosition());
         this.isMoving = false;
@@ -211,9 +213,19 @@ export class WASDController {
     // here — that would flip the mode back to WASD and clobber the arc.
     // Just clear our prediction state so the next post-jump frame re-seeds
     // cleanly from wherever the entity actually landed.
-    if (this._playerEntity?.isJumping) {
+    //
+    // Rooted (without stun/cast — those return above) skips position
+    // prediction too. Heading prediction still runs below so the model can
+    // pivot in place even though server won't move it.
+    const movementLocked = this.player.isMovementLocked;
+    if (this._playerEntity?.isJumping || movementLocked) {
       if (this._localX !== null) {
         this._localX = this._localY = this._localZ = null;
+      }
+      if (movementLocked && !this._playerEntity?.isJumping) {
+        // Tell the entity we're no longer driving WASD position so it
+        // returns to IDLE-mode lerp from whatever the server says.
+        this._playerEntity?.stopWASD();
       }
     } else {
       // Seed from entity position on the first frame of each movement burst.
@@ -249,6 +261,13 @@ export class WASDController {
     //   heading 0 = +Z (south), increases clockwise -> atan2(X, Z).
     let headingDeg = Math.atan2(normX, normZ) * (180 / Math.PI);
     if (headingDeg < 0) headingDeg += 360;
+
+    // Local rotation prediction — apply heading every frame the player has
+    // an input direction. The model otherwise only rotates when the server's
+    // state_update lands (~10Hz, async, sometimes dropped for own player),
+    // so the visible facing lagged or stuck mid-strafe. With prediction the
+    // forward arrow tracks camera+input at full framerate.
+    this._playerEntity?.setHeading(headingDeg);
 
     // Tier resolution (priority: sprint hold > walk mode > jog default).
     // Shift-hold also keeps the cap rolling — when stamina hits 0 the server

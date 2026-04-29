@@ -148,7 +148,10 @@ export class RemoteEntity extends EntityObject {
       root.position.set(entity.position.x, entity.position.y, entity.position.z);
     }
     if (entity.heading !== undefined) {
-      root.rotation.y = THREE.MathUtils.degToRad(-entity.heading);
+      // See PlayerEntity.setHeading note on convention — server's heading H
+      // (degrees, 0 = +Z, atan2(dx, dz)) maps to rotation.y = H_rad. The
+      // legacy `-H` was masked by symmetric capsule meshes.
+      root.rotation.y = THREE.MathUtils.degToRad(entity.heading);
     }
 
     scene.add(root);
@@ -251,7 +254,7 @@ export class RemoteEntity extends EntityObject {
       this.object3d.position.copy(position);
     }
     if (heading !== undefined) {
-      const targetRad = THREE.MathUtils.degToRad(-heading);
+      const targetRad = THREE.MathUtils.degToRad(heading);
       if (this._targetHeading === null) {
         // First update — snap to avoid spinning from 0
         this.object3d.rotation.y = targetRad;

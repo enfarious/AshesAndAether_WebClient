@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import type { EntityRegistry } from '@/state/EntityRegistry';
 import type { PlayerState } from '@/state/PlayerState';
 import type { HeightmapService } from '@/world/HeightmapService';
-import { PlayerEntity } from './PlayerEntity';
+import { PlayerEntity, PlayerMoveMode } from './PlayerEntity';
 import { RemoteEntity } from './RemoteEntity';
 import type { EntityObject } from './EntityObject';
 import { ClientConfig } from '@/config/ClientConfig';
@@ -33,6 +33,7 @@ export class EntityFactory {
   private highlightMat:  THREE.MeshBasicMaterial | null = null;
   private highlightAge   = 0;
   private unsubTarget:   (() => void) | null = null;
+  private _playerHeadingUnsub: (() => void) | null = null;
 
   constructor(
     private readonly scene:       THREE.Scene,
@@ -127,6 +128,7 @@ export class EntityFactory {
     this.objects.clear();
     this.plantIds.clear();
     this.player = null;
+    if (this._playerHeadingUnsub) { this._playerHeadingUnsub(); this._playerHeadingUnsub = null; }
 
     if (this.unsubTarget) { this.unsubTarget(); this.unsubTarget = null; }
     if (this.highlightRing) {
@@ -150,7 +152,11 @@ export class EntityFactory {
     if (stale) {
       stale.dispose();
       this.objects.delete(entity.id);
-      if (stale === this.player) this.player = null;
+      if (stale === this.player) {
+        this.player = null;
+        this._playerHeadingUnsub?.();
+        this._playerHeadingUnsub = null;
+      }
     }
 
     const isPlayer = entity.id === this.registry.playerId;
@@ -181,6 +187,16 @@ export class EntityFactory {
       const pe = new PlayerEntity(cs, this.scene);
       this.player = pe;
       obj = pe;
+      // Sync model rotation from PlayerState — covers click-to-move, cast
+      // auto-face, and any other server-driven heading change. WASD has its
+      // own per-frame local prediction in WASDController.setHeading; we
+      // skip the sync while WASD is active, otherwise the (lagging) server
+      // heading would clobber the (live) camera-relative prediction and
+      // freeze the rotation mid-strafe.
+      this._playerHeadingUnsub = this.playerState.onChange(() => {
+        if (pe.mode === PlayerMoveMode.WASD) return;
+        pe.setHeading(this.playerState.heading);
+      });
     } else {
       obj = new RemoteEntity(entity, this.scene);
     }

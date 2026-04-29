@@ -251,6 +251,19 @@ export class OrbitCamera {
 
   getYaw(): number { return this.yaw; }
 
+  /** Camera's forward look direction as a server-convention heading (degrees,
+   *  0 = +Z, atan2(dx, dz)). Used by Tab targeting so the cone gates on what
+   *  the camera is pointing at, not where the character is facing. */
+  getForwardHeading(): number {
+    // Camera sits at (sin(yaw), _, cos(yaw)) relative to target, looking
+    // back at it — so the look direction is (-sin(yaw), -cos(yaw)) on XZ.
+    // atan2(dx, dz) gives our server heading. Equivalent to (yaw + 180°) mod 360.
+    let deg = (this.yaw * 180 / Math.PI) + 180;
+    while (deg >= 360) deg -= 360;
+    while (deg < 0)    deg += 360;
+    return deg;
+  }
+
   // ── Collision (spring-arm) ─────────────────────────────────────────────────
 
   /**

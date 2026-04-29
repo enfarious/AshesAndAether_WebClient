@@ -184,6 +184,20 @@ export class PlayerState {
    *  in WASDController + ClickMoveController treats cast-time as immobile
    *  the same way it treats root/stun. */
   get isRooted():      boolean { return this._effects.some(e => e.id === 'rooted' || e.id === 'stunned' || e.id === 'casting'); }
+
+  /** True while a hard-CC stun is active. Stun blocks both rotation and
+   *  movement. Distinct from `isRooted` (which is a broader catch-all). */
+  get isStunned(): boolean { return this._effects.some(e => e.id === 'stunned'); }
+
+  /** True when the player can't even rotate — stunned or mid-cast. WASD/
+   *  click/gamepad input handlers bail entirely on this. Channeling is NOT
+   *  here; channeling allows rotation (movement is speed-clamped server-side). */
+  get isRotationLocked(): boolean { return this._effects.some(e => e.id === 'stunned' || e.id === 'casting'); }
+
+  /** True when XZ movement is blocked. Includes rooted, stunned, casting.
+   *  Rooted-only allows rotation: input controllers should accept heading
+   *  changes but skip local position prediction. */
+  get isMovementLocked(): boolean { return this._effects.some(e => e.id === 'rooted' || e.id === 'stunned' || e.id === 'casting'); }
   /** True when channeling. Movement is allowed BUT clamped server-side to
    *  channel tier (~1.225 m/s). Sprint input breaks the channel. The HUD
    *  uses this flag to render the cast bar in drain mode. */

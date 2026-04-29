@@ -228,11 +228,46 @@ export class PlayerEntity extends EntityObject {
     ring.position.y = 0.05;
     root.add(ring);
 
+    // Forward indicator — long flat arrow on the ground extending out from
+    // the capsule's feet, points along local +Z (model forward). The capsule
+    // is otherwise visually symmetric so without this you can't tell which
+    // way you're facing during ASD strafing or after a cast auto-rotates.
+    // Made deliberately long (~1.5m) so even small heading changes are
+    // immediately visible.
+    const fwdGeo = new THREE.BufferGeometry();
+    const fwdVerts = new Float32Array([
+      -0.28, 0,  0.0,    // back-left
+       0.28, 0,  0.0,    // back-right
+      -0.10, 0,  0.7,    // mid-left  (haft notch)
+       0.10, 0,  0.7,    // mid-right (haft notch)
+      -0.25, 0,  0.7,    // shoulder-left
+       0.25, 0,  0.7,    // shoulder-right
+       0.0,  0,  1.5,    // tip (forward, +Z = local model forward)
+    ]);
+    fwdGeo.setAttribute('position', new THREE.BufferAttribute(fwdVerts, 3));
+    // Haft (rectangle) + arrowhead (triangle from shoulders to tip).
+    fwdGeo.setIndex([
+      0, 1, 3,  0, 3, 2,    // haft body
+      4, 5, 6,              // arrowhead
+    ]);
+    fwdGeo.computeVertexNormals();
+    const fwdMat = new THREE.MeshBasicMaterial({
+      color:        0x88e0ff,
+      transparent:  true,
+      opacity:      0.75,
+      side:         THREE.DoubleSide,
+      depthWrite:   false,
+    });
+    const fwdMesh = new THREE.Mesh(fwdGeo, fwdMat);
+    fwdMesh.position.y = 0.06;
+    fwdMesh.renderOrder = 5;
+    root.add(fwdMesh);
+
     if (character.position) {
       root.position.set(character.position.x, character.position.y, character.position.z);
     }
     if (character.heading !== undefined) {
-      root.rotation.y = THREE.MathUtils.degToRad(-character.heading);
+      root.rotation.y = THREE.MathUtils.degToRad(character.heading);
     }
 
     scene.add(root);
@@ -398,6 +433,20 @@ export class PlayerEntity extends EntityObject {
    * Called by WASDController every frame while movement keys are held.
    * Sets mode=WASD, applies terrain following + wall collision, then writes position.
    */
+  /** Set the model rotation directly. Used by local prediction (WASD pumps
+   *  this every frame from camera-relative input) and by EntityFactory's
+   *  PlayerState subscription so rotation tracks server heading without
+   *  going through the entity-registry update path (which doesn't reliably
+   *  fire for the own player on continuous movement state updates). */
+  setHeading(deg: number): void {
+    // Server heading convention: 0 = +Z (south), atan2(dx, dz). To rotate
+    // local +Z (model forward) to world (sin(H), cos(H)) requires
+    // rotation.y = H_rad (positive). The codebase historically used
+    // -H_rad, which only worked by symmetry for headings on the 0/180
+    // axis — a forward-indicator made this immediately visible.
+    this.object3d.rotation.y = THREE.MathUtils.degToRad(deg);
+  }
+
   drivePosition(x: number, y: number, z: number): void {
     this._mode = PlayerMoveMode.WASD;
 
@@ -936,7 +985,7 @@ export class PlayerEntity extends EntityObject {
         // Stale broadcast from before the anchor — drop it.
         // Update heading though, since rotation can keep updating during settle.
         if (heading !== undefined) {
-          this.object3d.rotation.y = THREE.MathUtils.degToRad(-heading);
+          this.object3d.rotation.y = THREE.MathUtils.degToRad(heading);
         }
         return;
       }
@@ -957,7 +1006,7 @@ export class PlayerEntity extends EntityObject {
       this._kickActive = false;
       this._kickTarget  = null;
       if (heading !== undefined) {
-        this.object3d.rotation.y = THREE.MathUtils.degToRad(-heading);
+        this.object3d.rotation.y = THREE.MathUtils.degToRad(heading);
       }
       return;
     }
@@ -992,7 +1041,7 @@ export class PlayerEntity extends EntityObject {
     this._serverPosTime = now;
 
     if (heading !== undefined) {
-      this.object3d.rotation.y = THREE.MathUtils.degToRad(-heading);
+      this.object3d.rotation.y = THREE.MathUtils.degToRad(heading);
     }
   }
 }

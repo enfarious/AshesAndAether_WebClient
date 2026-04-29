@@ -178,8 +178,16 @@ export class PlayerState {
     this._lastXpBreakdown = info;
   }
   get isAlive():       boolean { return this._isAlive; }
-  /** True when any active effect prevents movement (root, stun, etc.). */
-  get isRooted():      boolean { return this._effects.some(e => e.id === 'rooted' || e.id === 'stunned'); }
+  /** True when any active effect prevents movement (root, stun, casting, etc.).
+   *  Casting is mirrored as a synthetic 'casting' buff by the server (see
+   *  CombatStateStore.setCasting) so the existing client-side movement gate
+   *  in WASDController + ClickMoveController treats cast-time as immobile
+   *  the same way it treats root/stun. */
+  get isRooted():      boolean { return this._effects.some(e => e.id === 'rooted' || e.id === 'stunned' || e.id === 'casting'); }
+  /** True when channeling. Movement is allowed BUT clamped server-side to
+   *  channel tier (~1.225 m/s). Sprint input breaks the channel. The HUD
+   *  uses this flag to render the cast bar in drain mode. */
+  get isChanneling():  boolean { return this._effects.some(e => e.id === 'channeling'); }
   get isGuest():       boolean { return this._isGuest; }
   get position(): Vector3 { return this._position; }
   get heading():  number  { return this._heading; }
@@ -294,9 +302,9 @@ export class PlayerState {
     // prediction is accurate from the first frame.
     if (this._derivedStats?.movementSpeed) {
       this._baseMovementSpeed = this._derivedStats.movementSpeed;
-      // Pre-compute run speed for WASDController's initial frames
+      // Pre-compute jog speed for WASDController's initial frames
       // (overwritten by the first server state_update once movement starts).
-      this._movementSpeedMPS = this._baseMovementSpeed * SPEED_MULTIPLIERS['run'];
+      this._movementSpeedMPS = this._baseMovementSpeed * SPEED_MULTIPLIERS['jog'];
     }
     // Ability tree
     this._unlockedActiveNodes  = character.unlockedAbilities?.activeNodes  ?? [];
@@ -363,7 +371,9 @@ export class PlayerState {
     atb?:              StatBar;
     autoAttack?:       StatBar;
     inCombat?:         boolean;
-    autoAttackTarget?: string;
+    /** Explicit null = cleared; undefined = unchanged. Server now always
+     *  emits null on clear (JSON drops undefined keys). */
+    autoAttackTarget?: string | null;
     specialCharges?:   Record<string, number>;
     enmityList?:       EnmityEntry[];
   }): void {

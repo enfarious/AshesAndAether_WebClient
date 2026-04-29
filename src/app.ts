@@ -45,6 +45,7 @@ import { CompanionHUD }       from '@/ui/CompanionHUD';
 import { SystemMenu }         from '@/ui/SystemMenu';
 import { LayoutEditor }       from '@/ui/LayoutEditor';
 import { EnmityPanel }        from '@/ui/EnmityPanel';
+import { AIDebugWindow }      from '@/ui/AIDebugWindow';
 import { BuildPanel }         from '@/ui/BuildPanel';
 import { RegistrationModal }  from '@/ui/RegistrationModal';
 import { TravelPanel }        from '@/ui/TravelPanel';
@@ -143,6 +144,7 @@ export class App {
   private systemMenu:        SystemMenu         | null = null;
   private layoutEditor:      LayoutEditor       | null = null;
   private enmityPanel:       EnmityPanel        | null = null;
+  private aiDebugWindow:     AIDebugWindow      | null = null;
   private buildPanel:        BuildPanel         | null = null;
   private placementMode:     PlacementMode      | null = null;
 
@@ -436,6 +438,7 @@ export class App {
     this.guildPanel?.dispose();
     this.companionPanel?.dispose();
     this.enmityPanel?.dispose();
+    this.aiDebugWindow?.dispose();
     this.buildPanel?.dispose();
     this.systemMenu?.dispose();
     this.layoutEditor?.dispose();
@@ -937,6 +940,11 @@ export class App {
         this.player.setTarget(entityId, entity?.name ?? null);
       });
     }
+    if (!this.aiDebugWindow) {
+      // Subscribed via /aidebug on (admin-only). Panel auto-shows on first
+      // tick from server; no other client-side gate needed.
+      this.aiDebugWindow = new AIDebugWindow(this.uiRoot, this.router, this.socket);
+    }
     if (!this.buildPanel) {
       this.buildPanel = new BuildPanel(this.uiRoot, this.socket, this.router);
       // B key — only toggle if in own village
@@ -1050,12 +1058,58 @@ export class App {
     });
 
     // Player jump event — play the Y-arc visual on the matching entity.
-    // Self goes through the local PlayerEntity; remote players will need
-    // their own arc on RemoteEntity (deferred until we test multiplayer).
+    // Skip self: WASDController's spacebar handler already kicked off the
+    // jump locally with captured velocity. Replaying it from this server
+    // round-trip would reset _jumpVelX/_jumpVelZ to zero (defaults), killing
+    // horizontal motion mid-arc — exactly the "straight up, then horizontal
+    // kicks in" hitch. Remote players will need their own RemoteEntity arc
+    // when we test multiplayer.
     this.router.onPlayerJump((entityId) => {
+      if (entityId === this.player.id) return;
+      // (Remote-jump visual: deferred until RemoteEntity.playJump exists.)
+    });
+
+    // Player dash event — server-authoritative teleport. The state_update
+    // that follows would otherwise lerp the 5m gap over ~100ms (= ~50 m/s
+    // slide), which reads as the entity sliding "off the rails". Snapping
+    // here ahead of the lerp keeps the dash feeling instant.
+    this.router.onPlayerDash((entityId, x, z) => {
       if (entityId === this.player.id) {
-        this.factory.getPlayerEntity()?.playJump();
+        this.factory.getPlayerEntity()?.snapTo(x, z);
+        this.wasd?.clearPrediction();
       }
+      // (Remote-dash visual: snap remote entity too — handled by their own
+      // setTargetPosition flow, just need a tighter teleport threshold there
+      // if it ever feels like a slide.)
+    });
+
+    // Cast lifecycle — open / close the HUD cast bar for self only.
+    // Remote cast bars (above nameplates) are deferred until nameplates exist.
+    this.router.onCastStart((p) => {
+      if (p.entityId === this.player.id) {
+        this.hud?.showCast(p.abilityName, p.durationMs);
+      }
+    });
+    this.router.onCastComplete((p) => {
+      if (p.entityId === this.player.id) this.hud?.completeCast();
+    });
+    this.router.onCastBreak((p) => {
+      if (p.entityId === this.player.id) this.hud?.breakCast();
+    });
+
+    // Channel lifecycle — same HUD widget but drain mode (1 → 0). Server's
+    // channel_start arrives right after cast_complete for channeled
+    // abilities, so the bar transitions cleanly cast → channel.
+    this.router.onChannelStart((p) => {
+      if (p.entityId === this.player.id) {
+        this.hud?.showChannel(p.abilityName, p.durationMs);
+      }
+    });
+    this.router.onChannelComplete((p) => {
+      if (p.entityId === this.player.id) this.hud?.completeCast();
+    });
+    this.router.onChannelBreak((p) => {
+      if (p.entityId === this.player.id) this.hud?.breakCast();
     });
 
     this.hud.show();

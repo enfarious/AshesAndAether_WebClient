@@ -95,6 +95,9 @@ export class SocketClient {
       'vault_room_enter', 'vault_mob_killed', 'vault_room_cleared',
       'vault_gate_opened', 'vault_complete', 'vault_failed', 'vault_player_left',
       'combat_error',
+      'cast_start', 'cast_complete', 'cast_break',
+      'channel_start', 'channel_tick', 'channel_complete', 'channel_break',
+      'ai_debug_tick',
       'error',
       'pong',
       'command_response',
@@ -201,10 +204,11 @@ export class SocketClient {
     });
   }
 
-  sendMoveStop(): void {
+  sendMoveStop(position?: Vector3): void {
     this._send('move', {
       method: 'heading',
       speed: 'stop',
+      ...(position ? { position } : {}),
       timestamp: Date.now(),
     });
   }

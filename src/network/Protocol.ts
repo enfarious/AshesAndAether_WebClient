@@ -6,14 +6,17 @@
 export type ClientType = 'text' | '2d' | '3d' | 'vr';
 export type AuthMethod  = 'guest' | 'credentials' | 'token' | 'airlock';
 export type MoveMethod  = 'heading' | 'position' | 'compass';
-export type MovementSpeed     = 'walk' | 'jog' | 'run' | 'stop';
+export type MovementSpeed     = 'channel' | 'walk' | 'jog' | 'sprint' | 'stop';
 
-/** Mirrors server SPEED_MULTIPLIERS — applied to base movement speed. */
+/** Mirrors server SPEED_MULTIPLIERS — applied to base movement speed.
+ *  At base 7 m/s: channel 1.225 / walk 2.45 / jog 8.05 / sprint 12.95 m/s.
+ *  `channel` is a server-applied clamp during channeling, not a client-selectable tier. */
 export const SPEED_MULTIPLIERS: Record<MovementSpeed, number> = {
-  walk: 1.0,
-  jog:  2.0,
-  run:  3.5,
-  stop: 0.0,
+  channel: 0.175,
+  walk:    0.35,
+  jog:     1.15,
+  sprint:  1.85,
+  stop:    0.0,
 };
 
 export type CompassDirection  = 'N' | 'NE' | 'E' | 'SE' | 'S' | 'SW' | 'W' | 'NW';
@@ -133,6 +136,8 @@ export interface DerivedStats {
   magicEvasion: number; magicAbsorption: number;
   // Speed & timing
   initiative: number; movementSpeed: number; attackSpeedBonus: number;
+  // Caster resilience — subtracts from damage-interrupt roll, capped 85
+  castStability: number;
 }
 
 export interface CorruptionStatus {
@@ -309,7 +314,9 @@ export interface StateUpdatePayload {
     atb?: StatBar;
     autoAttack?: StatBar;
     inCombat?: boolean;
-    autoAttackTarget?: string;
+    /** Explicit null when cleared. Server always emits a value (JSON drops
+     *  undefined fields, which would leave the client holding stale ids). */
+    autoAttackTarget?: string | null;
     specialCharges?: Record<string, number>;
     enmityList?: EnmityEntry[];
   };
@@ -346,6 +353,158 @@ export interface CombatHitData {
   /** True when this CombatHitData was synthesised from a `combat_heal` event
    *  rather than a damage-dealing hit. Lets the UI use a heal-specific flash. */
   isHeal?: boolean;
+}
+
+/** Broadcast when a cast-time ability begins. Drives the cast bar HUD on
+ *  the casting client + (future) remote nameplate cast bars. */
+export interface CastStartPayload {
+  entityId:    string;
+  abilityId:   string;
+  abilityName: string;
+  durationMs:  number;
+  targetId:    string;
+  timestamp:   number;
+}
+
+/** Broadcast when a cast resolves successfully (ability fires). */
+export interface CastCompletePayload {
+  entityId:  string;
+  abilityId: string;
+  timestamp: number;
+}
+
+/** Broadcast when a cast is interrupted before completion. Reasons:
+ *  `player_cancel`, `jump`, `dash`, `damage_interrupt`, future `stunned`/
+ *  `knocked_back` etc. MP stays gone (committed at cast-start). */
+export interface CastBreakPayload {
+  entityId:  string;
+  abilityId: string;
+  reason:    string;
+  timestamp: number;
+}
+
+/** Broadcast when a channel begins (cast → channel transition). Drives
+ *  the cast-bar HUD into drain mode (100% → 0% over durationMs). */
+export interface ChannelStartPayload {
+  entityId:    string;
+  abilityId:   string;
+  abilityName: string;
+  durationMs:  number;
+  targetId:    string;
+  timestamp:   number;
+}
+
+/** Broadcast on each channel tick. Optional consumer for sound effects
+ *  or visual pulse — the cast bar fills locally from start time. */
+export interface ChannelTickPayload {
+  entityId:  string;
+  abilityId: string;
+  timestamp: number;
+}
+
+/** Broadcast when a channel ends naturally (full duration elapsed). */
+export interface ChannelCompletePayload {
+  entityId:  string;
+  abilityId: string;
+  timestamp: number;
+}
+
+/** Broadcast when a channel is interrupted before completion. Reasons:
+ *  `player_cancel`, `jump`, `dash`, `sprint_input`, `damage_interrupt`,
+ *  `caster_died`, `anchor_lost`, `insufficient_mp`. */
+export interface ChannelBreakPayload {
+  entityId:  string;
+  abilityId: string;
+  reason:    string;
+  timestamp: number;
+}
+
+// ── AI debug panel (/aidebug) ────────────────────────────────────────────────
+
+export interface AIDebugSnapshotEntity {
+  id:                 string;
+  name:               string;
+  type:               'player' | 'companion';
+  hp:                 number;
+  maxHp:              number;
+  mp:                 number;
+  maxMp:              number;
+  stam:               number;
+  maxStam:            number;
+  pos:                { x: number; z: number };
+  isAlive:            boolean;
+  inCombat?:          boolean;
+  state?:             string;
+  archetype?:         string | null;
+  engagementMode?:    string;
+  preferredRange?:    string | null;
+  behaviorState?:     string;
+  autoAttackTargetId: string | null;
+  /** Server-resolved auto-attack target name (mob/player/companion). null
+   *  when no target. Server has the EntityStore so it can resolve mobs. */
+  targetName:         string | null;
+  /** 2D distance (m) to autoAttackTarget. null when no target. */
+  targetDistance:     number | null;
+}
+
+export interface AIDebugConsideredAbility {
+  abilityId:  string;
+  category:   'damage' | 'cc' | 'heal' | 'buff' | 'debuff';
+  baseWeight: number;
+  weight:     number;
+  jitter:     number;
+  score:      number;
+  skipReason: string | null;
+}
+
+export interface AIDebugDecision {
+  tickAt:          number;
+  selfId:          string;
+  selfPos:         { x: number; z: number };
+  selfHp:          number;
+  selfMaxHp:       number;
+  selfMana:        number;
+  selfStamina:     number;
+  state:           'idle' | 'engaging';
+  movementMode:    'chase' | 'stationary' | 'kite';
+  preferredRange:  'close' | 'mid' | 'long';
+  rangeBand:       { min: number; ideal: number; max: number };
+  target: {
+    id:        string;
+    /** Server-resolved entity name (mob/player/companion). Optional —
+     *  may be missing if the entity left the zone between tick + emit. */
+    name?:     string;
+    hp:        number;
+    maxHp:     number;
+    distance:  number;
+  } | null;
+  movement:        { heading: number; speed: number } | null;
+  considered:      AIDebugConsideredAbility[];
+  emergencyHeal:   boolean;
+  chosen:          { abilityId: string; targetId: string; targetName?: string } | null;
+  reason:          string;
+  engagementMode?: string;
+}
+
+export interface AIDebugAATransition {
+  at:       number;
+  entityId: string;
+  prev:     string | null;
+  next:     string | null;
+  reason:   string;
+}
+
+/** Broadcast each zone tick to subscribers of /aidebug. Carries a snapshot
+ *  of the subscriber's player + their companions, plus per-tick BT decisions
+ *  and autoAttackTarget transitions. */
+export interface AIDebugTickPayload {
+  zoneId:        string;
+  tickAt:        number;
+  ownPlayerId:   string;
+  player:        AIDebugSnapshotEntity;
+  companions:    AIDebugSnapshotEntity[];
+  decisions:     AIDebugDecision[];
+  aaTransitions: AIDebugAATransition[];
 }
 
 /** Sent only to the caster when a cast is rejected (OOM, range, on-CD, silenced, etc.). */

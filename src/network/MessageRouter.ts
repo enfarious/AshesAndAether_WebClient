@@ -18,6 +18,14 @@ import type {
   CombatHitData,
   CombatOutcome,
   CombatErrorPayload,
+  CastStartPayload,
+  CastCompletePayload,
+  CastBreakPayload,
+  ChannelStartPayload,
+  ChannelTickPayload,
+  ChannelCompletePayload,
+  ChannelBreakPayload,
+  AIDebugTickPayload,
   CommunicationPayload,
   ProximityRosterPayload,
   ProximityRosterDeltaPayload,
@@ -95,6 +103,15 @@ export class MessageRouter {
   private combatErrorListeners      = new Set<(p: CombatErrorPayload) => void>();
   private villageCatalogListeners   = new Set<(p: VillageCatalogPayload) => void>();
   private playerJumpListeners        = new Set<(entityId: string) => void>();
+  private playerDashListeners        = new Set<(entityId: string, x: number, z: number) => void>();
+  private castStartListeners         = new Set<(p: CastStartPayload) => void>();
+  private castCompleteListeners      = new Set<(p: CastCompletePayload) => void>();
+  private castBreakListeners         = new Set<(p: CastBreakPayload) => void>();
+  private channelStartListeners      = new Set<(p: ChannelStartPayload) => void>();
+  private channelTickListeners       = new Set<(p: ChannelTickPayload) => void>();
+  private channelCompleteListeners   = new Set<(p: ChannelCompletePayload) => void>();
+  private channelBreakListeners      = new Set<(p: ChannelBreakPayload) => void>();
+  private aiDebugTickListeners       = new Set<(p: AIDebugTickPayload) => void>();
   private vaultGateOpenedListeners  = new Set<(p: VaultGateOpenedPayload) => void>();
   private vaultCompleteListeners    = new Set<(p: VaultCompletePayload) => void>();
   private vaultRoomEnterListeners   = new Set<(p: VaultRoomEnterPayload) => void>();
@@ -258,6 +275,58 @@ export class MessageRouter {
   onPlayerJump(fn: (entityId: string) => void): () => void {
     this.playerJumpListeners.add(fn);
     return () => this.playerJumpListeners.delete(fn);
+  }
+
+  /** Fires for any `player_dash` event broadcast by the zone. Receives the
+   *  dashing entity's id and the dashed-to XZ. Consumers should treat it
+   *  as a teleport (snap, don't lerp) — the state_update that follows would
+   *  otherwise interpolate the 5m gap over a single tick (~50 m/s slide). */
+  onPlayerDash(fn: (entityId: string, x: number, z: number) => void): () => void {
+    this.playerDashListeners.add(fn);
+    return () => this.playerDashListeners.delete(fn);
+  }
+
+  /** Cast lifecycle events. `cast_start` opens the cast bar; `cast_complete`
+   *  closes it (success); `cast_break` closes it with a reason (interrupted). */
+  onCastStart(fn: (p: CastStartPayload) => void): () => void {
+    this.castStartListeners.add(fn);
+    return () => this.castStartListeners.delete(fn);
+  }
+  onCastComplete(fn: (p: CastCompletePayload) => void): () => void {
+    this.castCompleteListeners.add(fn);
+    return () => this.castCompleteListeners.delete(fn);
+  }
+  onCastBreak(fn: (p: CastBreakPayload) => void): () => void {
+    this.castBreakListeners.add(fn);
+    return () => this.castBreakListeners.delete(fn);
+  }
+
+  /** Channel lifecycle. `channel_start` opens the cast bar in drain mode;
+   *  `channel_tick` is optional polish (sound/pulse); `channel_complete`
+   *  closes it on natural duration expiry; `channel_break` closes it with
+   *  a reason on interruption. */
+  onChannelStart(fn: (p: ChannelStartPayload) => void): () => void {
+    this.channelStartListeners.add(fn);
+    return () => this.channelStartListeners.delete(fn);
+  }
+  onChannelTick(fn: (p: ChannelTickPayload) => void): () => void {
+    this.channelTickListeners.add(fn);
+    return () => this.channelTickListeners.delete(fn);
+  }
+  onChannelComplete(fn: (p: ChannelCompletePayload) => void): () => void {
+    this.channelCompleteListeners.add(fn);
+    return () => this.channelCompleteListeners.delete(fn);
+  }
+  onChannelBreak(fn: (p: ChannelBreakPayload) => void): () => void {
+    this.channelBreakListeners.add(fn);
+    return () => this.channelBreakListeners.delete(fn);
+  }
+
+  /** Subscribe to /aidebug ticks. Server only emits when at least one
+   *  admin has the panel toggled on. Returns a teardown closure. */
+  onAIDebugTick(fn: (p: AIDebugTickPayload) => void): () => void {
+    this.aiDebugTickListeners.add(fn);
+    return () => this.aiDebugTickListeners.delete(fn);
   }
 
   onVaultGateOpened(fn: (p: VaultGateOpenedPayload) => void): () => void {
@@ -436,9 +505,12 @@ export class MessageRouter {
         const entityId = (payload.eventTypeData as { entityId?: string } | undefined)?.entityId;
         if (entityId) this.playerJumpListeners.forEach(fn => fn(entityId));
       }
-      // player_dash currently has no client-side visual — entity position
-      // updates broadcast through state_update handle the snap. Listener
-      // hook left for follow-up effects (motion blur / dust kick).
+      if (payload.eventType === 'player_dash') {
+        const data = payload.eventTypeData as { entityId?: string; x?: number; z?: number } | undefined;
+        if (data?.entityId && typeof data.x === 'number' && typeof data.z === 'number') {
+          this.playerDashListeners.forEach(fn => fn(data.entityId!, data.x!, data.z!));
+        }
+      }
 
       // ── Party events ────────────────────────────────────────────────────
       if (payload.eventType?.startsWith('party_')) {
@@ -584,6 +656,33 @@ export class MessageRouter {
       const payload = p as CombatErrorPayload;
       this.world.pushMessage('system', payload.message);
       this.combatErrorListeners.forEach(fn => fn(payload));
+    });
+
+    s.on('cast_start', (p) => {
+      this.castStartListeners.forEach(fn => fn(p as CastStartPayload));
+    });
+    s.on('cast_complete', (p) => {
+      this.castCompleteListeners.forEach(fn => fn(p as CastCompletePayload));
+    });
+    s.on('cast_break', (p) => {
+      this.castBreakListeners.forEach(fn => fn(p as CastBreakPayload));
+    });
+
+    s.on('channel_start', (p) => {
+      this.channelStartListeners.forEach(fn => fn(p as ChannelStartPayload));
+    });
+    s.on('channel_tick', (p) => {
+      this.channelTickListeners.forEach(fn => fn(p as ChannelTickPayload));
+    });
+    s.on('channel_complete', (p) => {
+      this.channelCompleteListeners.forEach(fn => fn(p as ChannelCompletePayload));
+    });
+    s.on('channel_break', (p) => {
+      this.channelBreakListeners.forEach(fn => fn(p as ChannelBreakPayload));
+    });
+
+    s.on('ai_debug_tick', (p) => {
+      this.aiDebugTickListeners.forEach(fn => fn(p as AIDebugTickPayload));
     });
 
     s.on('loot_session_start', (p) => {

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { ClientConfig } from '@/config/ClientConfig';
 import type { HeightmapService } from './HeightmapService';
+import { chunkedFor }     from './yieldUtil';
 
 // forests.json is already in zone-local metres [x, z] — no lat/lon conversion needed.
 interface ForestPolygon {
@@ -13,6 +14,11 @@ export class ForestDebugRenderer {
   private readonly _meshes: THREE.Mesh[] = [];
   private readonly _lines: THREE.LineSegments[] = [];
   private _visible = true;
+  /** Zone state stashed at loadForZone time so toggle() can lazy-load
+   *  polygon meshes on first F8 press without re-fetching the registry. */
+  private _zoneId: string | null = null;
+  private _polygonsLoaded = false;
+  private _polygonsLoading = false;
 
   // Fog disabled on both materials so the overlay is always visible regardless of distance.
   private readonly _fillMat = new THREE.MeshBasicMaterial({
@@ -45,49 +51,63 @@ export class ForestDebugRenderer {
 
   setHeightmap(hm: HeightmapService | null): void { this._heightmap = hm; }
 
-  async loadForZone(zoneId: string, zoneRadiusM = 3219): Promise<void> {
+  /** Called at zone load. Builds ONLY the white zone-boundary ring
+   *  (cheap, ~256 line verts). Polygon meshes are deferred to the first
+   *  F8 toggle — fetching forests.json + grid-sampled mesh building per
+   *  polygon used to add multi-second main-thread blocking to every
+   *  zone load even when the overlay was off. */
+  loadForZone(zoneId: string, zoneRadiusM = 3219): void {
     this.clear();
-
-    // Zone-boundary circle — drawn at world origin (0,0).
-    // If this ring lands on the terrain edge, zone-local coords are correctly aligned.
     this._buildRing(zoneRadiusM);
+    this._zoneId = zoneId;
+    this._polygonsLoaded = false;
+    this._polygonsLoading = false;
+  }
+
+  /** Lazy polygon build — fires once on first F8 toggle-on. Chunked so
+   *  individual heavy polygons don't lock the main thread. */
+  private async _loadPolygons(): Promise<void> {
+    if (this._polygonsLoading || this._polygonsLoaded || !this._zoneId) return;
+    this._polygonsLoading = true;
+    const zoneId = this._zoneId;
 
     let polygons: ForestPolygon[];
     try {
       const res = await fetch(`${ClientConfig.serverUrl}/world/osm/${zoneId}/forests.json`);
       if (!res.ok) {
         console.warn(`[ForestDebug] No forests.json for zone ${zoneId} (${res.status})`);
+        this._polygonsLoading = false;
         return;
       }
       polygons = await res.json() as ForestPolygon[];
     } catch (err) {
       console.warn('[ForestDebug] Failed to load forests.json:', err);
+      this._polygonsLoading = false;
       return;
     }
 
     if (!polygons.length) {
       console.warn('[ForestDebug] forests.json loaded but contains 0 polygons');
+      this._polygonsLoaded = true;
+      this._polygonsLoading = false;
       return;
     }
 
-    for (const poly of polygons) {
+    // One polygon per chunk — _buildPolygon does heavy grid-sampled PIP
+    // work that scales with polygon area × vertex count.
+    await chunkedFor(polygons, 1, (poly) => {
       this._buildPolygon(poly.points);
-    }
+      // Newly-built meshes inherit the current visibility — if the
+      // user toggled OFF mid-load they shouldn't suddenly appear.
+      const last = this._meshes[this._meshes.length - 1];
+      if (last) last.visible = this._visible;
+      const lastLine = this._lines[this._lines.length - 1];
+      if (lastLine) lastLine.visible = this._visible;
+    });
 
-    // Log polygon world-space bounds so you can compare with the player's position.
-    for (let i = 0; i < polygons.length; i++) {
-      const pts = polygons[i]!.points;
-      const xs = pts.map(p => p[0]);
-      const zs = pts.map(p => p[1]);
-      const xMin = Math.min(...xs).toFixed(0), xMax = Math.max(...xs).toFixed(0);
-      const zMin = Math.min(...zs).toFixed(0), zMax = Math.max(...zs).toFixed(0);
-      const dist = Math.hypot(
-        (Math.min(...xs) + Math.max(...xs)) / 2,
-        (Math.min(...zs) + Math.max(...zs)) / 2,
-      ).toFixed(0);
-      console.log(`[ForestDebug] poly[${i}]  X [${xMin} → ${xMax}]  Z [${zMin} → ${zMax}]  ~${dist}m from origin`);
-    }
-    console.log(`[ForestDebug] ${polygons.length} polygon(s) loaded. White ring = zone boundary (r=${zoneRadiusM}m). Press F8 to toggle.`);
+    this._polygonsLoaded = true;
+    this._polygonsLoading = false;
+    console.log(`[ForestDebug] ${polygons.length} polygon(s) loaded.`);
   }
 
   private _sampleGroundY(cx: number, cz: number): number {
@@ -105,15 +125,22 @@ export class ForestDebugRenderer {
   private _buildPolygon(pts: [number, number][]): void {
     if (pts.length < 3) return;
 
+    // Manual scan — Math.min(...arr) spreads onto the call stack and
+    // throws on big polygons (forest polygons can be 5 000+ vertices).
+    // Same loop also computes the centroid so we touch each point once.
     let cx = 0, cz = 0;
-    for (const [x, z] of pts) { cx += x; cz += z; }
+    let xMin =  Infinity, xMax = -Infinity;
+    let zMin =  Infinity, zMax = -Infinity;
+    for (const [x, z] of pts) {
+      cx += x; cz += z;
+      if (x < xMin) xMin = x;
+      if (x > xMax) xMax = x;
+      if (z < zMin) zMin = z;
+      if (z > zMax) zMax = z;
+    }
     cx /= pts.length;
     cz /= pts.length;
     const groundY = this._sampleGroundY(cx, cz);
-
-    const xs = pts.map(p => p[0]), zs = pts.map(p => p[1]);
-    const xMin = Math.min(...xs), xMax = Math.max(...xs);
-    const zMin = Math.min(...zs), zMax = Math.max(...zs);
 
     // Grid-based fill: sample heightmap on a regular ~100 m grid so the overlay
     // conforms to rolling terrain instead of producing a few huge flat triangles
@@ -227,6 +254,11 @@ export class ForestDebugRenderer {
     this._visible = !this._visible;
     for (const m of this._meshes) m.visible = this._visible;
     for (const l of this._lines) l.visible = this._visible;
+    // First ON-press triggers the polygon fetch + build. Async, doesn't
+    // block input — meshes appear as each chunk lands.
+    if (this._visible && !this._polygonsLoaded) {
+      void this._loadPolygons();
+    }
     console.log(`[ForestDebug] Overlay ${this._visible ? 'ON' : 'OFF'}`);
   }
 

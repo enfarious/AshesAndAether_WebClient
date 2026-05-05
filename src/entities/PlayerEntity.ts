@@ -169,16 +169,6 @@ export class PlayerEntity extends EntityObject {
   private static readonly ANCHOR_SETTLE_DRIFT = 0.5;
   private _settleUntil = 0;
 
-  /** Horizontal-prediction ramp during JUMPING mode. Linear from 0 → 1 over
-   *  this many ms after jump start. Reasoning: during the leap-dash window
-   *  (player might be about to second-tap for /retreat), we don't want to
-   *  predict much horizontal motion — pre-snap motion + a 5m teleport reads
-   *  as a "jerk forward at the end of dash." Tuned to match
-   *  `WASDController.SPACE_DOUBLE_TAP_MS` (250ms): leap-dashes inside the
-   *  window have minimal pre-motion → snap dominates the visual; solo jumps
-   *  ramp into full horizontal velocity by the time the window closes. */
-  private static readonly JUMP_HORIZONTAL_RAMP_MS = 250;
-
   /** Drift threshold below which we don't correct at all (squared metres).
    *  Client begins prediction the instant `/jump` is sent; server begins
    *  ~RTT/2 later when the message arrives. So even with perfect math both
@@ -648,18 +638,9 @@ export class PlayerEntity extends EntityObject {
         break;
 
       case PlayerMoveMode.JUMPING: {
-        // Predict the same captured-velocity advance the server is running,
-        // ramped 0 → 1 over JUMP_HORIZONTAL_RAMP_MS so leap-dashes within
-        // the double-tap window have negligible pre-snap motion. Solo
-        // jumps reach full horizontal velocity by the time the window
-        // closes; the brief drift during the ramp stays within
-        // JUMP_DRIFT_TOLERANCE_SQ (~1m²) so drift correction doesn't fire.
-        const elapsed = performance.now() - this._jumpStartedAt;
-        const horizRamp = elapsed >= PlayerEntity.JUMP_HORIZONTAL_RAMP_MS
-          ? 1.0
-          : elapsed / PlayerEntity.JUMP_HORIZONTAL_RAMP_MS;
-        this.object3d.position.x += this._jumpVelX * dt * horizRamp;
-        this.object3d.position.z += this._jumpVelZ * dt * horizRamp;
+        // Predict the same captured-velocity advance the server is running.
+        this.object3d.position.x += this._jumpVelX * dt;
+        this.object3d.position.z += this._jumpVelZ * dt;
         // Y stays terrain-bound; mesh-local arc handles the visual hop.
         const elev = this._getGroundHeight(this.object3d.position.x, this.object3d.position.z);
         if (elev !== null) this.object3d.position.y = elev;
@@ -1040,7 +1021,18 @@ export class PlayerEntity extends EntityObject {
     this._serverPos.set(position.x, terrainY ?? position.y, position.z);
     this._serverPosTime = now;
 
-    if (heading !== undefined) {
+    // Heading: in WASD mode, WASDController.tick is the local-prediction
+    // authority on rotation (called every animation frame). Server state_updates
+    // arrive at ~10 Hz with whatever heading the server saw N×100ms ago. On a
+    // healthy client the gap between WASD ticks is ~16ms so any stale server
+    // write gets corrected within a frame and is invisible. On a slow / WS-
+    // backpressured client (laptop), the gap can be 67ms+ — a stale server
+    // heading lands between WASD ticks and persists across visible frames,
+    // making the model appear to "stop rotating" mid-strafe. Skip the write
+    // here so local prediction owns rotation while in WASD; non-WASD modes
+    // (IDLE snapshot interp, JUMPING) still get the server's authoritative
+    // heading.
+    if (heading !== undefined && this._mode !== PlayerMoveMode.WASD) {
       this.object3d.rotation.y = THREE.MathUtils.degToRad(heading);
     }
   }

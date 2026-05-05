@@ -3,6 +3,12 @@ import type { WorldState }   from '@/state/WorldState';
 import type { SocketClient } from '@/network/SocketClient';
 import type { CorruptionState } from '@/network/Protocol';
 
+/** Display label for the contextual-interact key. Sourced as a const here so
+ *  there's exactly one place to swap when rebindable keybinds ship — that
+ *  swap becomes "read from ClientConfig.keybinds.interact" instead of this
+ *  hardcoded literal. The actual key handler still lives in WASDController. */
+const INTERACT_KEY_LABEL = 'F';
+
 // ── Corruption display data ──────────────────────────────────────────────────
 
 const CORRUPTION_COLORS: Record<CorruptionState, { gradient: string; label: string }> = {
@@ -38,8 +44,14 @@ export class HUD {
   /** RAF coalescing — prevents DOM thrashing from rapid state updates. */
   private _rafId: number | null = null;
   private fpsEl:           HTMLElement | null = null;
+  private harvestPromptEl: HTMLElement | null = null;
+  private aetherFillEl:    HTMLElement | null = null;
+  private aetherValueEl:   HTMLElement | null = null;
+  private aetherTierEl:    HTMLElement | null = null;
   private _fpsFrames = 0;
   private _fpsTime   = 0;
+  /** F9 — extended GPU/perf readout under the FPS line. */
+  private _perfMode  = false;
 
   // ── Cast bar state ──────────────────────────────────────────────────
   /** performance.now() at cast_start / channel_start receipt — drives the
@@ -221,6 +233,16 @@ export class HUD {
           width: min(500px, 90vw);
         }
 
+        /* The bottom-center "combat cluster" — cast bar above vitals
+         * above corruption. LayoutEditor moves this whole group as one. */
+        #hud-vitals-cluster {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 8px;
+          width: 100%;
+        }
+
         .hud-vitals {
           display: flex;
           gap: 6px;
@@ -398,6 +420,8 @@ export class HUD {
           color: rgba(212, 201, 184, 0.85);
           letter-spacing: 0.1em;
           z-index: 1000;
+          white-space: pre;
+          line-height: 1.45;
         }
 
         /* ── Clock ────────────────────────────────────────────────────── */
@@ -604,36 +628,149 @@ export class HUD {
         <div id="hud-debuffs"></div>
       </div>
 
-      <div class="hud-cast" id="hud-cast">
-        <div class="hud-cast-fill" id="hud-cast-fill"></div>
-        <div class="hud-cast-text" id="hud-cast-text"></div>
+      <!-- Bottom-center cluster — cast bar, vitals, corruption move
+           together as one draggable. LayoutEditor transforms THIS wrapper,
+           not #hud, so #hud's fixed-positioned children (clock, fps,
+           aether, etc.) keep their viewport anchoring instead of being
+           dragged with the cluster. -->
+      <div id="hud-vitals-cluster">
+        <div class="hud-cast" id="hud-cast">
+          <div class="hud-cast-fill" id="hud-cast-fill"></div>
+          <div class="hud-cast-text" id="hud-cast-text"></div>
+        </div>
+
+        <div class="hud-vitals">
+          <div class="hud-bar">
+            <div class="hud-bar-fill hp" id="hud-hp-fill"></div>
+            <div class="hud-bar-text" id="hud-hp-text"></div>
+          </div>
+          <div class="hud-bar">
+            <div class="hud-bar-fill stam" id="hud-stam-fill"></div>
+            <div class="hud-bar-text" id="hud-stam-text"></div>
+          </div>
+          <div class="hud-bar">
+            <div class="hud-bar-fill mp" id="hud-mp-fill"></div>
+            <div class="hud-bar-text" id="hud-mp-text"></div>
+          </div>
+        </div>
+
+        <div class="hud-corruption" id="hud-corruption">
+          <div class="hud-corruption-fill" id="hud-corruption-fill"></div>
+          <div class="hud-corruption-text" id="hud-corruption-text"></div>
+        </div>
       </div>
 
-      <div class="hud-vitals">
-        <div class="hud-bar">
-          <div class="hud-bar-fill hp" id="hud-hp-fill"></div>
-          <div class="hud-bar-text" id="hud-hp-text"></div>
-        </div>
-        <div class="hud-bar">
-          <div class="hud-bar-fill stam" id="hud-stam-fill"></div>
-          <div class="hud-bar-text" id="hud-stam-text"></div>
-        </div>
-        <div class="hud-bar">
-          <div class="hud-bar-fill mp" id="hud-mp-fill"></div>
-          <div class="hud-bar-text" id="hud-mp-text"></div>
+      <div id="hud-aether" class="hud-aether">
+        <div class="hud-aether-label">AETHER DENSITY</div>
+        <div class="hud-aether-bar"><div class="hud-aether-fill" id="hud-aether-fill"></div></div>
+        <div class="hud-aether-text">
+          <span id="hud-aether-value">0.00</span>
+          <span class="hud-aether-tier" id="hud-aether-tier">T1</span>
         </div>
       </div>
 
-      <div class="hud-corruption" id="hud-corruption">
-        <div class="hud-corruption-fill" id="hud-corruption-fill"></div>
-        <div class="hud-corruption-text" id="hud-corruption-text"></div>
-      </div>
+      <style>
+        /* Aether Density panel — sits below the clock, top-right. Tells
+         * the player where they are on the danger gradient at a glance:
+         * bar fill + value + tier badge. Color bands match NodePool tier
+         * colors so "what mats can I farm here" is implicit. */
+        .hud-aether {
+          position: fixed;
+          top: 95px;
+          right: 18px;
+          background: rgba(8, 6, 4, 0.72);
+          border: 1px solid rgba(200, 145, 60, 0.22);
+          box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+          padding: 7px 12px 8px 12px;
+          width: 156px;
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+          pointer-events: none;
+          font-family: var(--font-mono);
+        }
+        .hud-aether-label {
+          font-size: 9px;
+          letter-spacing: 0.18em;
+          color: rgba(212, 201, 184, 0.55);
+          text-transform: uppercase;
+        }
+        .hud-aether-bar {
+          height: 6px;
+          background: rgba(0,0,0,0.6);
+          border: 1px solid rgba(200, 145, 60, 0.2);
+          border-radius: 1px;
+          overflow: hidden;
+        }
+        .hud-aether-fill {
+          height: 100%;
+          width: 0%;
+          background: #cccccc;
+          transition: width 0.3s ease-out, background-color 0.3s ease-out;
+        }
+        .hud-aether-text {
+          display: flex;
+          justify-content: space-between;
+          align-items: baseline;
+          font-size: 12px;
+          color: rgba(212, 201, 184, 0.82);
+          letter-spacing: 0.06em;
+        }
+        .hud-aether-tier {
+          font-weight: bold;
+          letter-spacing: 0.12em;
+          padding: 1px 5px;
+          border-radius: 2px;
+          background: rgba(0,0,0,0.4);
+          border: 1px solid rgba(200, 145, 60, 0.25);
+        }
+      </style>
+
+      <div id="hud-interact-prompt" class="hud-interact-prompt"></div>
+
+      <style>
+        /* Floating key-cap prompt for contextual interactions (harvest today,
+         * loot/refuel/portal in the future). Positioned in the lower-middle
+         * of the viewport — above the ability bar, below the camera target.
+         * Key-cap only, no descriptive text — player learns context by what
+         * they're standing near. */
+        .hud-interact-prompt {
+          position: fixed;
+          bottom: 38vh;
+          left: 50%;
+          transform: translateX(-50%);
+          width: 32px;
+          height: 32px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: rgba(20, 14, 8, 0.72);
+          border: 1.5px solid rgba(255, 170, 80, 0.65);
+          border-radius: 4px;
+          color: rgba(255, 230, 200, 1);
+          font-family: var(--font-mono);
+          font-size: 16px;
+          font-weight: bold;
+          letter-spacing: 0.02em;
+          pointer-events: none;
+          opacity: 0;
+          transition: opacity 0.18s ease-out;
+          text-shadow: 0 1px 2px #000;
+          box-shadow: 0 0 8px rgba(255, 170, 80, 0.25);
+        }
+        .hud-interact-prompt.visible { opacity: 1; }
+      </style>
     `;
 
     this.deathOverlay = el.querySelector<HTMLElement>('#hud-death')!;
     this.deathTimerEl = el.querySelector<HTMLElement>('#hud-death-timer')!;
     this.clockEl      = el.querySelector<HTMLElement>('#hud-clock')!;
     this.fpsEl        = el.querySelector<HTMLElement>('#hud-fps')!;
+    this.harvestPromptEl = el.querySelector<HTMLElement>('#hud-interact-prompt')!;
+    this.harvestPromptEl.textContent = INTERACT_KEY_LABEL;
+    this.aetherFillEl    = el.querySelector<HTMLElement>('#hud-aether-fill')!;
+    this.aetherValueEl   = el.querySelector<HTMLElement>('#hud-aether-value')!;
+    this.aetherTierEl    = el.querySelector<HTMLElement>('#hud-aether-tier')!;
 
     // Release button
     el.querySelector<HTMLButtonElement>('#hud-death-release')!
@@ -937,8 +1074,15 @@ export class HUD {
   /**
    * Called every frame from the game loop. Updates the FPS counter ~2×/sec.
    * @param entityCount — optional entity count for debug display
+   * @param perf — when present and perfMode is on, appended as a second line
+   *               with renderer.info + shadow-light count + frame ms
    */
-  updateFps(now: number, entityCount?: number, pos?: { x: number; y: number; z: number }): void {
+  updateFps(
+    now: number,
+    entityCount?: number,
+    pos?: { x: number; y: number; z: number },
+    perf?: PerfSnapshot,
+  ): void {
     this._fpsFrames++;
     if (this._fpsTime === 0) { this._fpsTime = now; return; }
 
@@ -948,9 +1092,82 @@ export class HUD {
       let text = `${fps} FPS`;
       if (entityCount !== undefined) text += ` · ${entityCount} ent`;
       if (pos) text += ` · X:${pos.x.toFixed(1)} Y:${pos.y.toFixed(1)} Z:${pos.z.toFixed(1)}`;
+      if (this._perfMode && perf) {
+        const tris = perf.triangles >= 1000
+          ? `${(perf.triangles / 1000).toFixed(1)}k`
+          : `${perf.triangles}`;
+        text += `\n${perf.frameMs.toFixed(2)}ms · ${perf.drawCalls} draws · ${tris} tri`
+              + ` · ${perf.programs} prog · g${perf.geometries} t${perf.textures}`
+              + `\n${perf.shadowLights} shadow lights · ${perf.totalLights} lights total`
+              + ` · ${perf.indoor ? 'INDOOR' : 'outdoor'}`;
+      }
       if (this.fpsEl) this.fpsEl.textContent = text;
       this._fpsFrames = 0;
       this._fpsTime   = now;
     }
   }
+
+  /** F9 toggles the extended GPU readout under the FPS line. */
+  togglePerfMode(): boolean {
+    this._perfMode = !this._perfMode;
+    return this._perfMode;
+  }
+
+  get perfMode(): boolean { return this._perfMode; }
+
+  /** Show or hide the contextual harvest prompt above the vitals bar.
+   *  Driven from the app render loop based on proximity to a live node. */
+  setHarvestPromptVisible(visible: boolean): void {
+    if (!this.harvestPromptEl) return;
+    this.harvestPromptEl.classList.toggle('visible', visible);
+  }
+
+  /** Update the Aether Density panel from the server's per-player push.
+   *  value is 0..1 (DangerMap output). Future: values >1 represent the
+   *  lethal-zone mechanic — when that ships, this widget should show a
+   *  warning state past 1.0. */
+  setAetherDensity(value: number): void {
+    if (!this.aetherFillEl || !this.aetherValueEl || !this.aetherTierEl) return;
+
+    const clamped = Math.max(0, Math.min(1, value));
+    const tier    = aetherTier(clamped);
+    const color   = AETHER_TIER_COLORS[tier] ?? '#cccccc';
+
+    this.aetherFillEl.style.width = `${(clamped * 100).toFixed(1)}%`;
+    this.aetherFillEl.style.background = color;
+    this.aetherValueEl.textContent = clamped.toFixed(2);
+    this.aetherTierEl.textContent  = `T${tier}`;
+    this.aetherTierEl.style.color  = color;
+  }
+}
+
+// ── Aether Density tier mapping ─────────────────────────────────────────
+// Mirrors NodePool's tier roll on the server (see project_nodepool_harvest.md).
+// Player reads the band off the HUD bar to know what mats can be farmed.
+function aetherTier(density: number): number {
+  if (density < 0.2) return 1;
+  if (density < 0.4) return 2;
+  if (density < 0.6) return 3;
+  if (density < 0.8) return 4;
+  return 5;
+}
+const AETHER_TIER_COLORS: Record<number, string> = {
+  1: '#cccccc', // silver — civic, safe
+  2: '#66ff66', // green
+  3: '#4ea0ff', // blue
+  4: '#c060ff', // purple
+  5: '#ffcc44', // gold — deep, brave or dead
+};
+
+/** Per-frame perf snapshot fed into HUD.updateFps for the F9 overlay. */
+export interface PerfSnapshot {
+  frameMs:      number;
+  drawCalls:    number;
+  triangles:    number;
+  programs:     number;
+  geometries:   number;
+  textures:     number;
+  shadowLights: number;
+  totalLights:  number;
+  indoor:       boolean;
 }

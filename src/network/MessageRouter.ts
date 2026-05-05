@@ -58,6 +58,8 @@ import type {
   GuildChatPayload,
   GuildFoundingNarrativePayload,
   SystemToastPayload,
+  ZoneBuildCompletePayload,
+  CommandHelpListPayload,
   BeaconAlertPayload,
   LibraryAssaultPayload,
   CompanionConfigPayload,
@@ -95,6 +97,8 @@ export class MessageRouter {
   private editorResultListeners    = new Set<(p: EditorResultPayload) => void>();
   private guildNarrativeListeners  = new Set<(p: GuildFoundingNarrativePayload) => void>();
   private systemToastListeners     = new Set<(p: SystemToastPayload) => void>();
+  private zoneBuildCompleteListeners = new Set<(p: ZoneBuildCompletePayload) => void>();
+  private commandHelpListListeners   = new Set<(p: CommandHelpListPayload) => void>();
   private beaconAlertListeners     = new Set<(p: BeaconAlertPayload) => void>();
   private libraryAssaultListeners  = new Set<(p: LibraryAssaultPayload) => void>();
   private companionConfigListeners  = new Set<(p: CompanionConfigPayload) => void>();
@@ -122,6 +126,7 @@ export class MessageRouter {
   private vaultRoomClearedListeners = new Set<(p: VaultRoomClearedPayload) => void>();
   private experienceGainedListeners = new Set<(p: ExperienceGainedPayload) => void>();
   private worldEntryListeners       = new Set<() => void>();
+  private worldReadyListeners       = new Set<() => void>();
   private firstPlantListeners       = new Set<() => void>();
   private _firstPlantFired          = false;
 
@@ -213,6 +218,17 @@ export class MessageRouter {
     return () => this.worldEntryListeners.delete(fn);
   }
 
+  /** Fires when the zone server has registered the player in its EntityStore
+   *  AND broadcast the live entity roster to this client. After this, the
+   *  zone server will accept move inputs and the world is fully populated;
+   *  before this, an early move silently drops on the server and the
+   *  client's prediction snaps back. The loading screen waits on this
+   *  rather than on `world_entry`. */
+  onWorldReady(fn: () => void): () => void {
+    this.worldReadyListeners.add(fn);
+    return () => this.worldReadyListeners.delete(fn);
+  }
+
   onFirstPlant(fn: () => void): () => void {
     this.firstPlantListeners.add(fn);
     return () => this.firstPlantListeners.delete(fn);
@@ -221,6 +237,20 @@ export class MessageRouter {
   onSystemToast(fn: (p: SystemToastPayload) => void): () => void {
     this.systemToastListeners.add(fn);
     return () => this.systemToastListeners.delete(fn);
+  }
+
+  /** Subscribe to zone-build-complete events — fired when a deferred build
+   *  finishes. Listener should prompt the player to travel now (or later). */
+  onZoneBuildComplete(fn: (p: ZoneBuildCompletePayload) => void): () => void {
+    this.zoneBuildCompleteListeners.add(fn);
+    return () => this.zoneBuildCompleteListeners.delete(fn);
+  }
+
+  /** Subscribe to slash-command help responses — fired when the player
+   *  runs `/help` and the server returns the role-filtered command list. */
+  onCommandHelpList(fn: (p: CommandHelpListPayload) => void): () => void {
+    this.commandHelpListListeners.add(fn);
+    return () => this.commandHelpListListeners.delete(fn);
   }
 
   onBeaconAlert(fn: (p: BeaconAlertPayload) => void): () => void {
@@ -418,6 +448,10 @@ export class MessageRouter {
       this.session.setPhase('in_world');
       this._firstPlantFired = false;
       this.worldEntryListeners.forEach(fn => fn());
+    });
+
+    s.on('world_ready', () => {
+      this.worldReadyListeners.forEach(fn => fn());
     });
 
     s.on('state_update', (p) => {
@@ -657,6 +691,29 @@ export class MessageRouter {
       this.systemToastListeners.forEach(fn => fn(p as SystemToastPayload));
     });
 
+    // Deferred-build progress: server emits these as the build pipeline
+    // crosses stage boundaries (OSM → GLB → network). Surface as toasts
+    // so the player sees forward motion while they keep playing.
+    s.on('zone_build_progress', (p) => {
+      const payload = p as { destinationName: string; percent: number; message: string };
+      this.systemToastListeners.forEach(fn => fn({
+        type:    'info',
+        message: `${payload.message} (${payload.percent}%)`,
+        duration: 6_000,
+      }));
+    });
+
+    // Deferred build done — fire the listeners so the App can show a
+    // confirm modal asking whether the player wants to travel now.
+    s.on('zone_build_complete', (p) => {
+      this.zoneBuildCompleteListeners.forEach(fn => fn(p as ZoneBuildCompletePayload));
+    });
+
+    // /help response — server filtered by viewer role.
+    s.on('command_help_list', (p) => {
+      this.commandHelpListListeners.forEach(fn => fn(p as CommandHelpListPayload));
+    });
+
     s.on('error', (p) => {
       const payload = p as ErrorPayload;
       console.error(`[Server] ${payload.severity}: ${payload.code} — ${payload.message}`);
@@ -665,6 +722,12 @@ export class MessageRouter {
       } else {
         // Surface non-fatal server errors in the chat log so the player sees them.
         this.world.pushMessage('system', payload.message);
+        // Travel failed mid-flight — TravelPanel optimistically pushed phase
+        // to loading_world; revert so the player isn't stuck on a loading
+        // screen forever.
+        if (payload.code === 'TRAVEL_FAILED' && this.session.phase === 'loading_world') {
+          this.session.setPhase('in_world');
+        }
       }
     });
 
@@ -938,11 +1001,15 @@ export class MessageRouter {
       this.world.pushMessage('system', payload.message);
     });
 
-    // ── Logout (return to character select) ─────────────────────────────────
+    // ── Logout (full session reset) ─────────────────────────────────────────
+    // Redirect to /api/logout which clears the express session cookie via
+    // passport's req.logout() and redirects back to '/'. Fresh page load
+    // lands on the login screen with no cached auth — required for
+    // switching accounts (one character per account today). Without the
+    // server-session clear, reconnect would auto-auth as the same account.
     s.on('logout_success', () => {
-      console.log('[MessageRouter] logout_success — returning to character select');
-      this.entities.clear();
-      this.session.setPhase('character_select');
+      console.log('[MessageRouter] logout_success — redirecting to /api/logout for full session reset');
+      window.location.href = '/api/logout';
     });
 
     s.on('_connected', () => {

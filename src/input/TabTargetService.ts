@@ -103,9 +103,11 @@ export class TabTargetService {
         case 'mob':
         case 'wildlife':
         case 'npc':
-        case 'plant':
         case 'player':     break;
         case 'structure':  if (e.interactive === false) return false; break;
+        // 'plant' (trees, harvestable plants) intentionally excluded —
+        // harvest is proximity-based via /harvest + F-key, no targeting
+        // needed. Including plants in the cycle was just noise.
         default:           return false;
       }
 

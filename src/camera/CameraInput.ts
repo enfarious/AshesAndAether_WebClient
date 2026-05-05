@@ -4,6 +4,12 @@ import { ClientConfig } from '@/config/ClientConfig';
 /**
  * CameraInput — handles mouse drag (yaw) and scroll wheel (zoom) for the camera.
  * Does NOT own the canvas directly — receives it to attach listeners.
+ *
+ * Mouse-drag deltas are accumulated synchronously in mousemove handlers and
+ * flushed once per animation frame. Without this, a high-rate mouse (raw
+ * 200+ Hz) would call OrbitCamera.addYaw → _applyTransform → spring-arm
+ * raycast that many times per second, hammering frame budget. The flush
+ * collapses the burst into a single transform per frame.
  */
 export class CameraInput {
   private dragging       = false;
@@ -11,6 +17,11 @@ export class CameraInput {
   private lastMouseY     = 0;
   private middleMouseDown = false;
   private lastMiddleX    = 0;
+
+  /** Accumulated yaw/pitch deltas pending flush on the next animation frame. */
+  private _pendingYaw   = 0;
+  private _pendingPitch = 0;
+  private _flushScheduled = false;
 
   constructor(
     private readonly camera:  OrbitCamera,
@@ -50,17 +61,29 @@ export class CameraInput {
     if (this.dragging) {
       const dx = e.clientX - this.lastMouseX;
       const dy = e.clientY - this.lastMouseY;
-      this.camera.addYaw(-dx * ClientConfig.cameraYawSensitivity);
-      this.camera.addPitch(-dy * ClientConfig.cameraPitchSensitivity);
+      this._pendingYaw   -= dx * ClientConfig.cameraYawSensitivity;
+      this._pendingPitch -= dy * ClientConfig.cameraPitchSensitivity;
       this.lastMouseX = e.clientX;
       this.lastMouseY = e.clientY;
+      this._scheduleFlush();
     }
     if (this.middleMouseDown) {
       const dx = e.clientX - this.lastMiddleX;
-      this.camera.addYaw(-dx * ClientConfig.cameraYawSensitivity);
+      this._pendingYaw -= dx * ClientConfig.cameraYawSensitivity;
       this.lastMiddleX = e.clientX;
+      this._scheduleFlush();
     }
   };
+
+  private _scheduleFlush(): void {
+    if (this._flushScheduled) return;
+    this._flushScheduled = true;
+    requestAnimationFrame(() => {
+      this._flushScheduled = false;
+      if (this._pendingYaw !== 0)   { this.camera.addYaw(this._pendingYaw);     this._pendingYaw   = 0; }
+      if (this._pendingPitch !== 0) { this.camera.addPitch(this._pendingPitch); this._pendingPitch = 0; }
+    });
+  }
 
   private _onMouseUp = (e: MouseEvent): void => {
     if (e.button === 2 || e.type === 'mouseleave') this.dragging        = false;

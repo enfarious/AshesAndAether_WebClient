@@ -2,6 +2,36 @@ import type { SocketClient } from '@/network/SocketClient';
 import type { SessionState } from '@/state/SessionState';
 import { ClientConfig }      from '@/config/ClientConfig';
 
+/** localStorage key for the opt-in remember-me feature. Plaintext —
+ *  same security model as the browser's password manager (anyone with
+ *  filesystem access can read it). Default off; the user explicitly
+ *  checks the box and accepts that tradeoff. */
+const REMEMBER_KEY = 'aa_remembered_creds';
+
+interface RememberedCreds {
+  username: string;
+  password: string;
+}
+
+function _loadRememberedCreds(): RememberedCreds | null {
+  try {
+    const raw = localStorage.getItem(REMEMBER_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as RememberedCreds;
+    if (typeof parsed.username !== 'string' || typeof parsed.password !== 'string') return null;
+    return parsed;
+  } catch { return null; }
+}
+
+function _saveRememberedCreds(creds: RememberedCreds): void {
+  try { localStorage.setItem(REMEMBER_KEY, JSON.stringify(creds)); }
+  catch { /* localStorage full or disabled — silent no-op */ }
+}
+
+function _clearRememberedCreds(): void {
+  try { localStorage.removeItem(REMEMBER_KEY); } catch { /* ignore */ }
+}
+
 /**
  * LoginScreen — guest or credentials auth flow.
  * Handles the auth_confirm_name modal inline.
@@ -23,6 +53,10 @@ export class LoginScreen {
       const payload = p as { message: string };
       this._setError(payload.message ?? 'Authentication failed.');
       this._setLoading(false);
+      // Auth failed — purge any remembered creds. They're either wrong now
+      // (password rotated server-side) or were always wrong; either way,
+      // keeping them just causes the next login attempt to fail again.
+      _clearRememberedCreds();
     });
 
     const unsub2 = session.on('authConfirmName', (p) => {
@@ -154,6 +188,22 @@ export class LoginScreen {
           background: transparent;
         }
 
+        .login-remember {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          font-size: 0.78rem;
+          color: rgba(212, 201, 184, 0.65);
+          cursor: pointer;
+          user-select: none;
+          margin-top: -4px;
+        }
+        .login-remember input[type="checkbox"] {
+          margin: 0;
+          cursor: pointer;
+          accent-color: rgba(200, 145, 60, 0.8);
+        }
+
         .login-divider {
           display: flex;
           align-items: center;
@@ -234,6 +284,11 @@ export class LoginScreen {
           <input class="login-input" id="login-password" type="password" autocomplete="current-password" placeholder="••••••••" />
         </div>
 
+        <label class="login-remember">
+          <input type="checkbox" id="login-remember" />
+          <span>Remember me on this device</span>
+        </label>
+
         <button class="login-btn" id="login-submit">ENTER</button>
 
         <div class="login-divider">or</div>
@@ -251,10 +306,20 @@ export class LoginScreen {
       </div>
     `;
 
-    const submitBtn = el.querySelector<HTMLButtonElement>('#login-submit')!;
-    const guestBtn  = el.querySelector<HTMLButtonElement>('#login-guest')!;
-    const userInput = el.querySelector<HTMLInputElement>('#login-username')!;
-    const passInput = el.querySelector<HTMLInputElement>('#login-password')!;
+    const submitBtn   = el.querySelector<HTMLButtonElement>('#login-submit')!;
+    const guestBtn    = el.querySelector<HTMLButtonElement>('#login-guest')!;
+    const userInput   = el.querySelector<HTMLInputElement>('#login-username')!;
+    const passInput   = el.querySelector<HTMLInputElement>('#login-password')!;
+    const rememberBox = el.querySelector<HTMLInputElement>('#login-remember')!;
+
+    // Prefill from saved credentials if any. Saved creds imply opt-in,
+    // so the checkbox starts checked when prefilling.
+    const saved = _loadRememberedCreds();
+    if (saved) {
+      userInput.value = saved.username;
+      passInput.value = saved.password;
+      rememberBox.checked = true;
+    }
 
     submitBtn.addEventListener('click', () => {
       const username = userInput.value.trim();
@@ -266,6 +331,12 @@ export class LoginScreen {
       this._setError('');
       this._setLoading(true);
       this._setStatus('Connecting…');
+
+      // Save BEFORE awaiting auth — authError handler clears them if the
+      // server rejects, so failed creds don't persist. On success they stay.
+      if (rememberBox.checked) _saveRememberedCreds({ username, password });
+      else                     _clearRememberedCreds();
+
       this.socket.requestAuth({ method: 'credentials', username, password });
     });
 

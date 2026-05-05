@@ -92,6 +92,7 @@ export class CharacterSheet {
   // Dirty-check cache — only rebuild when stat-relevant data changes
   private _lastCoreKey    = '';
   private _lastDerivedKey = '';
+  private _lastAxisKey    = '';
 
   /** Callback that returns whether the player is currently inside a civic
    *  ward (beacon range). Polled while the sheet is visible to enable/disable
@@ -287,6 +288,49 @@ export class CharacterSheet {
           margin: 12px 0;
         }
 
+        /* Axis web */
+        #cs-axis {
+          margin: 4px 0 8px;
+        }
+        #cs-axis-row {
+          display: flex;
+          gap: 14px;
+          align-items: center;
+        }
+        #cs-axis svg {
+          flex: 0 0 200px;
+          width: 200px;
+          height: 200px;
+          display: block;
+        }
+        #cs-axis-tiers {
+          flex: 1;
+          font-family: var(--font-mono, monospace);
+          font-size: 11px;
+          color: rgba(180,160,130,0.85);
+          line-height: 1.4;
+          min-height: 60px;
+        }
+        #cs-axis-tiers .cs-axis-tier-line {
+          color: rgba(212,201,184,0.95);
+        }
+        #cs-axis-tiers .cs-axis-tier-line.cs-axis-suppressed {
+          color: rgba(180,140,100,0.65);
+          font-style: italic;
+        }
+        #cs-axis-tiers .cs-axis-empty {
+          color: rgba(150,120,80,0.55);
+          font-style: italic;
+        }
+        .cs-axis-grid    { fill: none; stroke: rgba(200,98,42,0.18); stroke-width: 1; }
+        .cs-axis-grid-3  { stroke: rgba(150,120,80,0.30); }
+        .cs-axis-spoke   { stroke: rgba(120,100,80,0.45); stroke-width: 1; }
+        .cs-axis-shape   { fill: rgba(200,145,60,0.22); stroke: rgba(230,170,80,0.85); stroke-width: 1.5; stroke-linejoin: round; }
+        .cs-axis-label   { fill: rgba(180,160,130,0.80); font-family: var(--font-mono, monospace); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; }
+        .cs-axis-count   { fill: rgba(212,201,184,0.95); font-family: var(--font-mono, monospace); font-size: 9px; }
+        .cs-axis-tier-bg { fill: rgba(8,6,4,0.85); stroke: rgba(200,98,42,0.30); stroke-width: 1; }
+        .cs-axis-tier-num { fill: rgba(230,170,80,0.95); font-family: var(--font-mono, monospace); font-size: 10px; font-weight: 700; text-anchor: middle; }
+
         /* Section label */
         .cs-section-label {
           font-family: var(--font-mono, monospace);
@@ -450,6 +494,17 @@ export class CharacterSheet {
 
           <div class="cs-divider"></div>
 
+          <!-- Build identity (axis web) -->
+          <div class="cs-section-label">Build Identity</div>
+          <div id="cs-axis">
+            <div id="cs-axis-row">
+              <svg id="cs-axis-svg" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg"></svg>
+              <div id="cs-axis-tiers"></div>
+            </div>
+          </div>
+
+          <div class="cs-divider"></div>
+
           <!-- Derived stats -->
           <div id="cs-derived"></div>
         </div>
@@ -510,6 +565,18 @@ export class CharacterSheet {
     const respecEl = this.root.querySelector<HTMLElement>('#cs-respec-stats');
     if (respecEl) respecEl.style.display = '';
 
+    // Build identity — re-renders only when axis snapshot composition
+    // changes (server pushes a fresh snapshot on slot/unslot via
+    // PASSIVE_LOADOUT_CHANGED, so this stays cheap).
+    const axisSnap = p.axisSnapshot;
+    const axisKey = axisSnap
+      ? JSON.stringify(axisSnap.counts) + '|' + JSON.stringify(axisSnap.tiers)
+      : '';
+    if (axisKey !== this._lastAxisKey) {
+      this._lastAxisKey = axisKey;
+      this._renderAxisWeb();
+    }
+
     // Derived stats — rebuild when derived stats, passive bonuses, or
     // active-buff statMods change. Effect signature is just (id, statMods)
     // pairs — duration ticks and counts that don't shift the magnitudes
@@ -522,6 +589,151 @@ export class CharacterSheet {
       this._lastDerivedKey = derivedKey;
       this._renderDerivedStats();
     }
+  }
+
+  /** Render the 6-spoke axis web — phys/magical/melee/ranged/offense/defense
+   *  arranged radially with phys at the top, paired axes (phys↔magical,
+   *  melee↔ranged, offense↔defense) on opposite spokes. Each spoke length
+   *  is proportional to the slotted-node count pulling that direction.
+   *  Threshold rings at 3/5/7 nodes mark the T1/T2/T3 ladder breakpoints.
+   *  The filled polygon connecting the spoke tips is the build's silhouette
+   *  — a glance reveals "where does this build pull?" */
+  private _renderAxisWeb(): void {
+    const svg = this.root.querySelector<SVGSVGElement>('#cs-axis-svg');
+    const tiersEl = this.root.querySelector<HTMLElement>('#cs-axis-tiers');
+    if (!svg || !tiersEl) return;
+    svg.innerHTML = '';
+
+    const snap = this.player.axisSnapshot;
+    if (!snap) {
+      tiersEl.innerHTML = '<span class="cs-axis-empty">No build slotted yet.</span>';
+      // Render an empty grid so the panel doesn't flash on join.
+      this._buildAxisGrid(svg, { phys: 0, magical: 0, melee: 0, ranged: 0, offense: 0, defense: 0 });
+      return;
+    }
+
+    this._buildAxisGrid(svg, snap.counts);
+
+    // Tier readout to the right of the wheel — server-supplied summaries
+    // mirror what /stats prints. With the melee-gate removed, all active
+    // tiers display unconditionally; healer-sector axes are zero on
+    // offense so a healer build never trips the defense ladder in the
+    // first place.
+    if (snap.active.length === 0) {
+      tiersEl.innerHTML = '<span class="cs-axis-empty">Slot 3+ nodes pulling one direction to unlock tier bonuses.</span>';
+    } else {
+      tiersEl.innerHTML = snap.active
+        .map((t) => `<div class="cs-axis-tier-line">${this._escapeHtml(t.summary)}</div>`)
+        .join('');
+    }
+  }
+
+  /** Compose the SVG grid + spokes + filled silhouette + labels. Pulled out
+   *  so the empty-state path can render the same backdrop. */
+  private _buildAxisGrid(
+    svg: SVGSVGElement,
+    counts: import('@/network/Protocol').AxisSnapshot['counts'],
+  ): void {
+    const NS = 'http://www.w3.org/2000/svg';
+    const cx = 100, cy = 100;
+    const maxRadius = 70;        // 8 nodes = max
+    const maxNodes  = 8;
+    // Clockwise from top: phys / offense / melee / magical / defense / ranged.
+    // Pairs (phys↔magical, offense↔defense, melee↔ranged) sit on opposite
+    // spokes so the wheel reads as three diameters.
+    const directions: Array<{
+      key:   import('@/network/Protocol').AxisDirection;
+      label: string;
+      angle: number;  // radians, 0 = up
+    }> = [
+      { key: 'phys',    label: 'PHYS',    angle: -Math.PI / 2 },                  // top
+      { key: 'offense', label: 'OFFENSE', angle: -Math.PI / 2 + Math.PI / 3 },     // upper-right
+      { key: 'melee',   label: 'MELEE',   angle: -Math.PI / 2 + 2 * Math.PI / 3 }, // lower-right
+      { key: 'magical', label: 'MAGICAL', angle:  Math.PI / 2 },                   // bottom
+      { key: 'defense', label: 'DEFENSE', angle:  Math.PI / 2 + Math.PI / 3 },     // lower-left
+      { key: 'ranged',  label: 'RANGED',  angle:  Math.PI / 2 + 2 * Math.PI / 3 }, // upper-left
+    ];
+
+    const at = (radius: number, angle: number): [number, number] =>
+      [cx + radius * Math.cos(angle), cy + radius * Math.sin(angle)];
+
+    // Threshold rings at counts 3 / 5 / 7. The 3-ring is highlighted as
+    // the "first tier" line so players can read at-a-glance whether any
+    // direction has crossed the T1 threshold.
+    [3, 5, 7].forEach((threshold, idx) => {
+      const r = (threshold / maxNodes) * maxRadius;
+      const points = directions
+        .map((d) => at(r, d.angle))
+        .map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`)
+        .join(' ');
+      const poly = document.createElementNS(NS, 'polygon');
+      poly.setAttribute('points', points);
+      poly.setAttribute('class', idx === 0 ? 'cs-axis-grid cs-axis-grid-3' : 'cs-axis-grid');
+      svg.appendChild(poly);
+    });
+
+    // Spokes (out to max radius)
+    directions.forEach((d) => {
+      const [x, y] = at(maxRadius, d.angle);
+      const line = document.createElementNS(NS, 'line');
+      line.setAttribute('x1', String(cx));
+      line.setAttribute('y1', String(cy));
+      line.setAttribute('x2', x.toFixed(1));
+      line.setAttribute('y2', y.toFixed(1));
+      line.setAttribute('class', 'cs-axis-spoke');
+      svg.appendChild(line);
+    });
+
+    // Filled silhouette polygon connecting per-direction counts.
+    const shapePoints = directions
+      .map((d) => {
+        const c = counts[d.key] ?? 0;
+        const r = Math.min(c, maxNodes) / maxNodes * maxRadius;
+        const [x, y] = at(r, d.angle);
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      })
+      .join(' ');
+    const shape = document.createElementNS(NS, 'polygon');
+    shape.setAttribute('points', shapePoints);
+    shape.setAttribute('class', 'cs-axis-shape');
+    svg.appendChild(shape);
+
+    // Labels at each spoke tip + node count.
+    directions.forEach((d) => {
+      const c = counts[d.key] ?? 0;
+      const labelRadius = maxRadius + 16;
+      const [lx, ly] = at(labelRadius, d.angle);
+
+      const label = document.createElementNS(NS, 'text');
+      label.setAttribute('x', lx.toFixed(1));
+      label.setAttribute('y', ly.toFixed(1));
+      label.setAttribute('class', 'cs-axis-label');
+      label.setAttribute('text-anchor', 'middle');
+      label.setAttribute('dominant-baseline', 'middle');
+      label.textContent = d.label;
+      svg.appendChild(label);
+
+      const countLabel = document.createElementNS(NS, 'text');
+      countLabel.setAttribute('x', lx.toFixed(1));
+      countLabel.setAttribute('y', (ly + 11).toFixed(1));
+      countLabel.setAttribute('class', 'cs-axis-count');
+      countLabel.setAttribute('text-anchor', 'middle');
+      countLabel.setAttribute('dominant-baseline', 'middle');
+      countLabel.textContent = String(c);
+      svg.appendChild(countLabel);
+    });
+  }
+
+  private _escapeHtml(s: string): string {
+    return s.replace(/[&<>"']/g, (ch) => {
+      switch (ch) {
+        case '&':  return '&amp;';
+        case '<':  return '&lt;';
+        case '>':  return '&gt;';
+        case '"':  return '&quot;';
+        default:   return '&#39;';
+      }
+    });
   }
 
   private _refreshRespecButton(): void {

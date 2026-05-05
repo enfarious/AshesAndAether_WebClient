@@ -81,6 +81,9 @@ export class PlayerState {
    *  column in CharacterSheet. Empty / null when no passives are unlocked. */
   private _coreStatsBonuses:    Partial<CoreStats>    | null = null;
   private _derivedStatsBonuses: Partial<DerivedStats> | null = null;
+  /** Server-pushed axis snapshot driving the character-sheet 6-spoke web
+   *  visualization. Updated on world_entry and on PASSIVE_LOADOUT_CHANGED. */
+  private _axisSnapshot: import('@/network/Protocol').AxisSnapshot | null = null;
 
   /** Last kill XP breakdown — surfaced by /xpinfo for live tuning. */
   private _lastXpBreakdown: XpBreakdownInfo | null = null;
@@ -219,6 +222,7 @@ export class PlayerState {
   get derivedStats(): DerivedStats | null { return this._derivedStats; }
   get coreStatsBonuses():    Partial<CoreStats>    | null { return this._coreStatsBonuses; }
   get derivedStatsBonuses(): Partial<DerivedStats> | null { return this._derivedStatsBonuses; }
+  get axisSnapshot(): import('@/network/Protocol').AxisSnapshot | null { return this._axisSnapshot; }
   get corruption(): number { return this._corruption; }
   get corruptionState(): CorruptionState { return this._corruptionState; }
   get effects(): StatusEffect[] { return this._effects; }
@@ -312,6 +316,7 @@ export class PlayerState {
     this._derivedStats = character.derivedStats ?? null;
     this._coreStatsBonuses    = character.coreStatsBonuses    ?? null;
     this._derivedStatsBonuses = character.derivedStatsBonuses ?? null;
+    this._axisSnapshot        = character.axisSnapshot         ?? null;
     // Seed prediction speeds from derived stats so WASD & click-to-move
     // prediction is accurate from the first frame.
     if (this._derivedStats?.movementSpeed) {
@@ -352,6 +357,7 @@ export class PlayerState {
     coreStatsBonuses?:    Partial<CoreStats>;
     derivedStats?:  DerivedStats;
     derivedStatsBonuses?: Partial<DerivedStats>;
+    axisSnapshot?: import('@/network/Protocol').AxisSnapshot;
   }): void {
     if (update.health)               this._health   = { ...update.health };
     if (update.stamina)              this._stamina  = { ...update.stamina };
@@ -377,6 +383,9 @@ export class PlayerState {
     }
     if (update.derivedStatsBonuses !== undefined) {
       this._derivedStatsBonuses = { ...update.derivedStatsBonuses };
+    }
+    if (update.axisSnapshot !== undefined) {
+      this._axisSnapshot = update.axisSnapshot;
     }
     this._notify();
   }

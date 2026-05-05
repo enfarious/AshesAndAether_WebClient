@@ -47,12 +47,19 @@ export abstract class EntityObject {
   /** Called every frame with delta time in seconds. */
   abstract update(dt: number): void;
 
-  /** Update the server-authoritative target position (for interpolation). */
+  /** Update the server-authoritative target position (for interpolation).
+   *  `movementSpeed` (m/s) lets RemoteEntity dead-reckon between broadcasts —
+   *  with server-side broadcast suppression for sustained-direction movers,
+   *  gaps can stretch to ~1s, and without extrapolation the entity teleports
+   *  from snapshot to snapshot. Client extrapolates along heading × speed
+   *  until the next broadcast lands as a correction. Optional — undefined
+   *  speed implies no extrapolation. */
   abstract setTargetPosition(
     position: THREE.Vector3,
     heading?: number,
     durationMs?: number,
     from?: THREE.Vector3,
+    movementSpeed?: number,
   ): void;
 
   /** Snap immediately to position without lerp. */

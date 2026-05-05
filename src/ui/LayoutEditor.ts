@@ -30,7 +30,11 @@ type SavedLayout = Record<string, WidgetPos>;
 const STORAGE_KEY = 'aa_layout_positions';
 
 const DRAGGABLE: WidgetDef[] = [
-  { id: 'hud',                  label: 'Vitals' },
+  // Bottom-center cluster (cast bar + vitals + corruption). NOT '#hud' —
+  // dragging that broke fixed-positioned children (clock, fps, aether,
+  // etc.) because transform on a parent makes its fixed children position
+  // relative to the parent. The inner cluster wrapper sidesteps that.
+  { id: 'hud-vitals-cluster',   label: 'Vitals' },
   { id: 'action-bar',           label: 'Action Bar' },
   { id: 'chat-panel',           label: 'Chat' },
   { id: 'minimap',              label: 'Minimap' },
@@ -40,6 +44,9 @@ const DRAGGABLE: WidgetDef[] = [
   { id: 'hud-clock',            label: 'Clock' },
   { id: 'hud-fps',              label: 'FPS' },
   { id: 'hud-effects-wrapper',  label: 'Effects' },
+  { id: 'hud-aether',           label: 'Aether Density' },
+  { id: 'companion-hud',        label: 'Companion' },
+  { id: 'party-window',         label: 'Party' },
 ];
 
 /** Minimum fraction of the widget that must remain on-screen after a drag. */

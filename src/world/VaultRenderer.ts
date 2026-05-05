@@ -67,6 +67,14 @@ export class VaultRenderer {
   private colliderMesh: THREE.Mesh | null = null;
   private lights:       THREE.Light[] = [];
 
+  /** Room-center point lights — candidates for the shadow follower. */
+  private roomPointLights: THREE.PointLight[] = [];
+
+  /** How many of the nearest room lights cast shadows each frame. Each
+   *  enabled point shadow = 6 cubemap render passes, so this is the single
+   *  biggest perf knob in a vault. */
+  private shadowBudget = 1;
+
   /** Stored tile data for rebuilding meshes when gates open. */
   private _tileData: VaultTileData | null = null;
 
@@ -106,13 +114,15 @@ export class VaultRenderer {
     }
 
     // ── Floor InstancedMesh ──────────────────────────────────────────
+    // MeshLambertMaterial instead of Standard: vault walls/floors are matte
+    // stone, no specular needed. Lambert's per-pixel light loop is ~3-4×
+    // cheaper than PBR Standard, which dominates GPU cost in vaults where
+    // every visible pixel is close-up wall lit by ~7 point lights.
     if (floorCount > 0) {
       const floorGeo = new THREE.PlaneGeometry(tileSize, tileSize);
       floorGeo.rotateX(-Math.PI / 2); // lay flat
-      const floorMat = new THREE.MeshStandardMaterial({
+      const floorMat = new THREE.MeshLambertMaterial({
         color: FLOOR_COLOR,
-        roughness: 0.9,
-        metalness: 0.1,
       });
 
       this.floorMesh = new THREE.InstancedMesh(floorGeo, floorMat, floorCount);
@@ -136,10 +146,8 @@ export class VaultRenderer {
     // ── Wall InstancedMesh ───────────────────────────────────────────
     if (wallCount > 0) {
       const wallGeo = new THREE.BoxGeometry(tileSize, wallHeight, tileSize);
-      const wallMat = new THREE.MeshStandardMaterial({
+      const wallMat = new THREE.MeshLambertMaterial({
         color: WALL_COLOR,
-        roughness: 0.95,
-        metalness: 0.05,
       });
 
       this.wallMesh = new THREE.InstancedMesh(wallGeo, wallMat, wallCount);
@@ -168,20 +176,24 @@ export class VaultRenderer {
     // PlayerEntity.setWorldRoot() includes it despite spanning > 50 m.
     this._buildCollisionMesh(width, height, tileSize, tiles, wallHeight);
 
-    // ── Flat Ceiling (disabled for debugging) ─────────────────────
-    // TODO: re-enable ceiling once dungeon generation is validated
-    // const vaultSpanX = width  * tileSize;
-    // const vaultSpanZ = height * tileSize;
-    // const ceilGeo = new THREE.PlaneGeometry(vaultSpanX, vaultSpanZ);
-    // ceilGeo.rotateX(-Math.PI / 2);
-    // const ceilMat = new THREE.MeshStandardMaterial({
-    //   color: CEILING_COLOR, roughness: 0.95, metalness: 0.0, side: THREE.FrontSide,
-    // });
-    // this._applyCeilingClip(ceilMat);
-    // this.ceilingMesh = new THREE.Mesh(ceilGeo, ceilMat);
-    // this.ceilingMesh.receiveShadow = true;
-    // this.ceilingMesh.position.set(0, ceilingHeight, 0);
-    // this.group.add(this.ceilingMesh);
+    // ── Flat Ceiling ───────────────────────────────────────────────
+    // Unlit MeshBasicMaterial: zero per-pixel light-loop cost (the dominant
+    // GPU cost in vaults), just a flat color blended with fog. Cheaper than
+    // leaving "look up = void" and avoids the discard-based clip shader the
+    // previous implementation used (discard kills early-Z). When the orbit
+    // camera rises above the ceiling Y, setClipCenter() hides the mesh so
+    // it doesn't occlude the player.
+    const vaultSpanX = width  * tileSize;
+    const vaultSpanZ = height * tileSize;
+    const ceilGeo = new THREE.PlaneGeometry(vaultSpanX, vaultSpanZ);
+    ceilGeo.rotateX(Math.PI / 2);  // normal -Y, front face visible from below
+    const ceilMat = new THREE.MeshBasicMaterial({
+      color: CEILING_COLOR,
+      fog:   true,
+    });
+    this.ceilingMesh = new THREE.Mesh(ceilGeo, ceilMat);
+    this.ceilingMesh.position.set(0, ceilingHeight, 0);
+    this.group.add(this.ceilingMesh);
 
     // ── Vault Lighting ───────────────────────────────────────────────
     // Static indoor lights that don't change with time-of-day.
@@ -191,22 +203,38 @@ export class VaultRenderer {
     this.lights.push(ambient);
     this.group.add(ambient);
 
-    // Place point lights at room centers for localized illumination
-    if (data.roomCenters && data.roomCenters.length > 0) {
-      for (const center of data.roomCenters) {
-        const pointLight = new THREE.PointLight(0xddeeff, 2.5, 0, 1.0);
+    // Place a small fixed budget of point lights, evenly spaced across the
+    // room list. Three.js MeshLambert/Standard materials run a per-pixel
+    // loop over every light in the scene (no distance branch, no early-out)
+    // so the count itself drives fragment cost — 6 lights × every visible
+    // wall pixel was the wall. 2 atmospheric lights + ambient is plenty
+    // for "ominous corner" feel; intensity is bumped to compensate.
+    //
+    // castShadow defaults off; updateShadowFollow() turns it on for the
+    // nearest `shadowBudget` light each frame at 256² mapSize.
+    const LIGHT_BUDGET = 2;
+    const centers = data.roomCenters ?? [];
+    if (centers.length > 0) {
+      const count = Math.min(LIGHT_BUDGET, centers.length);
+      for (let i = 0; i < count; i++) {
+        const idx = Math.floor((i * centers.length) / count);
+        const center = centers[idx]!;
+        const pointLight = new THREE.PointLight(0xddeeff, 4.0, 0, 1.0);
         pointLight.position.set(center.x, ceilingHeight * 0.6, center.z);
-        pointLight.castShadow = true;
-        pointLight.shadow.mapSize.set(512, 512);
+        pointLight.castShadow = false;
+        pointLight.shadow.mapSize.set(256, 256);
         this.lights.push(pointLight);
+        this.roomPointLights.push(pointLight);
         this.group.add(pointLight);
       }
     } else {
-      // Single-room fallback: one light at vault center
-      const pointLight = new THREE.PointLight(0xddeeff, 3.0, 0, 1.0);
+      // No room data — single light at vault center
+      const pointLight = new THREE.PointLight(0xddeeff, 4.0, 0, 1.0);
       pointLight.position.set(0, ceilingHeight * 0.6, 0);
-      pointLight.castShadow = true;
+      pointLight.castShadow = false;
+      pointLight.shadow.mapSize.set(256, 256);
       this.lights.push(pointLight);
+      this.roomPointLights.push(pointLight);
       this.group.add(pointLight);
     }
 
@@ -327,9 +355,7 @@ export class VaultRenderer {
     if (floorCount > 0) {
       const floorGeo = new THREE.PlaneGeometry(tileSize, tileSize);
       floorGeo.rotateX(-Math.PI / 2);
-      const floorMat = new THREE.MeshStandardMaterial({
-        color: FLOOR_COLOR, roughness: 0.9, metalness: 0.1,
-      });
+      const floorMat = new THREE.MeshLambertMaterial({ color: FLOOR_COLOR });
       this.floorMesh = new THREE.InstancedMesh(floorGeo, floorMat, floorCount);
       this.floorMesh.receiveShadow = true;
       const mat4 = new THREE.Matrix4();
@@ -350,9 +376,7 @@ export class VaultRenderer {
     // Rebuild walls
     if (wallCount > 0) {
       const wallGeo = new THREE.BoxGeometry(tileSize, wallHeight, tileSize);
-      const wallMat = new THREE.MeshStandardMaterial({
-        color: WALL_COLOR, roughness: 0.95, metalness: 0.05,
-      });
+      const wallMat = new THREE.MeshLambertMaterial({ color: WALL_COLOR });
       this.wallMesh = new THREE.InstancedMesh(wallGeo, wallMat, wallCount);
       this.wallMesh.castShadow = true;
       this.wallMesh.receiveShadow = true;
@@ -405,6 +429,48 @@ export class VaultRenderer {
       if (light instanceof THREE.PointLight) light.dispose();
     }
     this.lights.length = 0;
+    this.roomPointLights.length = 0;
+  }
+
+  // ── Shadow follower ────────────────────────────────────────────────────
+
+  /**
+   * Enable `castShadow` on the {@link shadowBudget} room lights nearest the
+   * player; disable it on the rest. Cheap O(N) over `roomPointLights`.
+   *
+   * Each point shadow is 6 cubemap render passes per frame, so going from
+   * "all rooms cast" to "nearest 2" turns 6×6=36 shadow passes into 2×6=12.
+   * Call once per frame from the game loop while in a vault.
+   */
+  updateShadowFollow(playerX: number, playerY: number, playerZ: number): void {
+    const lights = this.roomPointLights;
+    if (lights.length <= this.shadowBudget) {
+      // Nothing to choose — every light gets to cast.
+      for (const l of lights) l.castShadow = true;
+      return;
+    }
+    // Pick the indices of the `shadowBudget` closest lights via a tiny
+    // selection scan — avoids allocating per-frame for a 1–8 element list.
+    const budget = this.shadowBudget;
+    const dists  = lights.map(l => {
+      const dx = l.position.x - playerX;
+      const dy = l.position.y - playerY;
+      const dz = l.position.z - playerZ;
+      return dx*dx + dy*dy + dz*dz;
+    });
+    const winners = new Set<number>();
+    for (let pick = 0; pick < budget; pick++) {
+      let best = -1;
+      let bestD = Infinity;
+      for (let i = 0; i < lights.length; i++) {
+        if (winners.has(i)) continue;
+        if (dists[i]! < bestD) { bestD = dists[i]!; best = i; }
+      }
+      if (best >= 0) winners.add(best);
+    }
+    for (let i = 0; i < lights.length; i++) {
+      lights[i]!.castShadow = winners.has(i);
+    }
   }
 
   // ── Ceiling clip ───────────────────────────────────────────────────────
@@ -420,6 +486,13 @@ export class VaultRenderer {
     camX: number, camY: number, camZ: number,
     playerX: number, playerZ: number,
   ): void {
+    // Hide the ceiling when the orbit camera rises above it — otherwise the
+    // top-down camera would render the back of the ceiling and occlude the
+    // player. 0.5m margin avoids flicker right at the boundary.
+    if (this.ceilingMesh) {
+      this.ceilingMesh.visible = camY < this._ceilingY - 0.5;
+    }
+
     const dy = 0 - camY; // player Y is 0
     if (Math.abs(dy) < 0.001) {
       // Camera at player height — degenerate, just use player XZ

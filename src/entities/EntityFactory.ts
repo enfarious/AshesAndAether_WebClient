@@ -227,7 +227,7 @@ export class EntityFactory {
       const from = entity.fromPosition
         ? new THREE.Vector3(entity.fromPosition.x, y, entity.fromPosition.z)
         : undefined;
-      obj.setTargetPosition(pos, entity.heading, entity.movementDuration, from);
+      obj.setTargetPosition(pos, entity.heading, entity.movementDuration, from, entity.movementSpeed);
     }
 
     // Allow entity objects to react to non-position attribute changes

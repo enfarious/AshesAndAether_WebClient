@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { ClientConfig } from '@/config/ClientConfig';
 import type { EntityRegistry } from '@/state/EntityRegistry';
 import type { HeightmapService } from '@/world/HeightmapService';
+import { chunkedFor }     from '@/world/yieldUtil';
 import type { Entity } from '@/network/Protocol';
 
 export const FOREST_SPECIES = new Set(['pine_tree', 'oak_tree', 'maple_tree']);
@@ -67,6 +68,44 @@ export class ForestRenderer {
     registry.onAdd(   e  => { if (_isTree(e)) this._add(e);      });
     registry.onUpdate(e  => { if (_isTree(e)) this._onUpdate(e); });
     registry.onRemove(id => this._remove(id));
+  }
+
+  /** Bulk-load trees from the per-zone landscape manifest fetched over HTTP
+   *  during the loading screen. Bypasses the EntityRegistry (these aren't
+   *  realtime entities) and inserts directly into _pending so the existing
+   *  visibility refresh promotes them on the next update tick. Idempotent on
+   *  id — duplicate plant_spawn deltas arriving over the WebSocket are
+   *  no-ops thanks to the existing _add guard. */
+  async bulkAddFromManifest(
+    trees: Array<{
+      id: string; species: string; x: number; y: number; z: number; variant?: number;
+    }>,
+    onProgress?: (done: number, total: number) => void,
+  ): Promise<void> {
+    // Chunked — large zones can ship 5 000+ trees and the per-tree cost
+    // (heightmap sample + map insert) can pile up to a second-plus of
+    // synchronous work without yielding. 500 trees per chunk lands well
+    // inside the responsiveness budget.
+    await chunkedFor(trees, 500, (t) => {
+      if (this._active.has(t.id) || this._pending.has(t.id)) return;
+      if (!FOREST_SPECIES.has(t.species)) return;
+      const species = t.species as Species;
+      const variant = ((t.variant ?? 0) % 5) as VariantIndex;
+      const vk: VariantKey = `${species}:${variant}`;
+      const y = this._heightmap?.getElevation(t.x, t.z) ?? t.y;
+      const h = _idHash(t.id);
+      const rotY = (h & 0xFFFF) / 0xFFFF * Math.PI * 2;
+      this._pending.set(t.id, {
+        variantKey: vk,
+        x: t.x, y, z: t.z,
+        scale: 1.0, // manifest trees ship at mature scale
+        rotY,
+        slot: -1,
+      });
+    }, onProgress);
+    // Force a visibility recompute on the next update() so newly-added trees
+    // around the player promote from _pending to _active immediately.
+    this._lastPx = NaN;
   }
 
   setHeightmap(hm: HeightmapService | null): void {

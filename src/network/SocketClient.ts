@@ -74,6 +74,7 @@ export class SocketClient {
       'auth_success', 'auth_error', 'auth_confirm_name',
       'character_list', 'character_confirm_name', 'character_roster_delta', 'character_error',
       'world_entry',
+      'world_ready',
       'state_update',
       'event',
       'communication',
@@ -104,6 +105,16 @@ export class SocketClient {
       'command_response',
       'logout_success',
       'dev_ack',
+      // Travel + system messaging
+      'system_toast',
+      'zone_build_progress',
+      'zone_build_complete',
+      // Ability handler errors (mid-combat slot changes, duplicates)
+      'ability_error',
+      // /help panel response — server-filtered command list
+      'command_help_list',
+      // Strategic map live deltas (only while M-map is open + subscribed)
+      'map_beacon_update', 'map_ad_patch',
     ] as const;
 
     for (const name of serverEvents) {
@@ -258,6 +269,17 @@ export class SocketClient {
     this._send('respawn', { timestamp: Date.now() });
   }
 
+  /** Open the M-key world map → start receiving live AD/beacon deltas
+   *  for the current zone.  Idempotent on the server. */
+  sendMapSubscribe(): void {
+    this._send('map_subscribe', { timestamp: Date.now() });
+  }
+
+  /** Close the M-key world map → stop the delta stream. */
+  sendMapUnsubscribe(): void {
+    this._send('map_unsubscribe', { timestamp: Date.now() });
+  }
+
   sendEquipItem(itemId: string, slot: EquipSlot): void {
     this._send('equip_item', { itemId, slot, timestamp: Date.now() });
   }
@@ -313,6 +335,11 @@ export class SocketClient {
     routeRef:          string;
     distanceMiles:     number;
     hasToll:           boolean;
+    /** When true on an unbuilt zone, kick off the build but don't transfer
+     *  the player — they keep playing in their current zone and get a
+     *  zone_build_complete event when the destination is ready, prompting
+     *  them to travel via a fresh travel_request. */
+    deferBuild?:       boolean;
   }): void {
     this._send('travel_request', { ...payload, timestamp: Date.now() });
   }

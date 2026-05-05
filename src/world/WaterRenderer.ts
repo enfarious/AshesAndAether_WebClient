@@ -22,6 +22,9 @@ interface WaterMeshEntry {
 // ── Shader source ──────────────────────────────────────────────────────────────
 
 const WATER_VERT = /* glsl */ `
+#include <common>
+#include <logdepthbuf_pars_vertex>
+
 uniform float uTime;
 uniform float uWaveAmplitude;
 uniform float uWaveFrequency;
@@ -62,10 +65,14 @@ void main() {
   vFogDepth = -mvPosition.z;
 
   gl_Position = projectionMatrix * mvPosition;
+  #include <logdepthbuf_vertex>
 }
 `;
 
 const WATER_FRAG = /* glsl */ `
+#include <common>
+#include <logdepthbuf_pars_fragment>
+
 uniform float uTime;
 uniform vec3  uWaterColor;
 uniform vec3  uDeepColor;
@@ -97,6 +104,8 @@ float noise(vec2 p) {
 }
 
 void main() {
+  #include <logdepthbuf_fragment>
+
   vec3 normal  = normalize(vWorldNormal);
   vec3 viewDir = normalize(cameraPosition - vWorldPosition);
 

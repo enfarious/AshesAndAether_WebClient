@@ -89,6 +89,38 @@ export class HeightmapService {
     };
   }
 
+  /** Snapshot of the raw DEM data + the world↔texel transform constants
+   *  needed to sample it from a shader. Consumers (e.g. MiasmaGroundFog)
+   *  build a `THREE.DataTexture` from `data` and pass `originLat/Lon`,
+   *  `pixelSizeDeg`, dimensions, and the metres-per-degree conversions
+   *  as uniforms. World (X, Z) → (lat, lon) → (col, row) follows the
+   *  same math as `_sampleBilinear` here. */
+  getShaderInputs(): {
+    data: Float32Array;
+    width: number;
+    height: number;
+    centerLat: number;
+    centerLon: number;
+    originLat: number;
+    originLon: number;
+    pixelSizeDeg: number;
+    mPerDegLat: number;
+    mPerDegLon: number;
+  } {
+    return {
+      data:         this.data,
+      width:        this.meta.width,
+      height:       this.meta.height,
+      centerLat:    this.centerLat,
+      centerLon:    this.centerLon,
+      originLat:    this.meta.originLat,
+      originLon:    this.meta.originLon,
+      pixelSizeDeg: this.meta.pixelSizeDeg,
+      mPerDegLat:   this.mPerDegLat,
+      mPerDegLon:   this.mPerDegLon,
+    };
+  }
+
   /**
    * Sample terrain elevation (metres) at world-space (X, Z).
    * Returns null outside the DEM bounds.

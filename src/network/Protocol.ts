@@ -153,6 +153,23 @@ export interface CorruptionBenefits {
   deadSystemInterface: boolean;
 }
 
+/** One of the six axis directions tracked for build-identity. Mirrors the
+ *  server-side AxisDirection in @ashes/core/abilities/axisBonuses. */
+export type AxisDirection =
+  | 'phys' | 'magical'
+  | 'melee' | 'ranged'
+  | 'offense' | 'defense';
+
+/** Server-computed snapshot of axis composition. `counts` is per-direction
+ *  slotted-node count (sign-only). `tiers` is the ladder tier reached
+ *  (1/2/3) or 0 below T1. `active` is per-direction summary text mirroring
+ *  what `/stats` prints — used directly in character-sheet tooltips. */
+export interface AxisSnapshot {
+  counts: Record<AxisDirection, number>;
+  tiers:  Record<AxisDirection, number>;
+  active: Array<{ direction: AxisDirection; tier: number; summary: string }>;
+}
+
 export interface StatusEffect {
   id: string;
   name: string;
@@ -189,6 +206,10 @@ export interface CharacterState {
   /** Per-derived-stat bonuses from passives (and future gear/buff sources).
    *  Same delta convention as coreStatsBonuses. */
   derivedStatsBonuses?: Partial<DerivedStats>;
+  /** Build-identity axis snapshot derived from slotted passive composition.
+   *  Drives the character-sheet 6-spoke web visualization. Server pushes
+   *  on world_entry and on PASSIVE_LOADOUT_CHANGED. */
+  axisSnapshot?: AxisSnapshot;
   corruption: CorruptionStatus;
   corruptionBenefits: CorruptionBenefits;
   unlockedFeats: string[];
@@ -312,6 +333,8 @@ export interface StateUpdatePayload {
     coreStatsBonuses?:    Partial<CoreStats>;
     derivedStats?:        DerivedStats;
     derivedStatsBonuses?: Partial<DerivedStats>;
+    // Build-identity axis snapshot — pushed on slot/unslot
+    axisSnapshot?:        AxisSnapshot;
     // Status effects
     effects?: StatusEffect[];
   };
@@ -1192,6 +1215,31 @@ export interface SystemToastPayload {
   message:   string;
   type:      'info' | 'success' | 'warning';
   duration?: number;
+}
+
+/** Server → Client: a deferred zone build has finished. Carries enough
+ *  context for the client to re-issue a travel_request via a confirm modal
+ *  ("X is ready, travel now?"). */
+export interface ZoneBuildCompletePayload {
+  zoneId:           string;
+  destinationName:  string;
+  routeRef:         string;
+}
+
+/** Server → Client: filtered slash-command reference for the requesting
+ *  player. Server filters by role so admin entries don't leak to players. */
+export interface CommandHelpEntry {
+  name:        string;
+  aliases:     string[];
+  category:    'general' | 'movement' | 'combat' | 'party' | 'companion' | 'social' | 'travel' | 'admin' | 'debug';
+  role:        'player' | 'admin';
+  clientSide:  boolean;
+  syntax:      string;
+  description: string;
+}
+export interface CommandHelpListPayload {
+  viewerRole: 'player' | 'admin';
+  commands:   CommandHelpEntry[];
 }
 
 // ── Beacon & Library Alerts ───────────────────────────────────────────────────

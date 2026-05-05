@@ -35,7 +35,57 @@ let _serverUrl = _loadServerUrl();
 let _drawDistance = 200;
 let _cameraYawSensitivity = 0.005;
 let _cameraPitchSensitivity = 0.15;
-let _treeVisibleRange = 1000;
+let _treeVisibleRange     = 1000;
+/** Harvest glints — gameplay markers; sharper/closer than landscape stuff so
+ *  they read as "in this area." Tuned smaller than entity draw distance
+ *  because glints are visually noisy (additive blend, tier color). */
+let _harvestGlintRange    = 150;
+/** Rock outcrops — landscape decoration, mid-range. Smaller than trees
+ *  because rocks are individual InstancedMesh entries with per-frame matrix
+ *  cost when culling is on, while trees pre-bake. */
+let _rockVisibleRange     = 500;
+
+export type BeaconDetail = 'low' | 'med' | 'high';
+let _beaconDetail: BeaconDetail = 'med';
+
+/** Subdivision counts for beacon aura discs/domes per detail tier.
+ *  Higher tiers conform to terrain more tightly at the cost of vertex
+ *  count (a single guild bubble at 'high' is ~768 verts; trivial). */
+export interface BeaconSubdivisions { radial: number; rings: number }
+const BEACON_DETAIL_TABLE: Record<BeaconDetail, BeaconSubdivisions> = {
+  low:  { radial: 16, rings: 6  },
+  med:  { radial: 32, rings: 12 },
+  high: { radial: 48, rings: 16 },
+};
+
+export type MiasmaQuality = 'off' | 'low' | 'med' | 'high' | 'ultra';
+let _miasmaQuality: MiasmaQuality = 'med';
+
+/** Per-axis subdivision count of the MiasmaGroundFog plane. Total verts
+ *  = (n+1)². 'off' disables the plane entirely. Higher tiers conform to
+ *  terrain ridges more tightly at distance; 'med' is the visual sweet
+ *  spot for typical play. */
+const MIASMA_SUBDIV_TABLE: Record<MiasmaQuality, number> = {
+  off:   0,
+  low:   64,
+  med:   128,
+  high:  192,
+  ultra: 256,
+};
+
+export type MiasmaRange = 'short' | 'med' | 'long' | 'far' | 'ultra';
+let _miasmaRange: MiasmaRange = 'long';
+
+/** Plane size in metres — controls how far the fog extends around the
+ *  player. Combined with subdivisions, determines vertex spacing
+ *  (planeSize / subdivisions). 'long' (1000m) is the default. */
+const MIASMA_RANGE_TABLE: Record<MiasmaRange, number> = {
+  short: 250,
+  med:   500,
+  long:  1000,
+  far:   2000,
+  ultra: 4000,
+};
 
 export const ClientConfig = {
   get serverUrl(): string { return _serverUrl; },
@@ -110,4 +160,40 @@ export const ClientConfig = {
   /** Max distance (metres) at which plant entities (trees, shrubs) are rendered. */
   get treeVisibleRange(): number { return _treeVisibleRange; },
   set treeVisibleRange(v: number) { _treeVisibleRange = v; },
+
+  /** Max distance (metres) at which harvest glints render. Per-category
+   *  setting because glints are gameplay markers (closer = sharper signal),
+   *  distinct from entity draw distance and landscape ranges. */
+  get harvestGlintRange(): number { return _harvestGlintRange; },
+  set harvestGlintRange(v: number) { _harvestGlintRange = v; },
+
+  /** Max distance (metres) at which rock outcrops render. Mid-range —
+   *  bigger than glints (rocks help orient in landscape) but smaller than
+   *  trees (rocks have per-frame matrix update cost when culled). */
+  get rockVisibleRange(): number { return _rockVisibleRange; },
+  set rockVisibleRange(v: number) { _rockVisibleRange = v; },
+
+  /** Beacon aura mesh quality — controls disc/dome subdivision count. */
+  get beaconDetail(): BeaconDetail { return _beaconDetail; },
+  set beaconDetail(v: BeaconDetail) { _beaconDetail = v; },
+
+  /** Resolve current detail tier to subdivision counts. Renderers query
+   *  this at construction time; existing aura meshes don't auto-rebuild
+   *  on setting change — they reflect the value at their creation. */
+  beaconSubdivisions(): BeaconSubdivisions { return BEACON_DETAIL_TABLE[_beaconDetail]; },
+
+  /** Miasma ground-fog quality. 'off' = no fog plane. */
+  get miasmaQuality(): MiasmaQuality { return _miasmaQuality; },
+  set miasmaQuality(v: MiasmaQuality) { _miasmaQuality = v; },
+
+  /** Per-axis subdivisions for the current miasma quality. 0 means the
+   *  fog should not be constructed at all. */
+  miasmaSubdivisions(): number { return MIASMA_SUBDIV_TABLE[_miasmaQuality]; },
+
+  /** Miasma fog view distance preset. */
+  get miasmaRange(): MiasmaRange { return _miasmaRange; },
+  set miasmaRange(v: MiasmaRange) { _miasmaRange = v; },
+
+  /** Plane size (metres) for the current view-distance preset. */
+  miasmaPlaneSize(): number { return MIASMA_RANGE_TABLE[_miasmaRange]; },
 };

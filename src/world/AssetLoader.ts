@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { ClientConfig } from '@/config/ClientConfig';
 import { HeightmapService } from './HeightmapService';
+import { chunkedFor }       from './yieldUtil';
 
 export interface ManifestAsset {
   id:        string;
@@ -401,12 +402,15 @@ export class AssetLoader {
     const normals:   number[] = [];
     const idxArr:    number[] = [];
 
-    for (const feat of features) {
+    // Chunked extrusion — keeps the main thread responsive (browser-
+    // unresponsive watchdog fires after ~10 s). 200 footprints per
+    // chunk hits roughly 30–80 ms per batch on medium hardware.
+    await chunkedFor(features, 200, (feat) => {
       const raw = feat.nodes ?? [];
-      if (raw.length < 3) continue;
+      if (raw.length < 3) return;
 
       // World XZ coordinates
-      let pts: [number, number][] = raw.map(n => [
+      const pts: [number, number][] = raw.map(n => [
         (n.lon - originLon) * R_lon,
         -(n.lat - originLat) * R_lat,
       ]);
@@ -417,7 +421,7 @@ export class AssetLoader {
         const [lx, lz] = pts[pts.length - 1]!;
         if (Math.abs(fx - lx) < 0.01 && Math.abs(fz - lz) < 0.01) pts.pop();
       }
-      if (pts.length < 3) continue;
+      if (pts.length < 3) return;
 
       const h    = osmBuildingHeight(feat.tags);
       const base = positions.length / 3;
@@ -449,7 +453,9 @@ export class AssetLoader {
           base + (i + 1) * 2 + 1, // top i+1
         );
       }
-    }
+    }, (done, total) => {
+      this._status(`Building structures (${done}/${total})…`);
+    });
 
     if (positions.length === 0) return null;
 
@@ -485,9 +491,10 @@ export class AssetLoader {
     const positions: number[] = [];
     const idxArr:    number[] = [];
 
-    for (const feat of features) {
+    // Same chunking story as buildings — keeps the main thread breathing.
+    await chunkedFor(features, 200, (feat) => {
       const raw = feat.nodes ?? [];
-      if (raw.length < 2) continue;
+      if (raw.length < 2) return;
 
       const halfW = osmRoadWidth(feat.tags?.highway ?? '') / 2;
       const pts   = raw.map(n => ({
@@ -516,7 +523,9 @@ export class AssetLoader {
 
         idxArr.push(base, base + 2, base + 1, base + 1, base + 2, base + 3);
       }
-    }
+    }, (done, total) => {
+      this._status(`Tracing roads (${done}/${total})…`);
+    });
 
     if (positions.length === 0) return null;
 

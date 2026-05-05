@@ -1,10 +1,13 @@
 import type { WorldState }  from '@/state/WorldState';
 import type { SocketClient } from '@/network/SocketClient';
+import type { SessionState } from '@/state/SessionState';
 import { ClientConfig }      from '@/config/ClientConfig';
 
 // ── Types (mirror highway-network.json) ──────────────────────────────────────
 
 interface TollBooth { lat: number; lon: number; name: string; }
+
+type Octant = 'N' | 'NE' | 'E' | 'SE' | 'S' | 'SW' | 'W' | 'NW';
 
 interface RouteStop {
   name:          string;
@@ -12,7 +15,11 @@ interface RouteStop {
   lat:           number;
   lon:           number;
   distanceMiles: number;
+  /** Legacy OSM-node-ordering relative; not shown in UI but kept for compat. */
   direction:     'ahead' | 'behind';
+  /** Compass bearing from zone center. */
+  bearingDeg:    number;
+  bearingOctant: Octant;
   zoneId:        string | null;
   active:        boolean;
   tollBooth:     TollBooth | null;
@@ -33,6 +40,17 @@ interface TravelData {
   generated:   string;
 }
 
+/** A single rendered row in the destination list. The canonical `stop`+
+ *  `route` is what the player selects on click (shortest-distance route).
+ *  `alternativeRoutes` lists ref strings for OTHER highways that also
+ *  reach this destination — empty for per-route view, populated in All
+ *  view when a destination is on multiple highways. */
+interface VisibleEntry {
+  stop:              RouteStop;
+  route:             TravelRoute;
+  alternativeRoutes: string[];
+}
+
 // ── TravelPanel ───────────────────────────────────────────────────────────────
 
 /**
@@ -49,7 +67,18 @@ export class TravelPanel {
   private _visible  = false;
   private _routes:   TravelRoute[] = [];
   private _selected: { route: TravelRoute; stop: RouteStop } | null = null;
+  /** null = "All routes" view; otherwise filter to that route's stops only. */
   private _activeRoute: TravelRoute | null = null;
+
+  // ── Sort + filter state ─────────────────────────────────────────────────
+  private _sortMode:     'distance-asc' | 'distance-desc' | 'name-asc' = 'distance-asc';
+  /** Empty set = no direction filter (show all). Otherwise stops whose
+   *  bearingOctant is in the set are shown. */
+  private _octantFilter: Set<Octant> = new Set();
+  private _minDistance:  number = 0;
+  private _maxDistance:  number | null = null;
+  /** Show only stops whose destination zone is already built ("active"). */
+  private _activeOnly:   boolean = false;
   private _lastZoneId: string | null = null;
   private _loading = false;
   private cleanup: (() => void)[] = [];
@@ -58,6 +87,7 @@ export class TravelPanel {
     private readonly uiRoot:  HTMLElement,
     private readonly world:   WorldState,
     private readonly socket:  SocketClient,
+    private readonly session: SessionState,
   ) {
     this.root = this._build();
     uiRoot.appendChild(this.root);
@@ -114,7 +144,9 @@ export class TravelPanel {
       const data: TravelData = await resp.json();
       this._routes      = data.routes;
       this._lastZoneId  = zoneId;
-      this._activeRoute = data.routes[0] ?? null;
+      // Default to "All routes" view — players see everything around them
+      // by default, and pick a specific route via the sidebar tabs.
+      this._activeRoute = null;
       this._selected    = null;
       this._render();
     } catch (e) {
@@ -149,50 +181,80 @@ export class TravelPanel {
       return;
     }
 
-    const activeRoute = (this._activeRoute ?? this._routes[0])!;
+    const visible = this._visibleStops();
 
-    // Split stops into two directions and sort each by distance
-    const ahead  = activeRoute.stops.filter(s => s.direction === 'ahead')
-                     .sort((a, b) => a.distanceMiles - b.distanceMiles);
-    const behind = activeRoute.stops.filter(s => s.direction === 'behind')
-                     .sort((a, b) => a.distanceMiles - b.distanceMiles);
-
-    const routeTabsHtml = this._routes.map(r => `
-      <button class="tp-route-tab ${r.ref === activeRoute.ref ? 'tp-active' : ''}"
-              data-ref="${r.ref}">
-        ${r.ref}${r.toll ? ' <span class="tp-toll-badge">TOLL</span>' : ''}
+    // Sidebar: All + per-route tabs.
+    const allActive = this._activeRoute === null;
+    const routeTabsHtml = `
+      <button class="tp-route-tab ${allActive ? 'tp-active' : ''}" data-ref="__ALL__">
+        All
       </button>
-    `).join('');
+      ${this._routes.map(r => `
+        <button class="tp-route-tab ${r.ref === this._activeRoute?.ref ? 'tp-active' : ''}"
+                data-ref="${this._esc(r.ref)}">
+          ${this._esc(r.ref)}${r.toll ? ' <span class="tp-toll-badge">TOLL</span>' : ''}
+        </button>
+      `).join('')}
+    `;
 
-    const stopRowHtml = (stop: RouteStop) => {
-      const isSel = this._selected?.stop === stop;
+    const stopRowHtml = (entry: VisibleEntry) => {
+      const { stop, route, alternativeRoutes } = entry;
+      const isSel = this._selected?.stop === stop && this._selected?.route === route;
+      // Compose the route badge — primary route plus any alternatives in
+      // muted text. "US-22 · also US-20, CR-5" reads as "this is shortest,
+      // these others also work."
+      const altsHtml = alternativeRoutes.length > 0
+        ? `<span class="tp-stop-route-alts" title="Also reachable via these routes">+${alternativeRoutes.map((r) => this._esc(r)).join(', ')}</span>`
+        : '';
       return `
         <button class="tp-stop-row ${isSel ? 'tp-stop-selected' : ''} ${stop.active ? 'tp-stop-active' : ''}"
-                data-ref="${activeRoute.ref}" data-idx="${activeRoute.stops.indexOf(stop)}">
-          <span class="tp-stop-name">${stop.name}</span>
+                data-ref="${this._esc(route.ref)}" data-idx="${route.stops.indexOf(stop)}">
+          <span class="tp-stop-name">${this._esc(stop.name)}</span>
           <span class="tp-stop-meta">
+            <span class="tp-stop-route">${this._esc(route.ref)}</span>
+            ${altsHtml}
             ${stop.tollBooth ? '<span class="tp-toll-icon" title="Toll booth ahead">⚠</span>' : ''}
             ${stop.active ? '<span class="tp-active-icon" title="Playable zone">★</span>' : ''}
             <span class="tp-stop-dist">${stop.distanceMiles} mi</span>
+            <span class="tp-stop-octant" title="${stop.bearingDeg}° from here">${this._esc(stop.bearingOctant)}</span>
           </span>
         </button>
       `;
     };
 
+    const legendHtml = `
+      <div class="tp-legend">
+        <span class="tp-active-icon">★</span> ready to travel ·
+        no ★: one-time build (~5-10 min) — confirm before departing
+      </div>
+    `;
+
     const footerHtml = this._selected ? (() => {
-      const { stop } = this._selected;
+      const { stop, route } = this._selected;
       return `
         <div class="tp-footer-info">
-          <span class="tp-footer-dest">${stop.name}</span>
+          <span class="tp-footer-dest">${this._esc(stop.name)}</span>
           <span class="tp-footer-detail">
-            ${stop.distanceMiles} miles via ${activeRoute.ref}
+            ${stop.distanceMiles} miles ${this._esc(stop.bearingOctant)} via ${this._esc(route.ref)}
             ${stop.tollBooth ? ' · <span class="tp-footer-toll">⚠ toll road</span>' : ' · no toll'}
-            ${stop.active ? ' · <span class="tp-footer-active">zone active</span>' : ''}
+            ${stop.active ? ' · <span class="tp-footer-active">zone active</span>' : ' · <span class="tp-footer-unbuilt">needs build</span>'}
           </span>
         </div>
+        ${legendHtml}
         <button class="tp-setout-btn">Set Out</button>
       `;
-    })() : `<div class="tp-footer-hint">Select a destination above.</div>`;
+    })() : `<div class="tp-footer-hint">Select a destination above.</div>${legendHtml}`;
+
+    // Filter chips (compass octants).
+    const OCTANTS: Octant[] = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+    const octantChipsHtml = OCTANTS.map((o) => `
+      <button class="tp-octant-chip ${this._octantFilter.has(o) ? 'tp-active' : ''}" data-octant="${o}">${o}</button>
+    `).join('');
+
+    const filtersResetable = this._octantFilter.size > 0
+                          || this._minDistance > 0
+                          || this._maxDistance != null
+                          || this._activeOnly;
 
     body.innerHTML = `
       <div class="tp-layout">
@@ -202,24 +264,41 @@ export class TravelPanel {
         </aside>
 
         <div class="tp-main">
-          <div class="tp-route-header">
-            <span class="tp-route-name">${activeRoute.name || activeRoute.ref}</span>
-            <span class="tp-route-stops-count">${activeRoute.stops.length} stop${activeRoute.stops.length !== 1 ? 's' : ''}</span>
+          <div class="tp-filter-bar">
+            <div class="tp-filter-row">
+              <label class="tp-filter-label">Sort</label>
+              <select class="tp-sort-select" id="tp-sort">
+                <option value="distance-asc"  ${this._sortMode === 'distance-asc'  ? 'selected' : ''}>Distance · nearest first</option>
+                <option value="distance-desc" ${this._sortMode === 'distance-desc' ? 'selected' : ''}>Distance · farthest first</option>
+                <option value="name-asc"      ${this._sortMode === 'name-asc'      ? 'selected' : ''}>Name · A → Z</option>
+              </select>
+              <label class="tp-filter-checkbox">
+                <input type="checkbox" id="tp-active-only" ${this._activeOnly ? 'checked' : ''}>
+                <span>★ active zones only</span>
+              </label>
+              ${filtersResetable ? '<button class="tp-filter-reset" id="tp-filter-reset">Reset filters</button>' : ''}
+            </div>
+            <div class="tp-filter-row">
+              <label class="tp-filter-label">Direction</label>
+              <div class="tp-octant-chips">${octantChipsHtml}</div>
+            </div>
+            <div class="tp-filter-row">
+              <label class="tp-filter-label">Distance (mi)</label>
+              <input type="number" id="tp-min-dist" class="tp-dist-input" placeholder="min" min="0"
+                     value="${this._minDistance > 0 ? this._minDistance : ''}">
+              <span class="tp-dist-sep">–</span>
+              <input type="number" id="tp-max-dist" class="tp-dist-input" placeholder="max" min="0"
+                     value="${this._maxDistance ?? ''}">
+            </div>
           </div>
 
-          <div class="tp-columns">
-            <div class="tp-direction">
-              <div class="tp-dir-label">← Behind</div>
-              <div class="tp-stop-list">
-                ${behind.length ? behind.map(stopRowHtml).join('') : '<div class="tp-dir-empty">—</div>'}
-              </div>
-            </div>
-            <div class="tp-direction">
-              <div class="tp-dir-label">Ahead →</div>
-              <div class="tp-stop-list">
-                ${ahead.length ? ahead.map(stopRowHtml).join('') : '<div class="tp-dir-empty">—</div>'}
-              </div>
-            </div>
+          <div class="tp-result-header">
+            <span class="tp-result-count">${visible.length} destination${visible.length !== 1 ? 's' : ''}</span>
+            ${this._activeRoute ? `<span class="tp-result-route">${this._esc(this._activeRoute.name || this._activeRoute.ref)}</span>` : ''}
+          </div>
+
+          <div class="tp-stop-list">
+            ${visible.length ? visible.map(stopRowHtml).join('') : '<div class="tp-dir-empty">No destinations match these filters.</div>'}
           </div>
         </div>
       </div>
@@ -227,11 +306,20 @@ export class TravelPanel {
       <div class="tp-footer">${footerHtml}</div>
     `;
 
-    // Route tab clicks
+    // ── Wire interactions ──────────────────────────────────────────────────
+
+    // Route tab clicks (incl. the synthetic "All" tab).
     body.querySelectorAll<HTMLButtonElement>('.tp-route-tab').forEach(btn => {
       btn.addEventListener('click', () => {
-        const found = this._routes.find(r => r.ref === btn.dataset.ref);
-        if (found) { this._activeRoute = found; this._selected = null; this._render(); }
+        const ref = btn.dataset.ref;
+        if (ref === '__ALL__') {
+          this._activeRoute = null;
+        } else {
+          const found = this._routes.find(r => r.ref === ref);
+          if (found) this._activeRoute = found;
+        }
+        this._selected = null;
+        this._render();
       });
     });
 
@@ -247,21 +335,203 @@ export class TravelPanel {
       });
     });
 
+    // Sort dropdown
+    body.querySelector<HTMLSelectElement>('#tp-sort')?.addEventListener('change', (e) => {
+      const v = (e.target as HTMLSelectElement).value as typeof this._sortMode;
+      this._sortMode = v;
+      this._render();
+    });
+
+    // Active-only checkbox
+    body.querySelector<HTMLInputElement>('#tp-active-only')?.addEventListener('change', (e) => {
+      this._activeOnly = (e.target as HTMLInputElement).checked;
+      this._render();
+    });
+
+    // Octant chips toggle
+    body.querySelectorAll<HTMLButtonElement>('.tp-octant-chip').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const o = btn.dataset.octant as Octant | undefined;
+        if (!o) return;
+        if (this._octantFilter.has(o)) this._octantFilter.delete(o);
+        else                            this._octantFilter.add(o);
+        this._render();
+      });
+    });
+
+    // Distance inputs — debounced to avoid re-render on every keystroke
+    const minInput = body.querySelector<HTMLInputElement>('#tp-min-dist');
+    const maxInput = body.querySelector<HTMLInputElement>('#tp-max-dist');
+    const onDistChange = () => {
+      const minVal = minInput?.value.trim() ?? '';
+      const maxVal = maxInput?.value.trim() ?? '';
+      this._minDistance = minVal ? Math.max(0, Number(minVal)) : 0;
+      this._maxDistance = maxVal ? Math.max(0, Number(maxVal)) : null;
+      this._render();
+    };
+    minInput?.addEventListener('change', onDistChange);
+    maxInput?.addEventListener('change', onDistChange);
+
+    // Reset filters
+    body.querySelector<HTMLButtonElement>('#tp-filter-reset')?.addEventListener('click', () => {
+      this._octantFilter.clear();
+      this._minDistance = 0;
+      this._maxDistance = null;
+      this._activeOnly  = false;
+      this._render();
+    });
+
     // Set Out
     body.querySelector<HTMLButtonElement>('.tp-setout-btn')?.addEventListener('click', () => {
       if (this._selected) this._depart(this._selected.route, this._selected.stop);
     });
   }
 
+  /** Apply sort + filter state to the route data and return a list of
+   *  rows ready for rendering. In the "All routes" view, destinations
+   *  reachable via multiple highways collapse to one row with all route
+   *  refs collected — the canonical (shortest) route is the primary
+   *  selection, the others are shown inline as alternatives.
+   *  Per-route view skips grouping (each stop is unique within its route). */
+  private _visibleStops(): VisibleEntry[] {
+    const sourceRoutes = this._activeRoute ? [this._activeRoute] : this._routes;
+    const flat: Array<{ stop: RouteStop; route: TravelRoute }> = [];
+    for (const route of sourceRoutes) {
+      for (const stop of route.stops) flat.push({ stop, route });
+    }
+
+    const filtered = flat.filter(({ stop }) => {
+      if (this._octantFilter.size > 0 && !this._octantFilter.has(stop.bearingOctant)) return false;
+      if (this._minDistance > 0 && stop.distanceMiles < this._minDistance) return false;
+      if (this._maxDistance != null && stop.distanceMiles > this._maxDistance) return false;
+      if (this._activeOnly && !stop.active) return false;
+      return true;
+    });
+
+    // Per-route view: no grouping, each stop stands alone.
+    let entries: VisibleEntry[];
+    if (this._activeRoute !== null) {
+      entries = filtered.map(({ stop, route }) => ({ stop, route, alternativeRoutes: [] }));
+    } else {
+      // All view: group by destination identity (name + zoneId). Same town
+      // reachable on US-22 and US-20 collapses to one row with both refs.
+      // Canonical = shortest-distance route; alternatives are the others.
+      const groups = new Map<string, Array<{ stop: RouteStop; route: TravelRoute }>>();
+      for (const entry of filtered) {
+        const key = `${entry.stop.name}|${entry.stop.zoneId ?? ''}`;
+        const g = groups.get(key);
+        if (g) g.push(entry);
+        else   groups.set(key, [entry]);
+      }
+      entries = Array.from(groups.values()).map((stops) => {
+        stops.sort((a, b) => a.stop.distanceMiles - b.stop.distanceMiles);
+        const canonical = stops[0]!;
+        return {
+          stop: canonical.stop,
+          route: canonical.route,
+          alternativeRoutes: stops.slice(1).map((s) => s.route.ref),
+        };
+      });
+    }
+
+    entries.sort((a, b) => {
+      switch (this._sortMode) {
+        case 'distance-asc':  return a.stop.distanceMiles - b.stop.distanceMiles;
+        case 'distance-desc': return b.stop.distanceMiles - a.stop.distanceMiles;
+        case 'name-asc':      return a.stop.name.localeCompare(b.stop.name);
+      }
+    });
+    return entries;
+  }
+
   private _depart(route: TravelRoute, stop: RouteStop): void {
+    // Built zones travel immediately. Unbuilt zones get a confirm modal so
+    // the player can choose: cancel, build-and-travel-anyway (flat platform
+    // until ready), or build-and-defer (keep playing here, get notified
+    // when the zone is ready). Respects the player's time when a build
+    // takes ~10 minutes.
+    if (stop.active) {
+      this._issueTravel(route, stop, /* deferBuild */ false);
+      return;
+    }
+    this._showUnbuiltConfirmModal(route, stop);
+  }
+
+  private _issueTravel(route: TravelRoute, stop: RouteStop, deferBuild: boolean): void {
     this.socket.sendTravelRequest({
       destinationName:   stop.name,
       destinationZoneId: stop.zoneId,
       routeRef:          route.ref,
       distanceMiles:     stop.distanceMiles,
       hasToll:           stop.tollBooth !== null,
+      deferBuild,
     });
+    // Show the loading screen immediately for actual transfers — closes the
+    // 8-second-ish gap between travel_request and zone_transfer (zone-server
+    // spinup) where the player would otherwise see no feedback and could
+    // still wander around in the old zone. For deferBuild the player keeps
+    // playing here, so no loading state.
+    if (!deferBuild) {
+      this.session.setPhase('loading_world');
+    }
     this.hide();
+  }
+
+  private _showUnbuiltConfirmModal(route: TravelRoute, stop: RouteStop): void {
+    const modal = document.createElement('div');
+    modal.className = 'tp-unbuilt-modal';
+    modal.style.cssText = `
+      position: absolute; inset: 0;
+      background: rgba(8,6,4,0.85);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 50; pointer-events: auto;
+    `;
+    modal.innerHTML = `
+      <div style="
+        background: var(--ui-bg, rgba(20,15,10,0.98));
+        border: 1px solid rgba(200,98,42,0.40);
+        padding: 1.6rem 1.6rem 1.2rem; width: min(440px, 92vw);
+        display: flex; flex-direction: column; gap: 0.9rem;
+      ">
+        <div style="font-family: var(--font-display, serif); letter-spacing: 0.18em;
+                    color: rgba(200,145,60,0.95); font-size: 1rem; text-transform: uppercase;">
+          ${this._esc(stop.name)} — Not Yet Charted
+        </div>
+        <div style="font-size: 0.88rem; color: rgba(200,180,150,0.85); line-height: 1.5;">
+          This zone has never been visited. The map data takes a few minutes to download
+          and process. You can travel now and arrive on flat terrain (full terrain loads
+          on re-entry), or stay here and we'll build it in the background — you'll get a
+          notification when it's ready to visit.
+        </div>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+          <button class="cs-btn" id="tp-modal-defer"  style="flex:1; min-width: 120px;">Build &amp; Defer</button>
+          <button class="cs-btn" id="tp-modal-now"    style="flex:1; min-width: 120px;
+                  background: transparent; color: rgba(200,180,150,0.8);
+                  border-color: rgba(200,98,42,0.30);">Travel Now</button>
+          <button class="cs-btn" id="tp-modal-cancel" style="flex:1; min-width: 120px;
+                  background: transparent; color: rgba(150,120,80,0.7);
+                  border-color: rgba(120,90,50,0.30);">Cancel</button>
+        </div>
+      </div>
+    `;
+
+    modal.querySelector('#tp-modal-defer')?.addEventListener('click', () => {
+      this._issueTravel(route, stop, /* deferBuild */ true);
+      modal.remove();
+    });
+    modal.querySelector('#tp-modal-now')?.addEventListener('click', () => {
+      this._issueTravel(route, stop, /* deferBuild */ false);
+      modal.remove();
+    });
+    modal.querySelector('#tp-modal-cancel')?.addEventListener('click', () => {
+      modal.remove();
+    });
+
+    this.root.appendChild(modal);
+  }
+
+  private _esc(s: string): string {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
   // ── DOM build ─────────────────────────────────────────────────────────────
@@ -291,7 +561,10 @@ export class TravelPanel {
           left: 50%;
           transform: translate(-50%, -50%);
           width: min(820px, 94vw);
-          max-height: 80vh;
+          /* Fixed height so the panel doesn't reflow when you switch
+           *  between highways with different stop counts. The stop list
+           *  inside (.tp-stop-list) scrolls when contents overflow. */
+          height: min(720px, 85vh);
           display: flex;
           flex-direction: column;
           background: rgba(10, 8, 5, 0.97);
@@ -521,6 +794,154 @@ export class TravelPanel {
         }
         .tp-toll-icon { font-size: 11px; color: rgba(220, 140, 40, 0.80); }
         .tp-active-icon { font-size: 10px; color: rgba(100, 200, 120, 0.80); }
+        .tp-stop-route {
+          font-family: var(--font-mono, monospace);
+          font-size: 9.5px;
+          letter-spacing: 0.04em;
+          padding: 1px 5px;
+          border: 1px solid rgba(200, 145, 60, 0.25);
+          border-radius: 2px;
+          color: rgba(200, 175, 125, 0.85);
+          background: rgba(8, 6, 4, 0.40);
+        }
+        .tp-stop-route-alts {
+          font-family: var(--font-mono, monospace);
+          font-size: 9px;
+          color: rgba(150, 130, 90, 0.55);
+          letter-spacing: 0.02em;
+          margin-left: -2px;
+        }
+        .tp-stop-octant {
+          font-family: var(--font-mono, monospace);
+          font-size: 9.5px;
+          font-weight: 700;
+          color: rgba(180, 200, 220, 0.78);
+          min-width: 22px;
+          text-align: center;
+          letter-spacing: 0.05em;
+        }
+
+        /* ── Filter bar ── */
+        .tp-filter-bar {
+          padding: 8px 14px 6px;
+          border-bottom: 1px solid rgba(200, 145, 60, 0.10);
+          background: rgba(8, 6, 4, 0.30);
+          display: flex;
+          flex-direction: column;
+          gap: 5px;
+        }
+        .tp-filter-row {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          flex-wrap: wrap;
+          min-height: 24px;
+        }
+        .tp-filter-label {
+          font-family: var(--font-mono, monospace);
+          font-size: 9.5px;
+          letter-spacing: 0.10em;
+          text-transform: uppercase;
+          color: rgba(160, 135, 90, 0.60);
+          min-width: 64px;
+        }
+        .tp-sort-select {
+          background: rgba(14, 10, 6, 0.80);
+          border: 1px solid rgba(200, 145, 60, 0.25);
+          color: rgba(212, 195, 155, 0.95);
+          font-family: var(--font-body, serif);
+          font-size: 11.5px;
+          padding: 3px 6px;
+          outline: none;
+        }
+        .tp-sort-select:focus { border-color: rgba(200, 145, 60, 0.55); }
+        .tp-filter-checkbox {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+          font-size: 11px;
+          color: rgba(180, 160, 110, 0.80);
+          cursor: pointer;
+        }
+        .tp-filter-checkbox input { cursor: pointer; }
+        .tp-filter-reset {
+          background: rgba(120, 80, 40, 0.18);
+          border: 1px solid rgba(180, 100, 50, 0.45);
+          color: rgba(220, 170, 110, 0.85);
+          font-family: var(--font-mono, monospace);
+          font-size: 10px;
+          letter-spacing: 0.05em;
+          padding: 3px 8px;
+          cursor: pointer;
+          margin-left: auto;
+        }
+        .tp-filter-reset:hover {
+          background: rgba(180, 100, 50, 0.28);
+          color: rgba(240, 200, 130, 0.95);
+        }
+        .tp-octant-chips {
+          display: flex;
+          gap: 3px;
+          flex-wrap: wrap;
+        }
+        .tp-octant-chip {
+          background: rgba(14, 10, 6, 0.65);
+          border: 1px solid rgba(200, 145, 60, 0.25);
+          color: rgba(180, 160, 110, 0.75);
+          font-family: var(--font-mono, monospace);
+          font-size: 10px;
+          font-weight: 700;
+          padding: 3px 8px;
+          min-width: 30px;
+          cursor: pointer;
+          letter-spacing: 0.05em;
+          transition: background 0.10s, border-color 0.10s, color 0.10s;
+        }
+        .tp-octant-chip:hover {
+          border-color: rgba(200, 145, 60, 0.55);
+          color: rgba(220, 195, 140, 0.95);
+        }
+        .tp-octant-chip.tp-active {
+          background: rgba(200, 145, 60, 0.22);
+          border-color: rgba(220, 165, 80, 0.70);
+          color: rgba(240, 215, 150, 0.98);
+        }
+        .tp-dist-input {
+          background: rgba(14, 10, 6, 0.80);
+          border: 1px solid rgba(200, 145, 60, 0.25);
+          color: rgba(212, 195, 155, 0.95);
+          font-family: var(--font-mono, monospace);
+          font-size: 11px;
+          padding: 3px 6px;
+          width: 60px;
+          outline: none;
+        }
+        .tp-dist-input:focus { border-color: rgba(200, 145, 60, 0.55); }
+        .tp-dist-sep {
+          color: rgba(160, 135, 90, 0.60);
+          font-family: var(--font-mono, monospace);
+        }
+
+        /* ── Result header (count + active route name) ── */
+        .tp-result-header {
+          display: flex;
+          align-items: baseline;
+          justify-content: space-between;
+          padding: 6px 14px 2px;
+        }
+        .tp-result-count {
+          font-family: var(--font-mono, monospace);
+          font-size: 10px;
+          color: rgba(160, 135, 90, 0.65);
+          letter-spacing: 0.06em;
+        }
+        .tp-result-route {
+          font-family: var(--font-display, serif);
+          font-size: 12px;
+          color: rgba(220, 180, 120, 0.80);
+          letter-spacing: 0.10em;
+          text-transform: uppercase;
+        }
 
         /* ── Footer ── */
         .tp-footer {
@@ -555,6 +976,15 @@ export class TravelPanel {
         }
         .tp-footer-toll  { color: rgba(220, 130, 40, 0.85); }
         .tp-footer-active { color: rgba(100, 200, 120, 0.80); }
+        .tp-footer-unbuilt { color: rgba(220, 160, 90, 0.85); font-style: italic; }
+        .tp-legend {
+          font-size: 10.5px;
+          color: rgba(160, 140, 100, 0.65);
+          font-style: italic;
+          padding: 4px 0 6px;
+          line-height: 1.4;
+        }
+        .tp-legend .tp-active-icon { font-style: normal; font-size: 11px; }
 
         .tp-setout-btn {
           background: rgba(200, 145, 60, 0.18);

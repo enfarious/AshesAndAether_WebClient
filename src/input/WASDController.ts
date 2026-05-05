@@ -75,22 +75,13 @@ export class WASDController {
   /** Direct reference to the player entity for driving position. */
   private _playerEntity: PlayerEntity | null = null;
 
-  /** Spacebar tap state machine — both fire eagerly.
-   *
-   *  Tap 1: fire /jump immediately (visual + server). Arm a window timer.
-   *  Tap 2 inside the window: fire /retreat <direction> on top of the
-   *  in-flight jump arc. Net effect = "leap dash": small Y pop into a
-   *  horizontal burst. Stamina cost 25 (5 + 20). With proper meshes, the
-   *  jump-start animation blends into the dash motion without a hitch.
-   *
-   *  After the window expires the timer just clears — next tap fires a
-   *  fresh /jump. */
-  private _spaceTapTimer: ReturnType<typeof setTimeout> | null = null;
-  private static readonly SPACE_DOUBLE_TAP_MS = 250;
-
   private inventoryToggle:      (() => void) | null = null;
   private abilityToggle:        (() => void) | null = null;
   private characterSheetToggle: (() => void) | null = null;
+  /** Returns true if a harvestable glint is within range of the player.
+   *  Used by F-key as a fallback action when no interactable entity is
+   *  nearby — keeps F as the universal "do the contextual thing" key. */
+  private getHarvestableInRange: (() => boolean) | null = null;
   private partyToggle:          (() => void) | null = null;
   private abilitySlotCallback:  ((slotIndex: number) => void) | null = null;
   private marketToggle:         (() => void) | null = null;
@@ -112,6 +103,9 @@ export class WASDController {
   setInventoryToggle(fn: () => void):      void { this.inventoryToggle      = fn; }
   setAbilityToggle(fn: () => void):        void { this.abilityToggle        = fn; }
   setCharacterSheetToggle(fn: () => void): void { this.characterSheetToggle = fn; }
+
+  /** Wire the harvest-in-range probe so F-key can fall back to /harvest. */
+  setHarvestableProbe(fn: () => boolean): void { this.getHarvestableInRange = fn; }
   setPartyToggle(fn: () => void):          void { this.partyToggle          = fn; }
   setAbilitySlotCallback(fn: (slotIndex: number) => void): void { this.abilitySlotCallback = fn; }
   setMarketToggle(fn: () => void):         void { this.marketToggle         = fn; }
@@ -418,70 +412,63 @@ export class WASDController {
       return;
     }
 
-    // Spacebar — tap 1 fires /jump immediately; tap 2 inside the window
-    // adds a /retreat on top (leap dash). Repeat suppressed so holding
-    // space doesn't spam.
+    // Spacebar — fire /jump immediately. Dash lives on V (see below) so the
+    // jump path no longer waits on a double-tap window.
     if (key === ' ' && !e.repeat) {
       e.preventDefault();
-      if (this._spaceTapTimer !== null) {
-        // Within window — fire dash. Jump arc already in flight; the dash
-        // position update lays on top so the mesh pops up + slides over.
-        clearTimeout(this._spaceTapTimer);
-        this._spaceTapTimer = null;
-        const direction = this._currentDirectionFromHeld();
-        this.socket.sendCommand(`/retreat ${direction}`);
-        // Only snap locally when we have the stamina the server will
-        // require. Otherwise the server will reject the dash, and our
-        // local teleport leaves the entity off-position until settle
-        // expires and state_updates pull us back. Mirroring the
-        // server-side cost check keeps the visual honest.
-        if (this.player.stamina.current >= DASH_STAMINA_COST) {
-          this._localDashSnap(direction);
+      // Already mid-air — silently swallow so a second press doesn't fire
+      // a fresh local arc or send /jump (which the server will reject too).
+      if (this._playerEntity?.isJumping) return;
+      // Capture from LOCAL INPUT, not round-tripped server state. Reading
+      // `this.player.movementSpeedMPS` here would lag by RTT + tick (~150–
+      // 300ms after movement starts) — pressing space within that window
+      // would capture 0 and produce a straight-up arc while the server
+      // (which has the WASD message processed by then) arcs forward,
+      // resulting in the "vertical first, horizontal kicks in late" feel.
+      // Computing from held keys + camera yaw + tier-speed mirrors what
+      // the server captures from the same WASD message.
+      const inputX = (this.held.has('d') ? 1 : 0) - (this.held.has('a') ? 1 : 0);
+      const inputZ = (this.held.has('w') ? 1 : 0) - (this.held.has('s') ? 1 : 0);
+      let velX = 0;
+      let velZ = 0;
+      if (inputX !== 0 || inputZ !== 0) {
+        const yaw    = this.camera.getYaw();
+        const worldX =  inputX * Math.cos(yaw) - inputZ * Math.sin(yaw);
+        const worldZ = -inputX * Math.sin(yaw) - inputZ * Math.cos(yaw);
+        const len    = Math.hypot(worldX, worldZ);
+        if (len > 0) {
+          const tier: 'walk' | 'jog' | 'sprint' =
+            this.held.has('shift') ? 'sprint' :
+            this.walkMode          ? 'walk'   :
+                                     'jog';
+          const speedMPS = this.player.baseMovementSpeed * SPEED_MULTIPLIERS[tier];
+          velX = (worldX / len) * speedMPS;
+          velZ = (worldZ / len) * speedMPS;
         }
-      } else {
-        // First tap: kick off client-predicted jump arc with captured
-        // velocity (matches the server's jump-momentum math), then send
-        // /jump.
-        //
-        // Capture from LOCAL INPUT, not round-tripped server state. Reading
-        // `this.player.movementSpeedMPS` here would lag by RTT + tick (~150–
-        // 300ms after movement starts) — pressing space within that window
-        // would capture 0 and produce a straight-up arc while the server
-        // (which has the WASD message processed by then) arcs forward,
-        // resulting in the "vertical first, horizontal kicks in late" feel.
-        // Computing from held keys + camera yaw + tier-speed mirrors what
-        // the server captures from the same WASD message.
-        const inputX = (this.held.has('d') ? 1 : 0) - (this.held.has('a') ? 1 : 0);
-        const inputZ = (this.held.has('w') ? 1 : 0) - (this.held.has('s') ? 1 : 0);
-        let velX = 0;
-        let velZ = 0;
-        if (inputX !== 0 || inputZ !== 0) {
-          const yaw    = this.camera.getYaw();
-          const worldX =  inputX * Math.cos(yaw) - inputZ * Math.sin(yaw);
-          const worldZ = -inputX * Math.sin(yaw) - inputZ * Math.cos(yaw);
-          const len    = Math.hypot(worldX, worldZ);
-          if (len > 0) {
-            const tier: 'walk' | 'jog' | 'sprint' =
-              this.held.has('shift') ? 'sprint' :
-              this.walkMode          ? 'walk'   :
-                                       'jog';
-            const speedMPS = this.player.baseMovementSpeed * SPEED_MULTIPLIERS[tier];
-            velX = (worldX / len) * speedMPS;
-            velZ = (worldZ / len) * speedMPS;
-          }
-        }
-        // Only kick off the local Y arc + JUMPING-mode prediction when we
-        // have the stamina the server will require. Without this, a no-
-        // stamina jump triggers the visual but the server rejects, and
-        // the prediction fights server's WASD-mode broadcasts until the
-        // arc duration ends.
-        if (this.player.stamina.current >= JUMP_STAMINA_COST) {
-          this._playerEntity?.playJump(velX, velZ);
-        }
-        this.socket.sendCommand('/jump');
-        this._spaceTapTimer = setTimeout(() => {
-          this._spaceTapTimer = null;
-        }, WASDController.SPACE_DOUBLE_TAP_MS);
+      }
+      // Only kick off the local Y arc + JUMPING-mode prediction when we
+      // have the stamina the server will require. Without this, a no-
+      // stamina jump triggers the visual but the server rejects, and
+      // the prediction fights server's WASD-mode broadcasts until the
+      // arc duration ends.
+      if (this.player.stamina.current >= JUMP_STAMINA_COST) {
+        this._playerEntity?.playJump(velX, velZ);
+      }
+      this.socket.sendCommand('/jump');
+      return;
+    }
+
+    // V — dash (/retreat <dir>). Direction comes from currently-held WASD;
+    // falls back to facing if idle. Decoupled from /jump so neither hitches
+    // waiting on the other.
+    if (key === 'v' && !e.repeat) {
+      e.preventDefault();
+      const direction = this._currentDirectionFromHeld();
+      this.socket.sendCommand(`/retreat ${direction}`);
+      // Mirror the server-side stamina gate so we don't visually teleport
+      // on a dash the server is going to reject.
+      if (this.player.stamina.current >= DASH_STAMINA_COST) {
+        this._localDashSnap(direction);
       }
       return;
     }
@@ -522,13 +509,16 @@ export class WASDController {
       return;
     }
 
-    // F — proximity interact with the nearest interactable; falls back to
-    // "promote current target → focus target" if nothing is in reach.
-    // Range: 5 m. Skips the player themselves.
+    // F — universal contextual interact. Priority order:
+    //   1. Nearest interactive entity (door, NPC, dais, etc) within 5 m
+    //   2. Harvestable glint within range → /harvest
+    //   3. Promote current target → focus target
     if (key === 'f') {
       const nearest = this._findNearestInteractable();
       if (nearest) {
         this.socket.sendInteract(nearest.id, 'use');
+      } else if (this.getHarvestableInRange?.()) {
+        this.socket.sendCommand('/harvest');
       } else {
         this.player.focusCurrentTarget();
       }

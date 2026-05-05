@@ -46,6 +46,10 @@ export class SceneManager {
   /** Cached TOD value — skip _resolvePresetForTod when change is < threshold. */
   private _lastTod = -1;
 
+  /** True while setIndoorMode(true) is active — read by perf overlay. */
+  private _indoor = false;
+  get isIndoor(): boolean { return this._indoor; }
+
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({
       canvas,
@@ -203,18 +207,29 @@ export class SceneManager {
    * Call with `on=true` on vault entry, `on=false` on vault exit.
    */
   setIndoorMode(on: boolean, camera: THREE.PerspectiveCamera): void {
+    this._indoor = on;
     if (on) {
-      camera.far = 100;
-      // Fog density tuned so the far plane (~100m) fades into near-black;
+      camera.far = 200;
+      // Fog density tuned so the far plane (~200m) fades into near-black;
       // the shorter draw distance becomes invisible to the player.
-      (this.scene.fog as THREE.FogExp2).density = 0.036;
+      (this.scene.fog as THREE.FogExp2).density = 0.018;
       this.directionalLight.castShadow = false;
       this.fillLight.visible = false;
+      // Outdoor sky machinery is invisible from inside a vault but the meshes
+      // still rasterise — Sky in particular runs an expensive Rayleigh shader
+      // wherever it's not occluded. Hide them all while indoors.
+      this.sky.visible      = false;
+      this.sunMesh.visible  = false;
+      this.moonMesh.visible = false;
+      this.stars.visible    = false;
     } else {
       camera.far = 2000;
       (this.scene.fog as THREE.FogExp2).density = 0.0014;
       this.directionalLight.castShadow = true;
       this.fillLight.visible = true;
+      // Restore the always-on sky dome; sun/moon/stars get re-flagged by the
+      // next _updateSunPosition tick based on horizon fade, so leave them.
+      this.sky.visible = true;
     }
     camera.updateProjectionMatrix();
   }

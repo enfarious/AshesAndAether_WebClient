@@ -29,6 +29,17 @@ export interface SettingsCallbacks {
   onFpsLimitChange:     (limit: number) => void;
   onUiScaleChange:      (scale: number) => void;
   onDrawDistanceChange: (meters: number) => void;
+  /** Fired when the user picks a new Beacon Detail tier — app.ts asks
+   *  the GuildBeacon manager to rebuild existing auras at the new
+   *  subdivision count. */
+  onBeaconDetailChange: () => void;
+  /** Fired when the user picks a new Miasma fog quality. app.ts disposes
+   *  any existing fog plane and (if quality !== 'off') constructs a new
+   *  one at the new subdivision count. */
+  onMiasmaQualityChange: () => void;
+  /** Fired when the user picks a new Miasma fog view distance. Also
+   *  triggers a fog rebuild because plane size is a constructor param. */
+  onMiasmaRangeChange: () => void;
 }
 
 // ── localStorage keys ───────────────────────────────────────────────────────
@@ -41,6 +52,9 @@ const KEY_PITCH_SENS   = 'aa_camera_pitch_sens';
 const KEY_MASTER_VOL   = 'aa_master_volume';
 const KEY_SFX_VOL      = 'aa_sfx_volume';
 const KEY_TREE_RANGE   = 'aa_tree_visible_range';
+const KEY_BEACON_DETAIL = 'aa_beacon_detail';
+const KEY_MIASMA_QUALITY = 'aa_miasma_quality';
+const KEY_MIASMA_RANGE   = 'aa_miasma_range';
 
 // ── Defaults ────────────────────────────────────────────────────────────────
 
@@ -311,6 +325,90 @@ export class SettingsWindow {
       onChange: (v) => {
         saveNum(KEY_TREE_RANGE, v);
         ClientConfig.treeVisibleRange = v;
+      },
+    }));
+
+    // Beacon Detail — controls the subdivision count of guild beacon
+    // aura discs/domes. Higher tiers conform to terrain more tightly at
+    // the cost of vertex count (still trivial — 'high' is ~768 verts
+    // per beacon). Existing auras rebuild on change.
+    const detailLevels: Array<{ id: 'low' | 'med' | 'high'; label: string }> = [
+      { id: 'low',  label: 'Low' },
+      { id: 'med',  label: 'Med' },
+      { id: 'high', label: 'High' },
+    ];
+    const initialDetail = (localStorage.getItem(KEY_BEACON_DETAIL) ?? 'med') as 'low' | 'med' | 'high';
+    if (detailLevels.some((d) => d.id === initialDetail)) {
+      ClientConfig.beaconDetail = initialDetail;
+    }
+    page.appendChild(this._buildPresetRow({
+      label: 'Beacon Detail',
+      presets: [0, 1, 2],
+      initial: detailLevels.findIndex((d) => d.id === ClientConfig.beaconDetail),
+      format: (v) => detailLevels[v]?.label ?? '?',
+      onChange: (v) => {
+        const tier = detailLevels[v]?.id;
+        if (!tier) return;
+        localStorage.setItem(KEY_BEACON_DETAIL, tier);
+        ClientConfig.beaconDetail = tier;
+        this.callbacks.onBeaconDetailChange();
+      },
+    }));
+
+    // Miasma Fog — quality preset for the ground-fog plane. 'Off' skips
+    // the fog entirely (no plane constructed). Higher tiers conform to
+    // terrain ridges at distance more tightly. App.ts disposes/recreates
+    // the fog on change.
+    const miasmaLevels: Array<{ id: 'off' | 'low' | 'med' | 'high' | 'ultra'; label: string }> = [
+      { id: 'off',   label: 'Off'   },
+      { id: 'low',   label: 'Low'   },
+      { id: 'med',   label: 'Med'   },
+      { id: 'high',  label: 'High'  },
+      { id: 'ultra', label: 'Ultra' },
+    ];
+    const initialMiasma = (localStorage.getItem(KEY_MIASMA_QUALITY) ?? 'med') as typeof miasmaLevels[number]['id'];
+    if (miasmaLevels.some((m) => m.id === initialMiasma)) {
+      ClientConfig.miasmaQuality = initialMiasma;
+    }
+    page.appendChild(this._buildPresetRow({
+      label: 'Miasma Fog',
+      presets: [0, 1, 2, 3, 4],
+      initial: miasmaLevels.findIndex((m) => m.id === ClientConfig.miasmaQuality),
+      format: (v) => miasmaLevels[v]?.label ?? '?',
+      onChange: (v) => {
+        const tier = miasmaLevels[v]?.id;
+        if (!tier) return;
+        localStorage.setItem(KEY_MIASMA_QUALITY, tier);
+        ClientConfig.miasmaQuality = tier;
+        this.callbacks.onMiasmaQualityChange();
+      },
+    }));
+
+    // Miasma Range — view distance for the fog plane. Independent from
+    // quality (subdivisions). Bigger = see fog further out, but vertex
+    // spacing widens unless quality is bumped to compensate.
+    const miasmaRanges: Array<{ id: 'short' | 'med' | 'long' | 'far' | 'ultra'; label: string }> = [
+      { id: 'short', label: '250m' },
+      { id: 'med',   label: '500m' },
+      { id: 'long',  label: '1km'  },
+      { id: 'far',   label: '2km'  },
+      { id: 'ultra', label: '4km'  },
+    ];
+    const initialRange = (localStorage.getItem(KEY_MIASMA_RANGE) ?? 'long') as typeof miasmaRanges[number]['id'];
+    if (miasmaRanges.some((m) => m.id === initialRange)) {
+      ClientConfig.miasmaRange = initialRange;
+    }
+    page.appendChild(this._buildPresetRow({
+      label: 'Miasma Range',
+      presets: [0, 1, 2, 3, 4],
+      initial: miasmaRanges.findIndex((m) => m.id === ClientConfig.miasmaRange),
+      format: (v) => miasmaRanges[v]?.label ?? '?',
+      onChange: (v) => {
+        const tier = miasmaRanges[v]?.id;
+        if (!tier) return;
+        localStorage.setItem(KEY_MIASMA_RANGE, tier);
+        ClientConfig.miasmaRange = tier;
+        this.callbacks.onMiasmaRangeChange();
       },
     }));
 

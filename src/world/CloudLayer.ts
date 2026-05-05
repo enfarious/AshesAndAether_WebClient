@@ -116,6 +116,8 @@ export class CloudLayer {
     this.scene.add(this.mesh);
   }
 
+  setVisible(v: boolean): void { this.mesh.visible = v; }
+
   /** Call every frame.  Updates animation, position, and lighting tint. */
   tick(
     dt: number,

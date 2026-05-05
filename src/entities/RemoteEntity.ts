@@ -83,6 +83,33 @@ export class RemoteEntity extends EntityObject {
   private _targetHeading: number | null = null;
   private static readonly HEADING_LERP_SPEED = 10; // radians per second (fast but smooth)
 
+  /** Dead-reckoning velocity (m/s in world space). Set from heading + speed
+   *  on each authoritative position update. Cleared when speed=0. update()
+   *  walks the entity forward by this each frame so a sustained-direction
+   *  mover keeps moving smoothly between server broadcasts (which may be
+   *  ~1s apart for steady movement after server-side suppression). */
+  private _velX = 0;
+  private _velZ = 0;
+  /** performance.now() of the last server position update — caps how long
+   *  extrapolation is allowed to run unattended. */
+  private _lastServerUpdateMs = 0;
+  /** Hard cap on extrapolation duration. Past this we freeze rather than
+   *  walk an entity off into the void if the connection stalls. Comfortably
+   *  longer than the server's MOVE_HEARTBEAT_MS so a healthy heartbeat
+   *  always lands inside the window. */
+  private static readonly EXTRAPOLATION_CAP_MS = 2500;
+
+  /** Jump arc — added to the rendered Y on top of the interp/extrapolation
+   *  result. Triggered by `player_jump` events from the server. The local
+   *  player handles its own arc on a body sub-mesh (camera follows root),
+   *  but RemoteEntity has no camera attachment so we bounce the root
+   *  itself. */
+  private _jumpArcEndsAt   = 0;
+  private _jumpArcStartedAt = 0;
+  /** Matches PlayerEntity defaults so local + remote arcs read the same. */
+  private static readonly JUMP_DURATION_MS = 800;
+  private static readonly JUMP_APEX_M      = 1.2;
+
   // ── Static GLB model cache ────────────────────────────────────────────────
   // Shared across all RemoteEntity instances so the same model isn't fetched
   // twice. Keyed by modelAsset path (e.g. "dungeon/Dungeon_Entrance_01.glb").
@@ -224,10 +251,40 @@ export class RemoteEntity extends EntityObject {
   }
 
   override update(dt: number): void {
-    const pos = this.interp.tick(dt);
-    if (pos) this.object3d.position.copy(pos);
+    // Two motion sources compete each frame:
+    //   - interp (smooth-correction lerp toward latest authoritative position)
+    //   - extrapolation (dead-reckon along last-known velocity)
+    // They take turns, not compose: interp's tick() rewrites position from
+    // `from→target` each frame and would wipe extrapolation deltas from the
+    // prior frame. While interp is active, it owns position; once it
+    // finishes (t >= 1), extrapolation owns position until the next
+    // setTarget call resets the lerp.
+    if (this.interp.isActive) {
+      const pos = this.interp.tick(dt);
+      if (pos) this.object3d.position.copy(pos);
+    } else if (this._velX !== 0 || this._velZ !== 0) {
+      const sinceLastMs = performance.now() - this._lastServerUpdateMs;
+      if (sinceLastMs <= RemoteEntity.EXTRAPOLATION_CAP_MS) {
+        this.object3d.position.x += this._velX * dt;
+        this.object3d.position.z += this._velZ * dt;
+      }
+    }
 
-    // Smooth heading interpolation (shortest-arc)
+    // 2b. Jump arc — additive Y bounce on top of whatever the position
+    //     systems set this frame. Synced visually with the server-side
+    //     jump duration so the bounce ends as motion stops being driven
+    //     by jumpSpeed on the server.
+    if (this._jumpArcEndsAt > 0) {
+      const now = performance.now();
+      if (now >= this._jumpArcEndsAt) {
+        this._jumpArcEndsAt = 0;
+      } else {
+        const t = (now - this._jumpArcStartedAt) / RemoteEntity.JUMP_DURATION_MS;
+        this.object3d.position.y += Math.sin(t * Math.PI) * RemoteEntity.JUMP_APEX_M;
+      }
+    }
+
+    // 3. Smooth heading interpolation (shortest-arc)
     if (this._targetHeading !== null) {
       const current = this.object3d.rotation.y;
       let delta = this._targetHeading - current;
@@ -244,10 +301,11 @@ export class RemoteEntity extends EntityObject {
   }
 
   override setTargetPosition(
-    position:  THREE.Vector3,
-    heading?:  number,
-    durationMs = 100,
-    from?:     THREE.Vector3,
+    position:        THREE.Vector3,
+    heading?:        number,
+    durationMs    = 100,
+    from?:           THREE.Vector3,
+    movementSpeed?: number,
   ): void {
     const snapped = !this.interp.setTarget(this.object3d.position, position, durationMs, from);
     if (snapped) {
@@ -261,6 +319,27 @@ export class RemoteEntity extends EntityObject {
       }
       this._targetHeading = targetRad;
     }
+
+    // Refresh dead-reckoning velocity from the authoritative heading + speed.
+    // Server convention: heading 0° = +Z (south), increases clockwise. World
+    // direction is (sin H, cos H). Speed of 0 (or undefined) clears velocity
+    // so a stopped entity stays put between broadcasts.
+    this._lastServerUpdateMs = performance.now();
+    if (movementSpeed !== undefined && movementSpeed > 0 && heading !== undefined) {
+      const headingRad = THREE.MathUtils.degToRad(heading);
+      this._velX = Math.sin(headingRad) * movementSpeed;
+      this._velZ = Math.cos(headingRad) * movementSpeed;
+    } else {
+      this._velX = 0;
+      this._velZ = 0;
+    }
+  }
+
+  /** Trigger the Y-arc visual on this remote entity. Called from the
+   *  app-level `player_jump` event handler for non-self entities. */
+  playJump(): void {
+    this._jumpArcStartedAt = performance.now();
+    this._jumpArcEndsAt    = this._jumpArcStartedAt + RemoteEntity.JUMP_DURATION_MS;
   }
 
   /**

@@ -160,6 +160,13 @@ export class WardBeaconManager {
     return false;
   }
 
+  /** Snapshot of (worldX, worldZ, wardRadius) for every civic anchor in
+   *  this zone. Used by MiasmaGroundFog to compute danger per-fragment in
+   *  the shader. Length 0 if anchors haven't loaded yet. */
+  anchorList(): Array<{ x: number; z: number; r: number }> {
+    return this.anchors.map((a) => ({ x: a.worldX, z: a.worldZ, r: a.wardRadius }));
+  }
+
   // ── Anchor fetch ───────────────────────────────────────────────────────────
 
   private async _fetchAnchors(): Promise<void> {

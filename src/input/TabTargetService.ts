@@ -21,11 +21,22 @@ export class TabTargetService {
    *  the player is engaging from, and the camera/model are independent.
    *  Tab cycles all hostiles in range, hostile-first by distance. */
   private static readonly TAB_RANGE_M       = 50;
+  /** Optional source of "panel-ordered ally ids" — wired from PartyWindow.
+   *  When provided, Ctrl+Tab and F1-F8 walk this exact order so muscle memory
+   *  matches what's on screen. When null (PartyWindow not mounted yet), fall
+   *  back to the legacy self → party → companion order. */
+  private orderedAllyIds: (() => string[]) | null = null;
   constructor(
     private readonly entities:          EntityRegistry,
     private readonly player:            PlayerState,
     private readonly getPlayerPosition: () => Vector3,
   ) {}
+
+  /** Late-bind the panel-order provider. PartyWindow calls this once after
+   *  construction so Ctrl+Tab cycles in the same order the user sees. */
+  setOrderedAllyIdsProvider(fn: () => string[]): void {
+    this.orderedAllyIds = fn;
+  }
 
   /* ── Enemy cycling (Tab / Shift+Tab) ───────────────────────────────────── */
 
@@ -66,18 +77,27 @@ export class TabTargetService {
   /* ── Direct party slot (F1-F8) ─────────────────────────────────────────── */
 
   targetPartySlot(slot: number): void {
-    // F1 (slot 0) = target self
+    // F1 = self, F2-F8 = subsequent panel rows (so a controller player can
+    // reach a hireling with F2 if their cluster sorts second in the panel).
+    // Fall back to the legacy "party members minus self" mapping when the
+    // panel-order provider isn't wired yet.
+    const ordered = this._panelOrderedAllyIds();
+    if (ordered.length > 0) {
+      const id = ordered[slot];
+      if (!id) return;
+      const e = this.entities.get(id);
+      this.player.setTarget(id, e?.name ?? '');
+      return;
+    }
+
     if (slot === 0) {
       const selfId = this.player.id;
       if (selfId) this.player.setTarget(selfId, this.player.name);
       return;
     }
-
-    // F2-F8 → party members excluding self, preserving roster order
     const others = this.player.partyMembers.filter(m => m.id !== this.player.id);
     const idx = slot - 1;
     if (idx < 0 || idx >= others.length) return;
-
     const member = others[idx]!;
     this.player.setTarget(member.id, member.name);
   }
@@ -129,50 +149,73 @@ export class TabTargetService {
   }
 
   /** Set of ids belonging to the player's "ally" group — excluded from the
-   *  Tab cycle since Ctrl+Tab handles them. Self is in here too. */
+   *  Tab cycle since Ctrl+Tab handles them. Includes self, party members,
+   *  every party member's summoned companion + hirelings. */
   private _allyIds(): Set<string> {
     const ids = new Set<string>();
     const selfId = this.entities.playerId;
     if (selfId) ids.add(selfId);
+
+    // Party roster (may already include self — Set dedupes).
     for (const m of this.player.partyMembers) {
       if (m.id) ids.add(m.id);
     }
-    const companionId = this.player.companion?.companionId;
-    if (companionId) ids.add(companionId);
+
+    // Sweep entity registry for companions + hirelings of self or any party
+    // member. Owner relationship is on the entity (server populates
+    // ownerCharacterId on entity broadcasts).
+    const ownerSet = new Set<string>(ids);
+    for (const e of this.entities.getAll()) {
+      const t = (e.type ?? '').toLowerCase();
+      if (t !== 'companion' && t !== 'hireling') continue;
+      if (e.ownerCharacterId && ownerSet.has(e.ownerCharacterId)) {
+        ids.add(e.id);
+      }
+    }
     return ids;
   }
 
-  /** Ally cycle: self → party members → own companion. Self leads the cycle
-   *  so the first Ctrl+Tab press from a non-friendly target lands on you (a
-   *  controller player has no F1 and needs a way to reach self via the
-   *  d-pad). Set dedupes if party roster already lists the player. */
+  /** Ally cycle in PARTY-PANEL ORDER when the provider's wired up: self →
+   *  own pets → next player → their pets → … (matching what the user sees
+   *  on screen). Falls back to the legacy self → party → own-companion
+   *  ordering when the panel isn't mounted yet. */
   private _buildAllyCandidates(): Entity[] {
-    const playerId    = this.entities.playerId;
-    const allEntities = this.entities.getAll();
-    const byId        = new Map(allEntities.map(e => [e.id, e]));
+    const ordered = this._panelOrderedAllyIds();
+    const out: Entity[] = [];
 
-    const ids = new Set<string>();
-
-    // Self first.
-    if (playerId) ids.add(playerId);
-
-    // Party roster (may already include the player — Set dedupes).
-    for (const m of this.player.partyMembers) {
-      if (m.id) ids.add(m.id);
+    if (ordered.length > 0) {
+      for (const id of ordered) {
+        const e = this.entities.get(id);
+        if (!e || e.isAlive === false) continue;
+        out.push(e);
+      }
+      return out;
     }
 
-    // Own companion — visible in EntityRegistry once spawned in zone.
+    // Legacy fallback — same shape as before the extended-party panel landed.
+    const playerId    = this.entities.playerId;
+    const byId        = new Map(this.entities.getAll().map(e => [e.id, e]));
+    const ids: string[] = [];
+    if (playerId) ids.push(playerId);
+    for (const m of this.player.partyMembers) {
+      if (m.id && !ids.includes(m.id)) ids.push(m.id);
+    }
     const companionId = this.player.companion?.companionId;
-    if (companionId) ids.add(companionId);
-
-    // Resolve to live entities (drops anyone who isn't in this zone right now).
-    const out: Entity[] = [];
+    if (companionId && !ids.includes(companionId)) ids.push(companionId);
     for (const id of ids) {
       const e = byId.get(id);
       if (!e || e.isAlive === false) continue;
       out.push(e);
     }
     return out;
+  }
+
+  /** Snapshot of the panel's ordered ally ids, or empty array when the
+   *  provider hasn't been wired (PartyWindow not yet mounted). */
+  private _panelOrderedAllyIds(): string[] {
+    if (!this.orderedAllyIds) return [];
+    try { return this.orderedAllyIds(); }
+    catch { return []; }
   }
 
   /** Squared 2-D (XZ) distance — avoids sqrt, fine for sorting. */

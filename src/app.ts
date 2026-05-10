@@ -14,6 +14,7 @@ import { EntityFactory }      from '@/entities/EntityFactory';
 import { RemoteEntity }       from '@/entities/RemoteEntity';
 import { AutoAttackRing }     from '@/entities/AutoAttackRing';
 import { TelegraphRenderer } from '@/entities/TelegraphRenderer';
+import { VaultStagingMarker } from '@/vault/VaultStagingMarker';
 import { OrbitCamera }        from '@/camera/OrbitCamera';
 import { CameraInput }        from '@/camera/CameraInput';
 import { ClickMoveController } from '@/input/ClickMoveController';
@@ -66,6 +67,7 @@ import { CorpseRenderer, type CorpseData } from '@/entities/Corpse';
 import { HarvestNodeManager, type HarvestNodeData } from '@/entities/HarvestNode';
 import { RockRenderer, type RockData } from '@/world/RockRenderer';
 import { WaterRenderer }      from '@/world/WaterRenderer';
+import { yieldToBrowser }     from '@/world/yieldUtil';
 import { ForestDebugRenderer } from '@/world/ForestDebugRenderer';
 import { ForestRenderer }      from '@/world/ForestRenderer';
 import { VaultRenderer }      from '@/world/VaultRenderer';
@@ -105,7 +107,8 @@ export class App {
   private assets:  AssetLoader;
   private factory: EntityFactory;
   private autoAttackRing: AutoAttackRing;
-  private telegraphs: TelegraphRenderer;
+  private telegraphs:    TelegraphRenderer;
+  private stagingMarker: VaultStagingMarker;
   private corpses: CorpseSystem;
   private weather: WeatherEffects;
   private clouds:  CloudLayer;
@@ -198,6 +201,16 @@ export class App {
    *  in_world so a true zone change still re-runs the load. */
   private _loadedZoneId: string | null = null;
 
+  /** Loading-screen gate state.  We hide the screen only when BOTH the
+   *  server has confirmed world_ready AND the client has finished its
+   *  post-asset-load chain (water, beacons, forest plant, etc). Either
+   *  alone would drop the curtain too early — server-fast cases would
+   *  expose a half-built world; client-fast cases would let movement
+   *  input race ahead of the zone server. Reset to false on every
+   *  loading_world transition so each zone entry re-arms the gate. */
+  private _worldReadyReceived = false;
+  private _assetsLoaded       = false;
+
   // ── FPS limiter ──────────────────────────────────────────────────────────
   private _fpsLimit = 0;
   private _frameInterval = 0;
@@ -251,6 +264,7 @@ export class App {
     this.factory = new EntityFactory(this.scene.scene, this.entities, this.player);
     this.autoAttackRing = new AutoAttackRing(this.scene.scene, this.factory, this.player);
     this.telegraphs     = new TelegraphRenderer(this.scene.scene, this.router, this.factory, this.entities, this.player);
+    this.stagingMarker  = new VaultStagingMarker(this.scene.scene, this.router);
     this._forestRenderer = new ForestRenderer(this.scene.scene, this.entities);
     this.corpses = new CorpseSystem(this.scene.scene, this.entities);
     this.weather = new WeatherEffects(this.scene.scene);
@@ -627,6 +641,7 @@ export class App {
     this.settingsWindow?.dispose();
     this.autoAttackRing.dispose();
     this.telegraphs.dispose();
+    this.stagingMarker.dispose();
   }
 
   // ── Chat command handlers ────────────────────────────────────────────────
@@ -837,6 +852,9 @@ export class App {
     // decay tick pulses, dispose naturally-expired entries)
     this.telegraphs.update(dt);
 
+    // Spin the vault staging banner around Y while the marker is up.
+    this.stagingMarker.update(dt);
+
     // Tick corruption miasma (particles + fog based on distance from anchors)
     if (this.miasma && playerEntity) {
       this.miasma.update(dt, playerEntity.cameraTarget);
@@ -972,6 +990,13 @@ export class App {
         this.loading.setStatus('Entering world…');
         this.loading.setProgress(0);
         this._hasEnteredZone = false;
+        // New zone is incoming — release the in_world load guard so the
+        // next setPhase('in_world') actually runs _loadWorldAssets.
+        this._loadedZoneId = null;
+        // Re-arm the loading-screen gate. Both signals must fire again
+        // before the curtain drops on the new zone.
+        this._worldReadyReceived = false;
+        this._assetsLoaded       = false;
         // Reset entity wiring — new zone will spawn a new PlayerEntity
         this._playerEntityWired = false;
         this._heightmap = null;
@@ -1099,8 +1124,8 @@ export class App {
       clearTimeout(this._worldReadyFallback);
       this._worldReadyFallback = null;
     }
-    this.loading.complete();
-    this.loading.hide();
+    this._worldReadyReceived = true;
+    this._maybeFinishLoading();
   }
 
   private _armWorldReadyFallback(): void {
@@ -1108,9 +1133,21 @@ export class App {
     this._worldReadyFallback = setTimeout(() => {
       console.warn('[App] world_ready fallback fired — server never confirmed readiness within 10s');
       this._worldReadyFallback = null;
-      this.loading.complete();
-      this.loading.hide();
+      // Treat as if world_ready arrived — the gate still respects the
+      // assets-loaded flag, so we won't expose a half-built world; we
+      // just stop waiting on the server.
+      this._worldReadyReceived = true;
+      this._maybeFinishLoading();
     }, 10_000);
+  }
+
+  /** Hide the loading screen iff both the server's world_ready signal
+   *  has fired AND the client's asset-load chain has finished. Called
+   *  from both completion paths; the second one wins. */
+  private _maybeFinishLoading(): void {
+    if (!this._worldReadyReceived || !this._assetsLoaded) return;
+    this.loading.complete();
+    this.loading.hide();
   }
 
   /** Dispose any existing miasma fog plane and (if quality !== 'off')
@@ -1446,6 +1483,12 @@ export class App {
       this.wasd.setPartyTargetNext(() => this.tabTarget!.cyclePartyTarget(1));
       this.wasd.setPartyTargetPrev(() => this.tabTarget!.cyclePartyTarget(-1));
 
+      // Ctrl+Tab + F1-F8 walk the panel's row order so muscle memory
+      // matches what's on screen — including hirelings and companions.
+      if (this.partyWindow) {
+        this.tabTarget.setOrderedAllyIdsProvider(() => this.partyWindow!.getOrderedAllyIds());
+      }
+
       // Ctrl+F — toggle focus on the current main target. Skips self and any
       // hostile/dead/non-existent entity; ally casts will fall back to the
       // standard chain when no focus is set.
@@ -1596,11 +1639,20 @@ export class App {
     }
     this._loadedZoneId = zoneId;
 
-    // Remove previous world geometry + water + trees
+    // Reset persistent per-zone renderers BEFORE any await — the
+    // server's join-time event blasts (rocks_initial, harvest_node_batch_added,
+    // disposable_beacons_initial, corpses_initial) fire fast and arrive
+    // during any subsequent yield in this function.  If we cleared late,
+    // those events would land first and then get wiped by our clear().
+    // Doing it synchronously here means events always land into a fresh,
+    // ready renderer.
     this.water?.clear();
     this._forestDebug?.clear();
     this._forestRenderer?.clear();
     this._vaultRenderer = null;
+    this.harvestNodes?.clear();
+    this.rockRenderer?.clear();
+    this.disposableBeacons?.clear();
 
     // Tear down the vault minimap whenever we change zones — if the new zone
     // is also a vault, the post-fetch path below builds a fresh one against
@@ -1631,6 +1683,8 @@ export class App {
       this.miasmaFog?.setVisible(false); // village = inside walls, no miasma
       this.clouds.setVisible(true);
       this.scene.setIndoorMode(false, this.camera.getCamera());
+      this._assetsLoaded = true;
+      this._maybeFinishLoading();
       return;
     }
 
@@ -1653,6 +1707,8 @@ export class App {
       // off-screen vault hall behind walls. No occlusion culling in Three.js.
       this.scene.setIndoorMode(true, this.camera.getCamera());
       await this._buildVaultTerrain(zoneId);
+      this._assetsLoaded = true;
+      this._maybeFinishLoading();
       return;
     }
 
@@ -1710,44 +1766,61 @@ export class App {
         message: `${this.world.zone?.name ?? zoneId} — zone loaded.`,
       });
 
-      // Terrain is now in the scene — load beacons and miasma anchors for
-      // this zone, then reposition beacons onto the terrain surface.
+      // Each phase below was previously fire-and-yield-nothing — surfacing
+      // a status string + a yieldToBrowser between them gives the user
+      // visible progress AND lets the browser paint, which kept the page
+      // ticking past its unresponsive watchdog. Phases ordered so the
+      // visible-from-spawn ones (terrain done, water, beacons) come first.
+
+      this.loading.setStatus('Loading corruption…');
+      await yieldToBrowser();
       this.miasma?.loadForZone(zoneId);
       this.miasmaFog?.setHeightmap(heightmap);
       this.miasmaFog?.setVisible(true);
+
+      this.loading.setStatus('Placing civic beacons…');
+      await yieldToBrowser();
       this.beacons?.loadForZone(zoneId);
       this.beacons?.setVisible(true);
       this.beacons?.repositionOnTerrain();
+
+      this.loading.setStatus('Placing guild beacons…');
+      await yieldToBrowser();
       this.guildBeacons?.loadForZone(zoneId);
       this.guildBeacons?.setVisible(true);
       this.guildBeacons?.repositionOnTerrain();
-      // Harvest-node glints: clear on zone change. The server's player-join
-      // push re-emits a batched harvest_node_batch_added for the new zone's
-      // live nodes. Reposition pass after terrain mounts so any node added
-      // before the heightmap loaded gets its groundY refreshed.
-      this.harvestNodes?.clear();
+
+      // Renderers cleared at the top of this function (before any yields)
+      // so server-pushed events on join land in a fresh state. Here we
+      // just turn them visible + reposition any entities that arrived
+      // before the heightmap was set.
       this.harvestNodes?.setVisible(true);
       this.harvestNodes?.repositionOnTerrain();
-      // Rock outcrops: clear on zone change. Server pushes the rocks_initial
-      // batch on player join with the new zone's scatter.
-      this.rockRenderer?.clear();
       this.rockRenderer?.setVisible(true);
-      // Disposable beacons: clear on zone change; server pushes
-      // disposable_beacons_initial on join.
-      this.disposableBeacons?.clear();
       this.disposableBeacons?.setVisible(true);
       this.disposableBeacons?.repositionOnTerrain();
 
-      // Water rendering — animated shader surfaces from OSM polygon data
+      // Water rendering — animated shader surfaces from OSM polygon data.
+      // Built sync (~100 ms for ~20 features); not per-feature chunked
+      // because rAF yields between features triggered repeated render
+      // passes that visibly hung on the water shader's first compile.
+      this.loading.setStatus('Building water…');
+      await yieldToBrowser();
       if (!this.water) this.water = new WaterRenderer(this.scene.scene, heightmap);
       else this.water.setHeightmap(heightmap);
-      if (origin) await this.water.loadForZone(zoneId, origin.lat, origin.lon);
+      if (origin) {
+        await this.water.loadForZone(zoneId, origin.lat, origin.lon);
+      }
 
       // Debug overlay — OSM forest polygons rendered as semi-transparent green shading.
       // Toggle with F8. Polygons that appear far from the zone centre = coordinate mismatch.
       if (!this._forestDebug) this._forestDebug = new ForestDebugRenderer(this.scene.scene, heightmap);
       else this._forestDebug.setHeightmap(heightmap);
-      await this._forestDebug.loadForZone(zoneId);
+      this._forestDebug.loadForZone(zoneId);
+
+      this.loading.setStatus('Fetching forest…');
+      await yieldToBrowser();
+      console.time('[load] forest fetch');
 
       // Static landscape — trees fetched once over HTTP (with browser cache)
       // instead of streamed over the realtime WebSocket. Re-visits hit 304
@@ -1755,18 +1828,26 @@ export class App {
       // means no trees this load (live plant_spawn deltas can still fill in).
       try {
         const resp = await fetch(`${ClientConfig.serverUrl}/world/landscape/${encodeURIComponent(zoneId)}/trees`);
+        console.timeEnd('[load] forest fetch');
         if (resp.ok) {
+          this.loading.setStatus('Parsing forest data…');
+          await yieldToBrowser();
+          console.time('[load] forest parse');
           const manifest = await resp.json() as {
             version: number;
             trees: Array<{ id: string; species: string; x: number; y: number; z: number; variant?: number }>;
           };
+          console.timeEnd('[load] forest parse');
+          console.log('[load] forest tree count:', manifest.trees?.length ?? 0);
           if (manifest.trees && this._forestRenderer) {
+            console.time('[load] forest plant');
             await this._forestRenderer.bulkAddFromManifest(
               manifest.trees,
               (done, total) => {
                 this.loading.setStatus(`Planting forest (${done}/${total})…`);
               },
             );
+            console.timeEnd('[load] forest plant');
           }
         } else {
           console.warn('[App] Tree manifest fetch returned', resp.status);
@@ -1777,6 +1858,13 @@ export class App {
     } catch (err) {
       console.error('[App] Zone asset load failed:', err);
     }
+
+    // Asset chain done — release the loading screen iff world_ready also
+    // arrived. If world_ready won the race, this is the call that hides
+    // the curtain; otherwise _onWorldReady will close it once the server
+    // signal lands.
+    this._assetsLoaded = true;
+    this._maybeFinishLoading();
   }
 
   /**

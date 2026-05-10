@@ -72,6 +72,8 @@ import type {
   VaultRoomClearedPayload,
   VaultCompletePayload,
   VaultFailedPayload,
+  VaultStagingActivePayload,
+  VaultStagingBrokenPayload,
   ExperienceGainedPayload,
 } from './Protocol';
 
@@ -124,6 +126,8 @@ export class MessageRouter {
   private vaultCompleteListeners    = new Set<(p: VaultCompletePayload) => void>();
   private vaultRoomEnterListeners   = new Set<(p: VaultRoomEnterPayload) => void>();
   private vaultRoomClearedListeners = new Set<(p: VaultRoomClearedPayload) => void>();
+  private vaultStagingActiveListeners = new Set<(p: VaultStagingActivePayload) => void>();
+  private vaultStagingBrokenListeners = new Set<(p: VaultStagingBrokenPayload) => void>();
   private experienceGainedListeners = new Set<(p: ExperienceGainedPayload) => void>();
   private worldEntryListeners       = new Set<() => void>();
   private worldReadyListeners       = new Set<() => void>();
@@ -395,6 +399,20 @@ export class MessageRouter {
     return () => this.vaultRoomClearedListeners.delete(fn);
   }
 
+  /** Vault staging is active — squad still assembling, /hire and /dismiss
+   *  valid. Subscribe to spawn the staging marker. */
+  onVaultStagingActive(fn: (p: VaultStagingActivePayload) => void): () => void {
+    this.vaultStagingActiveListeners.add(fn);
+    return () => this.vaultStagingActiveListeners.delete(fn);
+  }
+
+  /** Vault staging broken — squad locked in, mobs spawning. Subscribe to
+   *  dispose the staging marker. */
+  onVaultStagingBroken(fn: (p: VaultStagingBrokenPayload) => void): () => void {
+    this.vaultStagingBrokenListeners.add(fn);
+    return () => this.vaultStagingBrokenListeners.delete(fn);
+  }
+
   mount(): void {
     const s = this.socket;
 
@@ -441,6 +459,13 @@ export class MessageRouter {
 
     s.on('world_entry', (p) => {
       const payload = p as WorldEntryPayload;
+      // Run the loading_world transition first so the loading screen shows
+      // and the world-ready / assets-loaded gate flags reset, even on flows
+      // where the server emits world_entry without a prior character_select
+      // round-trip (guest auth, single-character auto-enter, character_create).
+      // Idempotent — no-op when SessionState.selectCharacter already moved
+      // us to loading_world for the user-pick path.
+      this.session.setPhase('loading_world');
       this.world.applyZone(payload.zone);
       this.player.applyWorldEntry(payload.character, payload.abilityManifest, payload.isGuest);
       this.entities.applyWorldEntry(payload.entities, payload.character.id);
@@ -507,6 +532,16 @@ export class MessageRouter {
 
       if (payload.allies) {
         this.player.applyPartyAllies(payload.allies as PartyAllyState[]);
+      }
+
+      // Vitals-only stream — server's 1Hz pet vitals tick. Routed to a
+      // dedicated EntityRegistry method so EntityFactory's position-update
+      // path doesn't fire (which would restart pet interp lerps every
+      // second, hitching their movement and disturbing local WASD smoothing).
+      if (payload.vitals) {
+        for (const v of payload.vitals) {
+          if (v.id) this.entities.applyVitals(v.id, v);
+        }
       }
     });
 
@@ -999,6 +1034,18 @@ export class MessageRouter {
     s.on('vault_failed', (p) => {
       const payload = p as VaultFailedPayload;
       this.world.pushMessage('system', payload.message);
+    });
+
+    s.on('vault_staging_active', (p) => {
+      const payload = p as VaultStagingActivePayload;
+      this.world.pushMessage('system', 'Staging area active. Squad up — step out to begin.');
+      this.vaultStagingActiveListeners.forEach(fn => fn(payload));
+    });
+
+    s.on('vault_staging_broken', (p) => {
+      const payload = p as VaultStagingBrokenPayload;
+      if (payload.message) this.world.pushMessage('system', payload.message);
+      this.vaultStagingBrokenListeners.forEach(fn => fn(payload));
     });
 
     // ── Logout (full session reset) ─────────────────────────────────────────

@@ -18,6 +18,12 @@ export class EntityRegistry {
   private onAddListeners    = new Set<EntityListener>();
   private onUpdateListeners = new Set<EntityListener>();
   private onRemoveListeners = new Set<EntityIdListener>();
+  /** Separate subscription channel for VITALS-ONLY updates (HP / MP /
+   *  stamina deltas pushed by the server's 1Hz pet vitals tick). Distinct
+   *  from onUpdate so the EntityFactory's position-update path doesn't
+   *  fire on every vitals change — that was causing every moving pet to
+   *  restart its interp lerp once a second, visible as a 1Hz hitch. */
+  private onVitalsListeners = new Set<EntityListener>();
 
   // ── Getters ───────────────────────────────────────────────────────────────
 
@@ -107,6 +113,25 @@ export class EntityRegistry {
     this._notifyUpdate(merged);
   }
 
+  /** Patch HP/MP/Stamina on an existing entity without touching position
+   *  or running the regular onUpdate listeners (which would route through
+   *  EntityFactory's position-update path and restart movement interp).
+   *  Server uses this for companions + hirelings; players receive vitals
+   *  via state_update.character → PlayerState. */
+  applyVitals(
+    id: string,
+    vitals: { health?: Entity['health']; mana?: Entity['mana']; stamina?: Entity['stamina'] },
+  ): void {
+    const existing = this._entities.get(id);
+    if (!existing) return;
+    const merged: Entity = { ...existing };
+    if (vitals.health)  merged.health  = { ...vitals.health };
+    if (vitals.mana)    merged.mana    = { ...vitals.mana };
+    if (vitals.stamina) merged.stamina = { ...vitals.stamina };
+    this._entities.set(id, merged);
+    for (const fn of this.onVitalsListeners) fn(merged);
+  }
+
   remove(id: string): void {
     if (!this._entities.has(id)) return;
     this._entities.delete(id);
@@ -136,6 +161,13 @@ export class EntityRegistry {
   onRemove(listener: EntityIdListener): () => void {
     this.onRemoveListeners.add(listener);
     return () => this.onRemoveListeners.delete(listener);
+  }
+
+  /** Subscribe to vitals-only patches (state_update.vitals). Fires when a
+   *  pet's HP/MP/stamina changes without any position update. */
+  onVitalsUpdate(listener: EntityListener): () => void {
+    this.onVitalsListeners.add(listener);
+    return () => this.onVitalsListeners.delete(listener);
   }
 
   private _notifyAdd(entity: Entity):   void { this.onAddListeners.forEach(fn => fn(entity)); }

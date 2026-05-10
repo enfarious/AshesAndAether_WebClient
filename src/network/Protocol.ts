@@ -272,6 +272,24 @@ export interface Entity {
   tag?: string;
   /** Visual variant index (0–4). Server-authoritative; drives pre-built geometry selection in ForestRenderer. */
   variant?: number;
+  /** Owner relationship for synthetic party-panel rows. Set on companions
+   *  (1:1 with player) and hirelings (1-many per player, vault-only). */
+  ownerCharacterId?: string;
+  /** Companion / hireling archetype string. For hirelings: 'tank' | 'healer'
+   *  | 'ranged_magic_dd' | etc. For companions: 'tank' | 'scrappy_fighter'
+   *  | 'cautious_healer' | 'opportunist'. Used as a fallback when the
+   *  server-computed role tag is missing. */
+  archetype?: string;
+  /** Single-symbol party-panel role tag — 'T' | 'M' | 'M♦' | 'R' | 'R♦'
+   *  | 'C' | 'H' | 'Su' | '?' | '*'. Server-computed on entity broadcast
+   *  and on PASSIVE_LOADOUT_CHANGED for players. */
+  role?: string;
+  /** Mana / stamina pools for non-self entities. Self vitals come from
+   *  PlayerState via the state_update.character pipeline; companions and
+   *  hirelings carry vitals on their entity broadcast so the party panel
+   *  can render MP/Stamina bars without per-pet status events. */
+  mana?:    StatBar;
+  stamina?: StatBar;
 }
 
 export interface Exit {
@@ -349,6 +367,17 @@ export interface StateUpdatePayload {
     enmityList?: EnmityEntry[];
   };
   allies?: PartyAllyState[];
+  /** Vitals-only updates for entities the client already knows about
+   *  (companions + hirelings). Routed to EntityRegistry.applyVitals which
+   *  patches health/mana/stamina without touching position — bypasses the
+   *  EntityFactory.setTargetPosition path that would otherwise restart
+   *  every pet's interp lerp at this broadcast's cadence. */
+  vitals?: Array<{
+    id:       string;
+    health?:  StatBar;
+    mana?:    StatBar;
+    stamina?: StatBar;
+  }>;
   zone?: Partial<ZoneInfo>;
 }
 
@@ -1322,4 +1351,23 @@ export interface VaultCompletePayload {
 export interface VaultFailedPayload {
   instanceId: string;
   message:    string;
+}
+
+/** Server → Client: vault staging zone is active. Sent at vault join while
+ *  the squad is still assembling — `/hire` and `/dismiss` are valid until
+ *  the first player drifts outside `stagingPoint.radius` from the entrance. */
+export interface VaultStagingActivePayload {
+  instanceId:   string;
+  stagingPoint: { x: number; z: number; radius: number };
+}
+
+/** Server → Client: vault staging is broken — squad locked, mobs spawning.
+ *  Triggered by the first player to leave the staging circle. Scaling tier
+ *  is now frozen against the combat-effective party size. */
+export interface VaultStagingBrokenPayload {
+  instanceId:         string;
+  triggerCharacterId: string;
+  combatPartySize:    number;
+  scalingTier:        'solo' | 'small' | 'party';
+  message?:           string;
 }

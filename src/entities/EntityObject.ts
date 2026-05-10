@@ -289,6 +289,7 @@ export abstract class EntityObject {
    *
    *   Player    — blue     #4488ff
    *   Companion — green    #44cc66  (capsule)
+   *   Hireling  — amber    #ffaa44  (capsule — warm tone distinguishes mercs from bound companion)
    *   NPC       — green    #44cc66  (sphere)
    *   Hostile   — red      #dd3333  (all entity types when hostile flag is set)
    *   Mob       — yellow   #ddaa22  (non-hostile)
@@ -299,6 +300,7 @@ export abstract class EntityObject {
     const type = entity.type?.toLowerCase() ?? '';
     if (type === 'player')    return 0xffdd44; // bright yellow
     if (type === 'companion') return 0x44ddee; // bright cyan
+    if (type === 'hireling')  return 0xffaa44; // warm amber — distinct from cyan companion + yellow player
     if (type === 'npc')       return 0x44ddee; // bright cyan (same as companion — friendly)
     if (type === 'plant')     return 0x4a7a30; // dark green — actual tone set per-stage
     if (entity.hostile)       return 0xff3333; // bright red — hostile of any type

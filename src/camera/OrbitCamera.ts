@@ -282,6 +282,9 @@ export class OrbitCamera {
     const sphere = new THREE.Sphere();
     for (const child of root.children) {
       const name = child.name.toLowerCase();
+      // Explicit non-collidable flag — transient visuals like the vault
+      // staging marker shouldn't push the camera around.
+      if (child.userData['nonCollidable']) continue;
       // Terrain & water are not camera obstacles (heightmap handles ground).
       if (name.includes('terrain') || name.includes('water')) continue;
       box.setFromObject(child);
@@ -307,6 +310,7 @@ export class OrbitCamera {
     depth:  number,
   ): void {
     for (const node of parent.children) {
+      if (node.userData['nonCollidable']) continue;
       box.setFromObject(node);
       if (box.isEmpty()) continue;
       box.getBoundingSphere(sphere);

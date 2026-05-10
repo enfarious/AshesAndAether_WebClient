@@ -333,6 +333,12 @@ export class PlayerEntity extends EntityObject {
     for (const child of root.children) {
       const name = child.name.toLowerCase();
 
+      // Explicit opt-out for transient visuals (vault staging marker, etc.)
+      // — anything tagged non-collidable is skipped regardless of name or
+      // bounding-box size. Lets renderers add visual-only meshes without
+      // having to remember name conventions.
+      if (child.userData['nonCollidable']) continue;
+
       // Terrain meshes are kept aside for downward-ray height fallback but
       // excluded from wall-collision candidates (heightmap handles Y).
       if (name.includes('terrain')) {
@@ -392,6 +398,8 @@ export class PlayerEntity extends EntityObject {
     minHeight = COLLISION_MIN_HEIGHT,
   ): void {
     for (const node of parent.children) {
+      // Same opt-out as the top-level walk in setWorldRoot.
+      if (node.userData['nonCollidable']) continue;
       box.setFromObject(node);
       if (box.isEmpty()) continue;
       if (box.max.y - box.min.y < minHeight) continue;

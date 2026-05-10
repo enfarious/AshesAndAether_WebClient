@@ -70,6 +70,13 @@ export class VaultStagingMarker {
     // Y = 0 is the vault floor (tile grid is flat). Lift the disc slightly
     // to avoid z-fighting with floor geometry.
     group.position.set(x, 0.05, z);
+    // Tag the entire group as non-collidable so PlayerEntity / OrbitCamera
+    // candidate-builders skip it if it ever ends up under worldRoot. The
+    // marker is meant to be a pure visual: players walk through it freely
+    // (boundary crossing is detected server-side via distance polling, not
+    // client-side collision). Setting on the group propagates to children
+    // via the candidate-builder's `userData.nonCollidable` walk.
+    group.userData['nonCollidable'] = true;
 
     // 1. Inner fill — soft amber disc, subtly visible from inside.
     const fillGeom = new THREE.CircleGeometry(radius, 64);

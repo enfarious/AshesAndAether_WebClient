@@ -13,10 +13,17 @@
 // chunk for "do a few hundred ops per item" workloads.
 // ---------------------------------------------------------------------------
 
-/** Yield once to the browser so it can paint and process input.  Uses
- *  setTimeout(0) — most reliable cross-browser, accepts the ~4 ms clamp. */
+/** Yield once to the browser so it can paint and process input.
+ *
+ *  Uses requestAnimationFrame to GUARANTEE a paint cycle between yields —
+ *  setTimeout(0) only yields to the event loop, and modern browsers
+ *  routinely batch multiple JS-driven DOM mutations across several
+ *  setTimeout-yields into a single paint, which makes per-chunk progress
+ *  text appear to skip.  rAF runs at ~60 fps so each chunk costs ~16 ms
+ *  of overhead — acceptable for the small number of chunks we run, and
+ *  the visible progress is worth it. */
 export function yieldToBrowser(): Promise<void> {
-  return new Promise((r) => setTimeout(r, 0));
+  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
 }
 
 /** Walk an array in chunks, running `onItem` synchronously within each

@@ -184,6 +184,15 @@ export class WaterRenderer {
   /**
    * Fetch water polygon data for a zone and generate meshes.
    * Safe to call for any zone — returns silently if no data exists.
+   *
+   * NOT chunked: the per-feature mesh build is fast (small OSM polygons
+   * + cheap ribbon math), but each rAF yield between features triggered
+   * a render-pass that hit the custom water shader's first-compile stall
+   * AND per-mesh GPU upload, surfacing as a multi-second visible hang
+   * (the "Building water (4/21)" symptom). Building all features in one
+   * sync block keeps it under the responsiveness budget and defers the
+   * single shader-compile/GPU-upload event to the rAF *after* this
+   * whole phase finishes — one stall, between phases, not mid-loop.
    */
   async loadForZone(
     zoneId: string,
@@ -211,13 +220,11 @@ export class WaterRenderer {
       if (feature.tags?.tunnel === 'culvert' || feature.tags?.layer === '-1') continue;
       if (feature.nodes.length < 2) continue;
 
-      // Convert lat/lon → world XZ
       const worldPts = feature.nodes.map(n => ({
         x:  (n.lon - originLon) * mPerDegLon,
         z: -(n.lat - originLat) * M_PER_DEG_LAT,
       }));
 
-      // Closed polygon or open linestring?
       const first = feature.nodes[0]!;
       const last  = feature.nodes[feature.nodes.length - 1]!;
       const closed =

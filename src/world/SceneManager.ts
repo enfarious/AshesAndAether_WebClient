@@ -64,6 +64,15 @@ export class SceneManager {
     this.renderer.toneMapping       = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.2;
 
+    // Allow async/parallel shader compilation (KHR_parallel_shader_compile
+    // on Chrome/Edge).  Default is true, which forces a sync getShaderInfoLog
+    // probe after every compile and blocks the main thread for 1-5 s on the
+    // first frame after a custom ShaderMaterial is added — surfaced as the
+    // "Building water" / "Fetching forest" zone-load hang.  Off here trades
+    // silent-failure-on-shader-errors for non-blocking first-paint; flip
+    // back on when authoring or debugging a new custom shader.
+    this.renderer.debug.checkShaderErrors = false;
+
     this.scene = new THREE.Scene();
     this.scene.fog = new THREE.FogExp2(0x6080a0, 0.0014);
 

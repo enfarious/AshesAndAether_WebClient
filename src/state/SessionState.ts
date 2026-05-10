@@ -81,6 +81,10 @@ export class SessionState {
   }
 
   setPhase(phase: GamePhase): void {
+    // Idempotent — duplicate `world_entry` events (or any double-fired
+    // transition) used to re-fire the phase listener and cascade into a
+    // second full asset load.  No-op when the value didn't actually change.
+    if (this._phase === phase) return;
     this._phase = phase;
     this._notify('phase', phase);
   }

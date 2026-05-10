@@ -51,6 +51,8 @@ import { EnmityPanel }        from '@/ui/EnmityPanel';
 import { AIDebugWindow }      from '@/ui/AIDebugWindow';
 import { BuildPanel }         from '@/ui/BuildPanel';
 import { RegistrationModal }  from '@/ui/RegistrationModal';
+import { HirelingPanel }      from '@/ui/HirelingPanel';
+import { DummyPanel }         from '@/ui/DummyPanel';
 import { TravelPanel }        from '@/ui/TravelPanel';
 import { CommandHelpPanel }   from '@/ui/CommandHelpPanel';
 import { SystemToast }        from '@/ui/SystemToast';
@@ -89,6 +91,10 @@ import { loadSettings }       from '@/companion/CompanionSettings';
  *  Matches the server's HARVEST_RANGE_M so the prompt is honest. */
 const HARVEST_KEY_RANGE_M = 10;
 
+/** F-key range for looting an own-corpse. Matches the server-side 3 m gate
+ *  in `_onLootCommand` so the prompt is honest. */
+const LOOT_KEY_RANGE_M = 3;
+
 export class App {
   // ── Network ───────────────────────────────────────────────────────────────
   private socket:  SocketClient;
@@ -123,6 +129,10 @@ export class App {
   /** Cached "is a harvest glint within range?" — refreshed every frame so
    *  the F-key probe and HUD prompt agree without each doing their own scan. */
   private _harvestableInRange = false;
+  /** Cached "is a lootable own-corpse within 3m?" — refreshed every frame
+   *  so the F-key probe and HUD prompt agree without each doing their own
+   *  scan. Filtered to corpses owned by the local character. */
+  private _lootableCorpseInRange = false;
   private harvestNodes: HarvestNodeManager | null = null;
   private rockRenderer: RockRenderer | null = null;
   private water:      WaterRenderer | null = null;
@@ -162,6 +172,8 @@ export class App {
   private villagePanel:      VillagePanel      | null = null;
   private marketPanel:       MarketPanel       | null = null;
   private registrationModal: RegistrationModal  | null = null;
+  private hirelingPanel:     HirelingPanel      | null = null;
+  private dummyPanel:        DummyPanel         | null = null;
   private worldMapPanel:     WorldMapPanel      | null = null;
   private travelPanel:       TravelPanel        | null = null;
   private commandHelpPanel:  CommandHelpPanel   | null = null;
@@ -883,7 +895,26 @@ export class App {
     this._harvestableInRange = this.harvestNodes?.hasNodeWithin(
       this.player.position.x, this.player.position.z, HARVEST_KEY_RANGE_M,
     ) ?? false;
-    this.hud?.setHarvestPromptVisible(this._harvestableInRange);
+
+    // Same pattern for own-corpses. Server-side /loot honours a 3m gate,
+    // mirrored here.
+    this._lootableCorpseInRange = this.playerCorpses?.hasLootableCorpseWithin(
+      this.player.position.x, this.player.position.z, LOOT_KEY_RANGE_M,
+    ) ?? false;
+
+    // F-key prompt priority: interactable entity (has interactionKind)
+    // > lootable corpse > harvest glint. Mobs without a kind don't trip
+    // the prompt — they're click-target, not F-interact.
+    const nearestInteractable = this.wasd?.findNearestInteractable() ?? null;
+    if (nearestInteractable?.interactionPrompt) {
+      this.hud?.setInteractPrompt(nearestInteractable.interactionPrompt);
+    } else if (this._lootableCorpseInRange) {
+      this.hud?.setInteractPrompt('Loot');
+    } else if (this._harvestableInRange) {
+      this.hud?.setHarvestPromptVisible(true);
+    } else {
+      this.hud?.setInteractPrompt(null);
+    }
 
     // Tick water shader animation (wave displacement + fog sync)
     this.water?.update(dt, this.scene.getSunDirection());
@@ -1150,6 +1181,38 @@ export class App {
     this.loading.hide();
   }
 
+  /**
+   * Force every shader currently in the scene to compile BEFORE we hide
+   * the loading screen. Without this, custom ShaderMaterials (water,
+   * miasma fog, telegraph rings, beacons, etc.) compile lazily on first
+   * draw — and on driver/GPU configurations without
+   * `KHR_parallel_shader_compile` the compile is synchronous, blocking
+   * the first gameplay frame for 100ms–several seconds. Surfaced as the
+   * "tab unresponsive" zone-load hang.
+   *
+   * On Chrome/Edge with the parallel-compile extension this is fully
+   * async — the await resolves only once GPU-side compile completes,
+   * which is exactly the window where the loading screen is up. On
+   * browsers without the extension, the compile still blocks but it
+   * blocks during loading rather than gameplay. Either way, the visible
+   * stall moves into the loading curtain.
+   *
+   * Idempotent — already-compiled materials are skipped at zero cost
+   * thanks to Three.js's WebGLProgramCache.
+   */
+  private async _warmShaderCache(): Promise<void> {
+    if (!this.scene?.renderer || !this.scene?.scene) return;
+    const camera = this.camera?.getCamera();
+    if (!camera) return;
+    const t0 = performance.now();
+    try {
+      await this.scene.renderer.compileAsync(this.scene.scene, camera);
+      console.log(`[App] shader warm-cache: ${(performance.now() - t0).toFixed(0)}ms`);
+    } catch (err) {
+      console.warn('[App] shader warm-cache failed:', err);
+    }
+  }
+
   /** Dispose any existing miasma fog plane and (if quality !== 'off')
    *  build a fresh one at the new subdivision count. Called when the
    *  user changes the Miasma Fog setting. Safe to call any time — also
@@ -1328,6 +1391,18 @@ export class App {
       // Wire /register in chat to open this modal
       this.chatPanel!.setRegisterCallback(() => this.registrationModal!.show());
     }
+    if (!this.hirelingPanel) {
+      // Modal that listens for `open_hireling_panel` server pushes (sent
+      // when the player F-keys the entry-room obelisk, and on hire/dismiss
+      // success). No host-side wiring beyond construction.
+      this.hirelingPanel = new HirelingPanel(this.uiRoot, this.socket);
+    }
+    if (!this.dummyPanel) {
+      // Empirical-readout modal for F-keyed training dummies. Subscribes
+      // to combat outcomes (filtered to the inspected dummy) and renders
+      // rolling 30s DPS + hit/miss/crit/glance/pen/deflect counters.
+      this.dummyPanel = new DummyPanel(this.uiRoot, this.socket, this.router);
+    }
     if (!this.abilityWindow) {
       this.abilityWindow = new AbilityWindow(this.uiRoot, this.player, this.socket, this.router);
       this.abilityWindow.setBeaconRangeCheck(() =>
@@ -1346,6 +1421,7 @@ export class App {
     // Wire the F-key harvest probe to the same cached value the HUD prompt
     // reads — both reflect "is there a glint within range right now?".
     this.wasd.setHarvestableProbe(() => this._harvestableInRange);
+    this.wasd.setLootableCorpseProbe(() => this._lootableCorpseInRange);
     if (!this.actionBar) {
       this.actionBar = new ActionBar(this.uiRoot, this.player, this.socket, this.entities);
       this.actionBar.onValidationError = (msg) => this.world.pushMessage('system', msg);
@@ -1858,6 +1934,14 @@ export class App {
     } catch (err) {
       console.error('[App] Zone asset load failed:', err);
     }
+
+    // Force shaders to compile BEFORE we drop the loading curtain. The
+    // overworld load chain assembles water, miasma fog, beacons, forest,
+    // and rock InstancedMeshes — each is a ShaderMaterial that compiles
+    // lazily on first draw. On drivers without KHR_parallel_shader_compile
+    // the compile is sync and blocks the first frame; precompiling here
+    // moves that stall onto the loading screen instead of gameplay.
+    await this._warmShaderCache();
 
     // Asset chain done — release the loading screen iff world_ready also
     // arrived. If world_ready won the race, this is the call that hides

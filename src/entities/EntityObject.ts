@@ -195,6 +195,71 @@ export abstract class EntityObject {
   }
 
   /**
+   * Hireling-console obelisk for vault entry rooms. A tapered four-sided
+   * pillar with an emissive amber band — readable from across the room
+   * as "the thing you press F on before stepping out of staging." Total
+   * polycount is tiny.
+   */
+  static _addHirelingConsoleToGroup(group: THREE.Group): void {
+    // Base plate
+    const baseGeo = new THREE.CylinderGeometry(1.4, 1.6, 0.25, 16);
+    const baseMat = new THREE.MeshStandardMaterial({
+      color:     0x2b231a,
+      roughness: 0.85,
+      metalness: 0.15,
+    });
+    const base = new THREE.Mesh(baseGeo, baseMat);
+    base.position.y = 0.125;
+    base.castShadow = true;
+    base.receiveShadow = true;
+    group.add(base);
+
+    // Tapered obelisk shaft (square frustum)
+    const shaftGeo = new THREE.CylinderGeometry(0.30, 0.55, 2.8, 4);
+    const shaftMat = new THREE.MeshStandardMaterial({
+      color:     0x3a2f24,
+      roughness: 0.62,
+      metalness: 0.32,
+    });
+    const shaft = new THREE.Mesh(shaftGeo, shaftMat);
+    shaft.position.y = 0.25 + 1.4;
+    shaft.rotation.y = Math.PI / 4;
+    shaft.castShadow = true;
+    group.add(shaft);
+
+    // Emissive amber band — readable signal that this is an interactable.
+    const bandGeo = new THREE.CylinderGeometry(0.46, 0.49, 0.32, 4);
+    const bandMat = new THREE.MeshStandardMaterial({
+      color:             0x4a2d10,
+      emissive:          0xffaa50,
+      emissiveIntensity: 1.4,
+      roughness:         0.4,
+      metalness:         0.5,
+    });
+    const band = new THREE.Mesh(bandGeo, bandMat);
+    band.position.y = 0.25 + 0.6;
+    band.rotation.y = Math.PI / 4;
+    group.add(band);
+
+    // Cap pyramid
+    const capGeo = new THREE.ConeGeometry(0.42, 0.6, 4);
+    const capMat = new THREE.MeshStandardMaterial({
+      color:     0x4a3a2c,
+      roughness: 0.55,
+      metalness: 0.4,
+    });
+    const cap = new THREE.Mesh(capGeo, capMat);
+    cap.position.y = 0.25 + 2.8 + 0.3;
+    cap.rotation.y = Math.PI / 4;
+    group.add(cap);
+
+    // Small warm point light to read clearly in low-light vault entries.
+    const light = new THREE.PointLight(0xffaa50, 0.9, 8, 1.6);
+    light.position.set(0, 1.4, 0);
+    group.add(light);
+  }
+
+  /**
    * Add procedural tree geometry to a group.  Two variants:
    *   pine  — brown cone trunk + stacked green cone foliage layers
    *   decid — brown cylinder trunk + green sphere crown

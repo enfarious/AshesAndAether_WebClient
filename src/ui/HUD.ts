@@ -45,6 +45,8 @@ export class HUD {
   private _rafId: number | null = null;
   private fpsEl:           HTMLElement | null = null;
   private harvestPromptEl: HTMLElement | null = null;
+  private interactKeyEl:   HTMLElement | null = null;
+  private interactLabelEl: HTMLElement | null = null;
   private aetherFillEl:    HTMLElement | null = null;
   private aetherValueEl:   HTMLElement | null = null;
   private aetherTierEl:    HTMLElement | null = null;
@@ -726,19 +728,31 @@ export class HUD {
         }
       </style>
 
-      <div id="hud-interact-prompt" class="hud-interact-prompt"></div>
+      <div id="hud-interact-prompt" class="hud-interact-prompt">
+        <span id="hud-interact-key" class="hud-interact-key"></span>
+        <span id="hud-interact-label" class="hud-interact-label"></span>
+      </div>
 
       <style>
-        /* Floating key-cap prompt for contextual interactions (harvest today,
-         * loot/refuel/portal in the future). Positioned in the lower-middle
-         * of the viewport — above the ability bar, below the camera target.
-         * Key-cap only, no descriptive text — player learns context by what
-         * they're standing near. */
+        /* Floating prompt for contextual interactions. Shows a key-cap and an
+         * optional label ("Enter Vault", "Hire Console", ...). The label is
+         * empty for the harvest fallback — player learns context from the glint
+         * + key-cap alone. */
         .hud-interact-prompt {
           position: fixed;
           bottom: 38vh;
           left: 50%;
           transform: translateX(-50%);
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          pointer-events: none;
+          opacity: 0;
+          transition: opacity 0.18s ease-out;
+          font-family: var(--font-mono);
+        }
+        .hud-interact-prompt.visible { opacity: 1; }
+        .hud-interact-key {
           width: 32px;
           height: 32px;
           display: flex;
@@ -748,17 +762,23 @@ export class HUD {
           border: 1.5px solid rgba(255, 170, 80, 0.65);
           border-radius: 4px;
           color: rgba(255, 230, 200, 1);
-          font-family: var(--font-mono);
           font-size: 16px;
           font-weight: bold;
           letter-spacing: 0.02em;
-          pointer-events: none;
-          opacity: 0;
-          transition: opacity 0.18s ease-out;
           text-shadow: 0 1px 2px #000;
           box-shadow: 0 0 8px rgba(255, 170, 80, 0.25);
         }
-        .hud-interact-prompt.visible { opacity: 1; }
+        .hud-interact-label {
+          background: rgba(20, 14, 8, 0.72);
+          padding: 4px 10px;
+          border: 1px solid rgba(255, 170, 80, 0.35);
+          border-radius: 3px;
+          color: rgba(255, 230, 200, 0.92);
+          font-size: 13px;
+          letter-spacing: 0.02em;
+          text-shadow: 0 1px 2px #000;
+        }
+        .hud-interact-label:empty { display: none; }
       </style>
     `;
 
@@ -767,7 +787,9 @@ export class HUD {
     this.clockEl      = el.querySelector<HTMLElement>('#hud-clock')!;
     this.fpsEl        = el.querySelector<HTMLElement>('#hud-fps')!;
     this.harvestPromptEl = el.querySelector<HTMLElement>('#hud-interact-prompt')!;
-    this.harvestPromptEl.textContent = INTERACT_KEY_LABEL;
+    this.interactKeyEl   = el.querySelector<HTMLElement>('#hud-interact-key')!;
+    this.interactLabelEl = el.querySelector<HTMLElement>('#hud-interact-label')!;
+    this.interactKeyEl.textContent = INTERACT_KEY_LABEL;
     this.aetherFillEl    = el.querySelector<HTMLElement>('#hud-aether-fill')!;
     this.aetherValueEl   = el.querySelector<HTMLElement>('#hud-aether-value')!;
     this.aetherTierEl    = el.querySelector<HTMLElement>('#hud-aether-tier')!;
@@ -1116,10 +1138,28 @@ export class HUD {
   get perfMode(): boolean { return this._perfMode; }
 
   /** Show or hide the contextual harvest prompt above the vitals bar.
-   *  Driven from the app render loop based on proximity to a live node. */
+   *  Driven from the app render loop based on proximity to a live node.
+   *  Harvest is the no-label fallback — the key-cap renders alone. */
   setHarvestPromptVisible(visible: boolean): void {
-    if (!this.harvestPromptEl) return;
+    if (!this.harvestPromptEl || !this.interactLabelEl) return;
+    if (visible) this.interactLabelEl.textContent = '';
     this.harvestPromptEl.classList.toggle('visible', visible);
+  }
+
+  /** Show the [F] prompt with a descriptive label next to the key-cap
+   *  (e.g. "Enter Vault", "Hire Console"). Pass null label to hide.
+   *  Takes precedence over setHarvestPromptVisible — if both want to fire
+   *  in a single frame, the app loop calls this first and only falls back
+   *  to harvest when no interactable is in range. */
+  setInteractPrompt(label: string | null): void {
+    if (!this.harvestPromptEl || !this.interactLabelEl) return;
+    if (label === null) {
+      this.interactLabelEl.textContent = '';
+      this.harvestPromptEl.classList.remove('visible');
+      return;
+    }
+    this.interactLabelEl.textContent = label;
+    this.harvestPromptEl.classList.add('visible');
   }
 
   /** Update the Aether Density panel from the server's per-player push.

@@ -82,6 +82,10 @@ export class WASDController {
    *  Used by F-key as a fallback action when no interactable entity is
    *  nearby — keeps F as the universal "do the contextual thing" key. */
   private getHarvestableInRange: (() => boolean) | null = null;
+  /** Returns true if a lootable own-corpse is within 3 m. Higher priority
+   *  than harvest in the F-key fallback so /loot beats /harvest when both
+   *  are in range. */
+  private getLootableCorpseInRange: (() => boolean) | null = null;
   private partyToggle:          (() => void) | null = null;
   private abilitySlotCallback:  ((slotIndex: number) => void) | null = null;
   private marketToggle:         (() => void) | null = null;
@@ -106,6 +110,8 @@ export class WASDController {
 
   /** Wire the harvest-in-range probe so F-key can fall back to /harvest. */
   setHarvestableProbe(fn: () => boolean): void { this.getHarvestableInRange = fn; }
+  /** Wire the lootable-corpse probe so F-key can fall back to /loot. */
+  setLootableCorpseProbe(fn: () => boolean): void { this.getLootableCorpseInRange = fn; }
   setPartyToggle(fn: () => void):          void { this.partyToggle          = fn; }
   setAbilitySlotCallback(fn: (slotIndex: number) => void): void { this.abilitySlotCallback = fn; }
   setMarketToggle(fn: () => void):         void { this.marketToggle         = fn; }
@@ -514,9 +520,11 @@ export class WASDController {
     //   2. Harvestable glint within range → /harvest
     //   3. Promote current target → focus target
     if (key === 'f') {
-      const nearest = this._findNearestInteractable();
+      const nearest = this.findNearestInteractable();
       if (nearest) {
         this.socket.sendInteract(nearest.id, 'use');
+      } else if (this.getLootableCorpseInRange?.()) {
+        this.socket.sendCommand('/loot');
       } else if (this.getHarvestableInRange?.()) {
         this.socket.sendCommand('/harvest');
       } else {
@@ -684,17 +692,19 @@ export class WASDController {
   }
 
   /**
-   * Find the nearest interactable entity within F_INTERACT_RANGE of the
-   * player. Skips the player themselves and entities without a position.
-   * Used by the F-key proximity-interact path.
+   * Find the nearest F-keyable entity within F_INTERACT_RANGE of the
+   * player. Requires `interactionKind` — `interactive: true` alone is the
+   * click-target flag (every mob has it) and is NOT enough to light up
+   * the [F] prompt. Used by the F-key proximity-interact path AND the
+   * HUD prompt — both read the same scan so they stay in sync.
    */
-  private _findNearestInteractable(): { id: string } | null {
+  findNearestInteractable(): import('@/network/Protocol').Entity | null {
     const px = this.player.position.x;
     const pz = this.player.position.z;
-    let best: { id: string } | null = null;
+    let best: import('@/network/Protocol').Entity | null = null;
     let bestDistSq = Infinity;
     for (const e of this.entities.getAll()) {
-      if (!e.interactive) continue;
+      if (!e.interactionKind) continue;
       if (e.id === this.player.id) continue;
       if (!e.position) continue;
       const dx = e.position.x - px;
@@ -702,7 +712,7 @@ export class WASDController {
       const distSq = dx * dx + dz * dz;
       if (distSq > F_INTERACT_RANGE_SQ) continue;
       if (distSq < bestDistSq) {
-        best = { id: e.id };
+        best = e;
         bestDistSq = distSq;
       }
     }

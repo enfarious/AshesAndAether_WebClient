@@ -116,6 +116,22 @@ export class CorpseRenderer {
 
   get count(): number { return this.corpses.size; }
 
+  /** True if a corpse the local player can loot (their own) sits within
+   *  `radius` metres of (x, z). Drives the F-key /loot probe + HUD prompt;
+   *  mirrors `HarvestNodeManager.hasNodeWithin`'s shape. */
+  hasLootableCorpseWithin(x: number, z: number, radius: number): boolean {
+    const localId = this.getLocalCharacterId();
+    if (!localId) return false;
+    const r2 = radius * radius;
+    for (const inst of this.corpses.values()) {
+      if (inst.data.ownerCharacterId !== localId) continue;
+      const dx = inst.data.position.x - x;
+      const dz = inst.data.position.z - z;
+      if (dx * dx + dz * dz <= r2) return true;
+    }
+    return false;
+  }
+
   dispose(): void { this.clear(); }
 
   // ── Internals ──────────────────────────────────────────────────────────

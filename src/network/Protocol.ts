@@ -256,6 +256,14 @@ export interface Entity {
   isAlive?: boolean;
   health?: StatBar;
   interactive?: boolean;
+  /** Dispatch kind for the unified F-key interaction system. Set on
+   *  server-side static interactables (vault portals, hireling consoles,
+   *  training dummies). When present, the F-key prompt shows
+   *  `interactionPrompt`; absent on plain mobs / NPCs / players. */
+  interactionKind?: string;
+  /** Short label rendered next to the [F] key-cap when this entity is
+   *  the nearest in-range interactable. */
+  interactionPrompt?: string;
   hostile?: boolean;
   animation?: string;
   /** For characters: the current animation action. For plants: the growth stage name ('sprout', 'mature', 'flowering', etc.). */

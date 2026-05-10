@@ -96,6 +96,8 @@ export class SocketClient {
       'vault_room_enter', 'vault_mob_killed', 'vault_room_cleared',
       'vault_gate_opened', 'vault_complete', 'vault_failed', 'vault_player_left',
       'vault_staging_active', 'vault_staging_broken',
+      'open_hireling_panel',
+      'open_dummy_panel',
       'combat_error',
       'cast_start', 'cast_complete', 'cast_break',
       'channel_start', 'channel_tick', 'channel_complete', 'channel_break',

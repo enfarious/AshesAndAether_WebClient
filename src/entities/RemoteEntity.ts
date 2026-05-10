@@ -150,6 +150,10 @@ export class RemoteEntity extends EntityObject {
       // for entry and exit; the action UI distinguishes them.
       EntityObject._addVaultPortalToGroup(root);
       mesh = null as unknown as THREE.Mesh;
+    } else if (entity.tag === 'hireling_console') {
+      // Vault-entry obelisk — the thing players F to open the hireling panel.
+      EntityObject._addHirelingConsoleToGroup(root);
+      mesh = null as unknown as THREE.Mesh;
     } else if (type === 'player' || type === 'companion' || type === 'hireling') {
       mesh = EntityObject._capsuleMesh(EntityObject._entityColor(entity));
     } else if (type === 'wildlife') {

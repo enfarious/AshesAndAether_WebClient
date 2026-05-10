@@ -50,9 +50,18 @@ const STATE_LABELS: Record<string, string> = {
  * Visible whenever the player has a companion.
  * Data driven by player.onChange() → reads player.companion.
  */
+/** Newest-first action log capacity. Three are visible at any time; the
+ *  rest are reachable via the scrollbar. Older entries fall off the end. */
+const ACTION_LOG_CAP = 20;
+
 export class CompanionHUD {
   private root: HTMLElement;
   private cleanup: (() => void)[] = [];
+  /** Newest-first history of `lastAbility` stamps as they arrive. Grown by
+   *  `_render` when the companion payload carries a `lastAbility` with a
+   *  timestamp newer than the most recently logged one. */
+  private _actionLog: Array<{ name: string; t: number }> = [];
+  private _lastLoggedTs = 0;
 
   constructor(
     private readonly parent: HTMLElement,
@@ -134,23 +143,23 @@ export class CompanionHUD {
           text-shadow: 0 1px 2px #000;
         }
 
-        /* ── Last ability ── */
+        /* ── Action log (last N abilities, 3 visible + scroll) ── */
 
-        .chud-ability {
-          padding: 5px 10px 3px;
+        .chud-actions {
+          /* Fixed 3-line height — newer entries slide older ones off the
+           * bottom (overflow:hidden, no scrollbar — it's a glance-and-go
+           * diagnostic, not something to fiddle with mid-combat). 14px
+           * line-height × 3 + vertical padding = 50px. */
+          height: 50px;
+          padding: 4px 10px;
+          overflow: hidden;
+        }
+
+        .chud-action-row {
           display: flex;
-          align-items: center;
+          align-items: baseline;
           gap: 6px;
-        }
-
-        .chud-ability.chud-ability-hidden {
-          display: none;
-        }
-
-        .chud-ability-icon {
-          font-size: 11px;
-          color: rgba(200,145,60,0.7);
-          flex-shrink: 0;
+          line-height: 14px;
         }
 
         .chud-ability-name {
@@ -162,6 +171,12 @@ export class CompanionHUD {
           text-overflow: ellipsis;
           text-shadow: 0 1px 2px #000;
           flex: 1;
+        }
+
+        /* Newest entry is brighter — the rest dim slightly so the eye
+         * latches onto "what just happened" without the whole list shouting. */
+        .chud-action-row:first-child .chud-ability-name {
+          color: rgba(232,210,180,0.95);
         }
 
         .chud-ability-ago {
@@ -257,12 +272,9 @@ export class CompanionHUD {
           </div>
         </div>
 
-        <!-- Last ability used -->
-        <div class="chud-ability chud-ability-hidden" data-chud="ability-row">
-          <span class="chud-ability-icon">\u2726</span>
-          <span class="chud-ability-name" data-chud="ability-name"></span>
-          <span class="chud-ability-ago" data-chud="ability-ago"></span>
-        </div>
+        <!-- Action log \u2014 newest first, 3 visible, scrolls past that.
+             Fixed height so the HUD doesn't twitch on every new entry. -->
+        <div class="chud-actions" data-chud="action-list"></div>
 
         <div class="chud-llm chud-llm-hidden" data-chud="llm">Thinking...</div>
       </div>
@@ -291,19 +303,32 @@ export class CompanionHUD {
     // first-class row there. Keeping them here too made the HUD redundant
     // and crowded the more interesting fields (mode, BT, last ability).
 
-    // Last ability used
-    const abilityRow = this.root.querySelector('[data-chud="ability-row"]') as HTMLElement;
+    // Action log — append new entries when a newer `lastAbility` stamp
+    // arrives; the list itself has a fixed height + scroll so the HUD
+    // never resizes.
     const lastAbility = companion.lastAbility;
-    if (lastAbility) {
-      abilityRow.classList.remove('chud-ability-hidden');
-      const abilityNameEl = this.root.querySelector('[data-chud="ability-name"]') as HTMLElement;
-      const abilityAgoEl = this.root.querySelector('[data-chud="ability-ago"]') as HTMLElement;
-      abilityNameEl.textContent = lastAbility.abilityName;
+    if (lastAbility && lastAbility.timestamp > this._lastLoggedTs) {
+      this._lastLoggedTs = lastAbility.timestamp;
+      this._actionLog.unshift({ name: lastAbility.abilityName, t: lastAbility.timestamp });
+      if (this._actionLog.length > ACTION_LOG_CAP) this._actionLog.length = ACTION_LOG_CAP;
+    }
 
-      const ago = Math.floor((Date.now() - lastAbility.timestamp) / 1000);
-      abilityAgoEl.textContent = ago < 60 ? `${ago}s` : `${Math.floor(ago / 60)}m`;
-    } else {
-      abilityRow.classList.add('chud-ability-hidden');
+    const listEl = this.root.querySelector('[data-chud="action-list"]') as HTMLElement;
+    listEl.innerHTML = '';
+    for (const entry of this._actionLog) {
+      const ago    = Math.floor((Date.now() - entry.t) / 1000);
+      const agoStr = ago < 60 ? `${ago}s` : `${Math.floor(ago / 60)}m`;
+      const row = document.createElement('div');
+      row.className = 'chud-action-row';
+      const nameSpan = document.createElement('span');
+      nameSpan.className   = 'chud-ability-name';
+      nameSpan.textContent = entry.name;
+      const agoSpan = document.createElement('span');
+      agoSpan.className   = 'chud-ability-ago';
+      agoSpan.textContent = agoStr;
+      row.appendChild(nameSpan);
+      row.appendChild(agoSpan);
+      listEl.appendChild(row);
     }
 
     // Engagement mode

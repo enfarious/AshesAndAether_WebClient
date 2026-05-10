@@ -5,9 +5,9 @@ import type { HeightmapService } from '@/world/HeightmapService';
 import { chunkedFor }     from '@/world/yieldUtil';
 import type { Entity } from '@/network/Protocol';
 
-export const FOREST_SPECIES = new Set(['pine_tree', 'oak_tree', 'maple_tree']);
+export const FOREST_SPECIES = new Set(['pine_tree', 'oak_tree', 'maple_tree', 'apple_tree', 'pear_tree']);
 
-type Species = 'pine_tree' | 'oak_tree' | 'maple_tree';
+type Species = 'pine_tree' | 'oak_tree' | 'maple_tree' | 'apple_tree' | 'pear_tree';
 type VariantIndex = 0 | 1 | 2 | 3 | 4;
 type VariantKey = `${Species}:${VariantIndex}`;
 
@@ -82,6 +82,24 @@ export class ForestRenderer {
     }>,
     onProgress?: (done: number, total: number) => void,
   ): Promise<void> {
+    // Sanity check: warn loudly if the manifest contains species the client
+    // doesn't know how to render. The server's TREE_SPECIES (in WildlifeBridge)
+    // and the client's FOREST_SPECIES above must stay in sync — drift here
+    // means trees are sorted onto the static-landscape pipeline but silently
+    // dropped at render time, leaving invisible entities that harvest nodes
+    // can still anchor to. (Bug history: apple_tree + pear_tree, 2026-05-10.)
+    const unknown = new Set<string>();
+    for (const t of trees) {
+      if (!FOREST_SPECIES.has(t.species)) unknown.add(t.species);
+    }
+    if (unknown.size) {
+      console.warn(
+        '[ForestRenderer] Manifest contains species the client cannot render:',
+        Array.from(unknown),
+        '— add to FOREST_SPECIES + DECIDUOUS_SPECS or remove from server TREE_SPECIES.'
+      );
+    }
+
     // Chunked — large zones can ship 5 000+ trees and the per-tree cost
     // (heightmap sample + map insert) can pile up to a second-plus of
     // synchronous work without yielding. 500 trees per chunk lands well
@@ -368,7 +386,9 @@ type DeciduousSpec = {
   limbRatio?: number;   // limb sphere radius as fraction of crownR (default 0.30)
 };
 
-const DECIDUOUS_SPECS: Record<'oak_tree' | 'maple_tree', ReadonlyArray<DeciduousSpec>> = {
+type DeciduousSpecies = 'oak_tree' | 'maple_tree' | 'apple_tree' | 'pear_tree';
+
+const DECIDUOUS_SPECS: Record<DeciduousSpecies, ReadonlyArray<DeciduousSpec>> = {
   // Oaks: "1 2 1" silhouette — 1 crown sphere on top, 2 wide limbs in the middle,
   // trunk tapers to the ground. limbReach > crownR pushes limbs well past the crown.
   oak_tree: [
@@ -397,6 +417,35 @@ const DECIDUOUS_SPECS: Record<'oak_tree' | 'maple_tree', ReadonlyArray<Deciduous
     // 4: giant maple — massive spreading crown
     { trunkH: 11, crownR: 11.0, limbs: 4, limbReach: 10.5, limbYFrac: 0.55, limbRatio: 0.33 },
   ],
+  // Apple: short orchard tree — broad rounded crown, gnarled limbs at older variants.
+  // Reads as "wider than tall" silhouette; clearly distinct from oak (taller, leaner)
+  // and maple (much bigger overall).
+  apple_tree: [
+    // 0: young sapling
+    { trunkH: 5,  crownR: 4.0, limbs: 0 },
+    // 1: young orchard tree, two limbs
+    { trunkH: 6,  crownR: 5.0, limbs: 2, limbReach: 4.0, limbYFrac: 0.55, limbRatio: 0.36 },
+    // 2: mature orchard apple
+    { trunkH: 7,  crownR: 5.5, limbs: 3, limbReach: 4.5, limbYFrac: 0.52, limbRatio: 0.38 },
+    // 3: full mature, wider crown
+    { trunkH: 7,  crownR: 6.0, limbs: 3, limbReach: 5.5, limbYFrac: 0.50, limbRatio: 0.40 },
+    // 4: gnarled old apple — wide, twisted limbs
+    { trunkH: 8,  crownR: 6.5, limbs: 4, limbReach: 6.0, limbYFrac: 0.48, limbRatio: 0.42 },
+  ],
+  // Pear: tall, narrow, upright pyramidal silhouette — opposite of apple.
+  // Limb reach stays small relative to trunkH so the canopy stays slender.
+  pear_tree: [
+    // 0: young sapling
+    { trunkH: 7,  crownR: 3.0, limbs: 0 },
+    // 1: adolescent
+    { trunkH: 9,  crownR: 3.5, limbs: 2, limbReach: 2.5, limbYFrac: 0.65, limbRatio: 0.32 },
+    // 2: mature
+    { trunkH: 11, crownR: 4.0, limbs: 3, limbReach: 3.0, limbYFrac: 0.62, limbRatio: 0.30 },
+    // 3: large pyramidal
+    { trunkH: 12, crownR: 4.5, limbs: 3, limbReach: 3.5, limbYFrac: 0.60, limbRatio: 0.32 },
+    // 4: tall heritage pear
+    { trunkH: 13, crownR: 5.0, limbs: 4, limbReach: 4.0, limbYFrac: 0.58, limbRatio: 0.30 },
+  ],
 };
 
 // ── Geometry builders ─────────────────────────────────────────────────────────
@@ -419,7 +468,7 @@ function _buildPineGeos(variant: number): { bark: THREE.BufferGeometry; foliage:
   return { bark: barkGeo, foliage: _mergeGeos(foliageGeos) };
 }
 
-function _buildDeciduousGeos(species: 'oak_tree' | 'maple_tree', variant: number): { bark: THREE.BufferGeometry; foliage: THREE.BufferGeometry } {
+function _buildDeciduousGeos(species: DeciduousSpecies, variant: number): { bark: THREE.BufferGeometry; foliage: THREE.BufferGeometry } {
   const spec      = DECIDUOUS_SPECS[species][variant]!;
   const { trunkH, crownR, limbs } = spec;
   const reach      = spec.limbReach  ?? crownR * 0.50;
@@ -480,7 +529,13 @@ function _buildVariantMeshes(vk: VariantKey, count: number): VariantMeshes {
     const g = _buildDeciduousGeos(species, variant);
     barkGeo    = g.bark;
     foliageGeo = g.foliage;
-    foliageColor = species === 'maple_tree' ? 0x4a6828 : 0x3a6820;
+    // Foliage palette per species — picks a tint that reads distinct at a
+    // glance against the others without being garish. Future polish: add
+    // small fruit-coloured decals (red for apple, pale-yellow for pear).
+    foliageColor = species === 'maple_tree' ? 0x4a6828
+                 : species === 'apple_tree' ? 0x6a8838  // brighter, yellow-green
+                 : species === 'pear_tree'  ? 0x5e7a35  // greyish-green, slightly muted
+                 : 0x3a6820;                              // oak default
   }
 
   const barkMat    = new THREE.MeshStandardMaterial({ color: 0x5c3d1e, roughness: 0.92 });

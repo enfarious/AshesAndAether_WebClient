@@ -4,6 +4,7 @@ import type { PlayerState }    from '@/state/PlayerState';
 import type { EntityRegistry } from '@/state/EntityRegistry';
 import type { WorldState }     from '@/state/WorldState';
 import type { SocketClient }   from '@/network/SocketClient';
+import { ClientConfig }        from '@/config/ClientConfig';
 
 /**
  * WorldMapPanel — fullscreen Leaflet strategic map overlay.
@@ -311,7 +312,7 @@ export class WorldMapPanel {
 
   private async _fetchSnapshot(zoneId: string): Promise<void> {
     try {
-      const res = await fetch(`/api/map/snapshot/${encodeURIComponent(zoneId)}`);
+      const res = await fetch(`${ClientConfig.serverUrl}/api/map/snapshot/${encodeURIComponent(zoneId)}`);
       if (!res.ok) {
         // 404 = snapshot_not_ready (zone hasn't baked yet); other = real error.
         // Either way we just clear and retry next open.
@@ -451,7 +452,7 @@ export class WorldMapPanel {
     const zoneId = this.world.zone?.id;
     if (!zoneId) return;
     try {
-      const res = await fetch(`/world/water/${encodeURIComponent(zoneId)}`);
+      const res = await fetch(`${ClientConfig.serverUrl}/world/water/${encodeURIComponent(zoneId)}`);
       if (!res.ok) { this.waterPolyRings = []; this.waterLineRings = []; return; }
       const features = await res.json() as Array<{
         nodes?: Array<{ lat: number; lon: number }>;
@@ -485,7 +486,7 @@ export class WorldMapPanel {
     const zoneId = this.world.zone?.id;
     if (!zoneId) return;
     try {
-      const res = await fetch(`/world/osm/${encodeURIComponent(zoneId)}/forests.json`);
+      const res = await fetch(`${ClientConfig.serverUrl}/world/osm/${encodeURIComponent(zoneId)}/forests.json`);
       if (!res.ok) { this.forestRingsM = []; return; }
       const features = await res.json() as Array<{ points?: Array<[number, number]> }>;
       this.forestRingsM = features
@@ -682,7 +683,7 @@ export class WorldMapPanel {
         const cls = isParty ? 'wm-ally-dot wm-ally-party' : 'wm-ally-dot wm-ally-companion';
         const icon = L.divIcon({
           className: 'wm-anchor-icon',
-          html:      `<div class="${cls}" title="${escapeHtml(e.name)}"></div>`,
+          html:      `<div class="${cls}" title="${escapeHtml(e.name ?? '')}"></div>`,
           iconSize:  [10, 10],
           iconAnchor: [5, 5],
         });
@@ -734,7 +735,7 @@ export class WorldMapPanel {
 
   private async _fetchWorldZones(): Promise<void> {
     try {
-      const res = await fetch('/api/travel/zones');
+      const res = await fetch(`${ClientConfig.serverUrl}/api/travel/zones`);
       if (!res.ok) return;
       const data = await res.json() as ZoneRegistryResponse;
       const zones = data.zones ?? {};

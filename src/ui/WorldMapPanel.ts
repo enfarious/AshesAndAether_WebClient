@@ -225,13 +225,11 @@ export class WorldMapPanel {
     if (!this.map) this._initMap();
     else this.map!.invalidateSize();
 
-    // Fetch snapshot for the current zone (refetches if zone changed since
-    // last open, or if we never fetched).
-    const zoneId = this.world.zone?.id;
-    if (zoneId && zoneId !== this.fetchedZoneId) {
-      void this._fetchSnapshot(zoneId);
+    // If the player has changed zones since we last fetched, wipe per-zone
+    // caches and refetch. Otherwise just snap the viewport back to the player.
+    if (this._maybeReloadForZoneChange()) {
+      // refetch in flight — viewport will recenter when snapshot lands.
     } else if (this.snapshot) {
-      // Snap viewport back to the player on reopen.
       this._recenter();
     }
 
@@ -309,6 +307,25 @@ export class WorldMapPanel {
   }
 
   // ── Snapshot fetch + render ────────────────────────────────────────────────
+
+  /** If the player has changed zones since the last snapshot, wipe per-zone
+   *  caches and kick off a fresh fetch. Returns true if a reload was triggered
+   *  so callers can skip rendering work on this tick. Each renderer's own
+   *  clear-then-redraw runs inside _renderAll on the new snapshot, so the
+   *  stale leaflet overlays don't need explicit removal here. */
+  private _maybeReloadForZoneChange(): boolean {
+    const currentZoneId = this.world.zone?.id;
+    if (!currentZoneId || currentZoneId === this.fetchedZoneId) return false;
+    // Stamp the new id immediately so concurrent ticks don't pile-fetch.
+    this.fetchedZoneId  = currentZoneId;
+    this.snapshot       = null;
+    this.projector      = null;
+    this.waterPolyRings = null;
+    this.waterLineRings = null;
+    this.forestRingsM   = null;
+    void this._fetchSnapshot(currentZoneId);
+    return true;
+  }
 
   private async _fetchSnapshot(zoneId: string): Promise<void> {
     try {
@@ -903,7 +920,14 @@ export class WorldMapPanel {
   // ── Player follow tick ─────────────────────────────────────────────────────
 
   private _followTick(): void {
-    if (!this.map || !this.projector) return;
+    if (!this.map) return;
+
+    // Catch zone changes while the map is open — without this, the player
+    // would walk into a new zone and still see the old zone's terrain /
+    // beacons / overlays until they closed and reopened the panel.
+    if (this._maybeReloadForZoneChange()) return;
+
+    if (!this.projector) return;
 
     // Update marker position + heading
     if (this.playerMarker) {

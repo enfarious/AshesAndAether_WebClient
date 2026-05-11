@@ -765,10 +765,13 @@ export class MessageRouter {
       } else {
         // Surface non-fatal server errors in the chat log so the player sees them.
         this.world.pushMessage('system', payload.message);
-        // Travel failed mid-flight — TravelPanel optimistically pushed phase
-        // to loading_world; revert so the player isn't stuck on a loading
-        // screen forever.
-        if (payload.code === 'TRAVEL_FAILED' && this.session.phase === 'loading_world') {
+        // Travel was rejected mid-flight — TravelPanel optimistically pushed
+        // phase to loading_world; revert so the player isn't stuck on a
+        // loading screen forever waiting on the 10s fallback. Covers both
+        // hard failures (TRAVEL_FAILED) and soft refusals (BUILD_IN_PROGRESS
+        // when the player has another build still running).
+        const TRAVEL_REJECT_CODES = new Set(['TRAVEL_FAILED', 'BUILD_IN_PROGRESS']);
+        if (TRAVEL_REJECT_CODES.has(payload.code) && this.session.phase === 'loading_world') {
           this.session.setPhase('in_world');
         }
       }

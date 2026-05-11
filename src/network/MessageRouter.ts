@@ -459,12 +459,20 @@ export class MessageRouter {
 
     s.on('world_entry', (p) => {
       const payload = p as WorldEntryPayload;
+      // Defensive: skip duplicate world_entry for the same zone we're
+      // already in. If the server ever re-emits world_entry while in_world,
+      // re-running the loading→in_world dance would clear the entity
+      // registry and force a redundant _loadWorldAssets pass.
+      if (this.session.phase === 'in_world' && this.world.zone?.id === payload.zone.id) {
+        return;
+      }
       // Run the loading_world transition first so the loading screen shows
       // and the world-ready / assets-loaded gate flags reset, even on flows
       // where the server emits world_entry without a prior character_select
       // round-trip (guest auth, single-character auto-enter, character_create).
-      // Idempotent — no-op when SessionState.selectCharacter already moved
-      // us to loading_world for the user-pick path.
+      // Idempotent at the SessionState layer (same-value setPhase is a no-op)
+      // — but the loading_world → in_world transition still fires every time
+      // we arrive from a different phase, hence the duplicate-zone guard above.
       this.session.setPhase('loading_world');
       this.world.applyZone(payload.zone);
       this.player.applyWorldEntry(payload.character, payload.abilityManifest, payload.isGuest);

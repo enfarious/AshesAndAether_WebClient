@@ -197,8 +197,17 @@ export class App {
   private _lastLighting = '';
   private _hasEnteredZone = false;
 
-  /** True once we've wired the PlayerEntity to WASD + ClickMove controllers. */
-  private _playerEntityWired = false;
+  /** Reference tracking for PlayerEntity wiring. We hold the *reference* we
+   *  last applied for each dep — pe itself, heightmap, worldRoot, forest. On
+   *  every tick we compare current vs last-wired and re-apply on diff.
+   *  Booleans couldn't catch the case where the PlayerEntity reference was
+   *  swapped out under us (zone transfer + applyWorldEntry creates a fresh
+   *  PE) — the flag still said "wired" so wasd kept talking to the dead PE,
+   *  which is what caused WASD hitching after travel. */
+  private _wiredPe:              import('@/entities/PlayerEntity').PlayerEntity | null = null;
+  private _wiredHeightmap:       import('@/world/HeightmapService').HeightmapService | null = null;
+  private _wiredWorldRoot:       import('three').Group | null = null;
+  private _wiredForestRenderer:  ForestRenderer | null = null;
 
   /** Fallback timer that hides the loading screen if `world_ready` never
    *  arrives. Armed when phase enters `loading_world`, cleared on
@@ -769,25 +778,37 @@ export class App {
       if (fp) this._forestRenderer.update(fp.x, fp.z);
     }
 
-    // Wire PlayerEntity to controllers once it exists
-    if (!this._playerEntityWired) {
-      const pe = this.factory.getPlayerEntity();
-      if (pe) {
-        this.wasd.setPlayerEntity(pe);
-        this.gamepad.setPlayerEntity(pe);
-        this.clickMove.setPlayerEntity(pe);
-        // Pass physics data so the entity can do terrain following + wall collision.
-        if (this._heightmap) pe.setHeightmap(this._heightmap);
-        if (this.worldRoot) {
-          pe.setWorldRoot(this.worldRoot);
-          this.camera.setWorldRoot(this.worldRoot);
-        }
-        if (this._forestRenderer) {
-          const fr = this._forestRenderer;
-          pe.setTreeQuery((x, z, rSq) => fr.queryNearby(x, z, rSq));
-        }
-        this._playerEntityWired = true;
+    // Wire PlayerEntity + physics deps via reference tracking. We compare
+    // each current dep against the last-wired reference and re-apply on diff.
+    // When PE itself swaps (zone transfer recreates the entity), all dep
+    // tracking is invalidated since the new PE has none of our state.
+    const pe = this.factory.getPlayerEntity();
+    if (pe !== this._wiredPe) {
+      this.wasd.setPlayerEntity(pe);
+      this.gamepad.setPlayerEntity(pe);
+      this.clickMove.setPlayerEntity(pe);
+      this._wiredPe = pe;
+      // PE swap → new PE has no deps applied. Invalidate dep tracking so the
+      // checks below re-apply each one to the new PE.
+      this._wiredHeightmap      = null;
+      this._wiredWorldRoot      = null;
+      this._wiredForestRenderer = null;
+    }
+    if (pe && this._heightmap !== this._wiredHeightmap) {
+      pe.setHeightmap(this._heightmap);
+      this._wiredHeightmap = this._heightmap;
+    }
+    if (pe && this.worldRoot !== this._wiredWorldRoot) {
+      pe.setWorldRoot(this.worldRoot);
+      this.camera.setWorldRoot(this.worldRoot);
+      this._wiredWorldRoot = this.worldRoot;
+    }
+    if (pe && this._forestRenderer !== this._wiredForestRenderer) {
+      if (this._forestRenderer) {
+        const fr = this._forestRenderer;
+        pe.setTreeQuery((x, z, rSq) => fr.queryNearby(x, z, rSq));
       }
+      this._wiredForestRenderer = this._forestRenderer;
     }
 
     // Tick tendril / corpse effects
@@ -1028,8 +1049,11 @@ export class App {
         // before the curtain drops on the new zone.
         this._worldReadyReceived = false;
         this._assetsLoaded       = false;
-        // Reset entity wiring — new zone will spawn a new PlayerEntity
-        this._playerEntityWired = false;
+        // Halt input during the transition so any stray WASD presses on the
+        // loading screen don't send move messages tied to the about-to-be-
+        // -discarded PlayerEntity. The reference-tracking wiring above will
+        // re-attach controllers automatically once the new PE arrives (via
+        // applyWorldEntry) — no need to reset tracking fields here.
         this._heightmap = null;
         this.wasd.setPlayerEntity(null);
         this.gamepad.setPlayerEntity(null);

@@ -14,6 +14,7 @@ import { EntityFactory }      from '@/entities/EntityFactory';
 import { RemoteEntity }       from '@/entities/RemoteEntity';
 import { AutoAttackRing }     from '@/entities/AutoAttackRing';
 import { TelegraphRenderer } from '@/entities/TelegraphRenderer';
+import { NameplateManager } from '@/entities/NameplateManager';
 import { VaultStagingMarker } from '@/vault/VaultStagingMarker';
 import { OrbitCamera }        from '@/camera/OrbitCamera';
 import { CameraInput }        from '@/camera/CameraInput';
@@ -114,6 +115,7 @@ export class App {
   private factory: EntityFactory;
   private autoAttackRing: AutoAttackRing;
   private telegraphs:    TelegraphRenderer;
+  private nameplates:    NameplateManager;
   private stagingMarker: VaultStagingMarker;
   private corpses: CorpseSystem;
   private weather: WeatherEffects;
@@ -285,6 +287,12 @@ export class App {
     this.factory = new EntityFactory(this.scene.scene, this.entities, this.player);
     this.autoAttackRing = new AutoAttackRing(this.scene.scene, this.factory, this.player);
     this.telegraphs     = new TelegraphRenderer(this.scene.scene, this.router, this.factory, this.entities, this.player);
+    this.nameplates     = new NameplateManager(
+      this.entities,
+      this.player,
+      (id) => this.factory.getObject(id),
+      this.uiRoot,
+    );
     this.stagingMarker  = new VaultStagingMarker(this.scene.scene, this.router);
     this._forestRenderer = new ForestRenderer(this.scene.scene, this.entities);
     this.corpses = new CorpseSystem(this.scene.scene, this.entities);
@@ -940,10 +948,19 @@ export class App {
     // Tick water shader animation (wave displacement + fog sync)
     this.water?.update(dt, this.scene.getSunDirection());
 
+    // Nameplate per-frame: range fade + max-count cap. Must run after
+    // entity ticks (factory.update) so plate distances reflect this
+    // frame's positions. CSS2DRenderer.render() projects each plate's
+    // CSS2DObject to screen space via the same camera as the WebGL
+    // render below, so they line up exactly with their entity.
+    const _cam = this.camera.getCamera();
+    this.nameplates.update(_cam);
+
     // Time the render call. renderer.info auto-resets each frame, so the
     // counts below reflect just this render (including shadow passes).
     const _t0 = performance.now();
-    this.scene.render(this.camera.getCamera());
+    this.scene.render(_cam);
+    this.nameplates.css2d.render(this.scene.scene, _cam);
     const _frameMs = performance.now() - _t0;
 
     // Smooth the per-frame jitter with a light EMA (~0.1 weight).

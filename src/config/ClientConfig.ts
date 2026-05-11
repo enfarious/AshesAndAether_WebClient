@@ -76,6 +76,23 @@ const MIASMA_SUBDIV_TABLE: Record<MiasmaQuality, number> = {
 export type MiasmaRange = 'short' | 'med' | 'long' | 'far' | 'ultra';
 let _miasmaRange: MiasmaRange = 'long';
 
+// ── Nameplates ──────────────────────────────────────────────────────────────
+
+/** Self-plate verbosity. 'off' hides the local player's plate; 'name' shows
+ *  just the name; 'name_hp' adds an HP bar; 'full' adds buffs (future). */
+export type SelfPlateMode = 'off' | 'name' | 'name_hp' | 'full';
+let _nameplateSelfMode:     SelfPlateMode = 'name';
+let _nameplateShowMobs:     boolean = true;
+let _nameplateShowNpcs:     boolean = true;
+let _nameplateShowPlayers:  boolean = true;
+let _nameplateShowGuildTag: boolean = true;
+let _nameplateTargetShowHp: boolean = true;
+let _nameplateTargetShowCast: boolean = false;
+let _nameplateMaxRange:     number  = 60;     // metres — beyond, plates hide
+let _nameplateFadeStart:    number  = 35;     // metres — opacity drop begins
+let _nameplateMaxCount:     number  = 30;     // hard cap on concurrent plates
+let _nameplateScale:        number  = 1.0;    // size multiplier for fonts + HP bar
+
 /** Plane size in metres — controls how far the fog extends around the
  *  player. Combined with subdivisions, determines vertex spacing
  *  (planeSize / subdivisions). 'long' (1000m) is the default. */
@@ -196,4 +213,46 @@ export const ClientConfig = {
 
   /** Plane size (metres) for the current view-distance preset. */
   miasmaPlaneSize(): number { return MIASMA_RANGE_TABLE[_miasmaRange]; },
+
+  // ── Nameplates ─────────────────────────────────────────────────────────
+
+  get nameplateSelfMode(): SelfPlateMode { return _nameplateSelfMode; },
+  set nameplateSelfMode(v: SelfPlateMode) { _nameplateSelfMode = v; },
+
+  get nameplateShowMobs(): boolean { return _nameplateShowMobs; },
+  set nameplateShowMobs(v: boolean) { _nameplateShowMobs = v; },
+
+  get nameplateShowNpcs(): boolean { return _nameplateShowNpcs; },
+  set nameplateShowNpcs(v: boolean) { _nameplateShowNpcs = v; },
+
+  get nameplateShowPlayers(): boolean { return _nameplateShowPlayers; },
+  set nameplateShowPlayers(v: boolean) { _nameplateShowPlayers = v; },
+
+  get nameplateShowGuildTag(): boolean { return _nameplateShowGuildTag; },
+  set nameplateShowGuildTag(v: boolean) { _nameplateShowGuildTag = v; },
+
+  get nameplateTargetShowHp(): boolean { return _nameplateTargetShowHp; },
+  set nameplateTargetShowHp(v: boolean) { _nameplateTargetShowHp = v; },
+
+  get nameplateTargetShowCast(): boolean { return _nameplateTargetShowCast; },
+  set nameplateTargetShowCast(v: boolean) { _nameplateTargetShowCast = v; },
+
+  /** Hard cull distance — entities beyond this distance have no plate. */
+  get nameplateMaxRange(): number { return _nameplateMaxRange; },
+  set nameplateMaxRange(v: number) { _nameplateMaxRange = v; },
+
+  /** Distance at which plate opacity starts dropping toward zero at
+   *  `nameplateMaxRange`. Always ≤ nameplateMaxRange. */
+  get nameplateFadeStart(): number { return _nameplateFadeStart; },
+  set nameplateFadeStart(v: number) { _nameplateFadeStart = v; },
+
+  /** Max concurrent plates rendered (sorted by distance, tail hidden). */
+  get nameplateMaxCount(): number { return _nameplateMaxCount; },
+  set nameplateMaxCount(v: number) { _nameplateMaxCount = v; },
+
+  /** Plate size multiplier — scales name, tag, con arrows, and HP bar
+   *  uniformly via a CSS variable. 1.0 = default; 0.7 = compact;
+   *  1.8 = readable from across the room. */
+  get nameplateScale(): number { return _nameplateScale; },
+  set nameplateScale(v: number) { _nameplateScale = v; },
 };

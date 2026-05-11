@@ -298,6 +298,21 @@ export interface Entity {
    *  can render MP/Stamina bars without per-pet status events. */
   mana?:    StatBar;
   stamina?: StatBar;
+  /** Server-authoritative level (1..50). Used by NameplateManager to
+   *  compute the viewer-vs-target con tier (the 7-step ↓↓↓ … ↑↑↑ ladder).
+   *  Shipped on mobs and players. Persists through partial updates via
+   *  EntityRegistry's shallow-merge. */
+  level?: number;
+  /** Mob aggro disposition — 'hostile' | 'neutral' | 'friendly'. Drives
+   *  nameplate name color (red / yellow / white) and engagement rules
+   *  server-side. Set on MobEntity; undefined for non-mobs. */
+  disposition?: string;
+  /** Notorious Monster flag — when true, the nameplate shows "??" in
+   *  place of con arrows (level is unknown to the viewer). */
+  notorious?: boolean;
+  /** Guild tag (3-5 uppercase chars) for non-party player plates —
+   *  rendered as "[TAG] Name". Resolved server-side at zone-in. */
+  guildTag?: string;
 }
 
 export interface Exit {

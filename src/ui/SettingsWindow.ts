@@ -16,7 +16,7 @@
  *   - Chat history channel selection & lookback settings
  */
 
-import { ClientConfig } from '@/config/ClientConfig';
+import { ClientConfig, type SelfPlateMode } from '@/config/ClientConfig';
 import {
   loadSettings, saveSettings, getDefaultEndpoint, getDefaultModel,
   type CompanionLLMConfig, type LLMProvider, type CompanionFullSettings,
@@ -55,6 +55,18 @@ const KEY_TREE_RANGE   = 'aa_tree_visible_range';
 const KEY_BEACON_DETAIL = 'aa_beacon_detail';
 const KEY_MIASMA_QUALITY = 'aa_miasma_quality';
 const KEY_MIASMA_RANGE   = 'aa_miasma_range';
+// Nameplate keys
+const KEY_NP_SELF_MODE   = 'aa_np_self_mode';
+const KEY_NP_MOBS        = 'aa_np_mobs';
+const KEY_NP_NPCS        = 'aa_np_npcs';
+const KEY_NP_PLAYERS     = 'aa_np_players';
+const KEY_NP_GUILD_TAG   = 'aa_np_guild_tag';
+const KEY_NP_TGT_HP      = 'aa_np_target_hp';
+const KEY_NP_TGT_CAST    = 'aa_np_target_cast';
+const KEY_NP_MAX_RANGE   = 'aa_np_max_range';
+const KEY_NP_FADE_START  = 'aa_np_fade_start';
+const KEY_NP_MAX_COUNT   = 'aa_np_max_count';
+const KEY_NP_SCALE       = 'aa_np_scale';
 
 // ── Defaults ────────────────────────────────────────────────────────────────
 
@@ -82,15 +94,33 @@ function saveNum(key: string, v: number): void {
   localStorage.setItem(key, String(v));
 }
 
+function loadBool(key: string, def: boolean): boolean {
+  const raw = localStorage.getItem(key);
+  if (raw === null) return def;
+  return raw === '1' || raw === 'true';
+}
+
+function saveBool(key: string, v: boolean): void {
+  localStorage.setItem(key, v ? '1' : '0');
+}
+
 // ── Tabs ────────────────────────────────────────────────────────────────────
 
-type TabId = 'display' | 'camera' | 'audio' | 'companion';
+type TabId = 'display' | 'camera' | 'audio' | 'nameplates' | 'companion';
 
 const TABS: { id: TabId; label: string }[] = [
-  { id: 'display',   label: 'Display' },
-  { id: 'camera',    label: 'Camera' },
-  { id: 'audio',     label: 'Audio' },
-  { id: 'companion', label: 'Companion' },
+  { id: 'display',    label: 'Display' },
+  { id: 'camera',     label: 'Camera' },
+  { id: 'audio',      label: 'Audio' },
+  { id: 'nameplates', label: 'Nameplates' },
+  { id: 'companion',  label: 'Companion' },
+];
+
+const SELF_PLATE_OPTIONS: { value: SelfPlateMode; label: string }[] = [
+  { value: 'off',     label: 'Off' },
+  { value: 'name',    label: 'Name only' },
+  { value: 'name_hp', label: 'Name + HP' },
+  { value: 'full',    label: 'Full' },
 ];
 
 // ── Channel display names ─────────────────────────────────────────────────
@@ -202,6 +232,23 @@ export class SettingsWindow {
     ClientConfig.treeVisibleRange = Math.min(8000, Math.max(100, loadNum(KEY_TREE_RANGE, DEF_TREE_RANGE)));
 
     // Audio (localStorage only, no runtime effect yet)
+
+    // ── Nameplates ──
+    const selfMode = (localStorage.getItem(KEY_NP_SELF_MODE) ?? 'name') as SelfPlateMode;
+    if (SELF_PLATE_OPTIONS.some(o => o.value === selfMode)) {
+      ClientConfig.nameplateSelfMode = selfMode;
+    }
+    ClientConfig.nameplateShowMobs     = loadBool(KEY_NP_MOBS,      true);
+    ClientConfig.nameplateShowNpcs     = loadBool(KEY_NP_NPCS,      true);
+    ClientConfig.nameplateShowPlayers  = loadBool(KEY_NP_PLAYERS,   true);
+    ClientConfig.nameplateShowGuildTag = loadBool(KEY_NP_GUILD_TAG, true);
+    ClientConfig.nameplateTargetShowHp = loadBool(KEY_NP_TGT_HP,    true);
+    ClientConfig.nameplateTargetShowCast = loadBool(KEY_NP_TGT_CAST, false);
+    ClientConfig.nameplateMaxRange   = Math.min(200, Math.max(10,  loadNum(KEY_NP_MAX_RANGE,  60)));
+    ClientConfig.nameplateFadeStart  = Math.min(ClientConfig.nameplateMaxRange,
+                                         Math.max(5, loadNum(KEY_NP_FADE_START, 35)));
+    ClientConfig.nameplateMaxCount   = Math.min(150, Math.max(5,   loadNum(KEY_NP_MAX_COUNT, 30)));
+    ClientConfig.nameplateScale      = Math.min(2.5, Math.max(0.6, loadNum(KEY_NP_SCALE,     1.0)));
   }
 
   // ── Build DOM ───────────────────────────────────────────────────────────
@@ -252,6 +299,7 @@ export class SettingsWindow {
     this._buildDisplayPage(content);
     this._buildCameraPage(content);
     this._buildAudioPage(content);
+    this._buildNameplatesPage(content);
     this._buildCompanionPage(content);
     body.appendChild(content);
 
@@ -464,6 +512,117 @@ export class SettingsWindow {
       initial: loadNum(KEY_SFX_VOL, DEF_SFX_VOL),
       format: (v) => `${Math.round(v)}%`,
       onChange: (v) => { saveNum(KEY_SFX_VOL, v); },
+    }));
+
+    container.appendChild(page);
+  }
+
+  // ── Nameplates tab ──────────────────────────────────────────────────────
+
+  private _buildNameplatesPage(container: HTMLElement): void {
+    const page = this._makePage('nameplates');
+
+    page.appendChild(this._buildSectionLabel('Size'));
+    page.appendChild(this._buildSlider({
+      label: 'Plate Scale',
+      min: 0.6, max: 2.5, step: 0.05,
+      initial: ClientConfig.nameplateScale,
+      format: (v) => `${Math.round(v * 100)}%`,
+      onChange: (v) => {
+        saveNum(KEY_NP_SCALE, v);
+        ClientConfig.nameplateScale = v;
+      },
+    }));
+
+    page.appendChild(this._buildDivider());
+    page.appendChild(this._buildSectionLabel('Visibility'));
+
+    page.appendChild(this._buildSelect({
+      label: 'Self Plate',
+      options: SELF_PLATE_OPTIONS.map(o => ({ value: o.value, label: o.label })),
+      initial: ClientConfig.nameplateSelfMode,
+      onChange: (v) => {
+        const mode = v as SelfPlateMode;
+        localStorage.setItem(KEY_NP_SELF_MODE, mode);
+        ClientConfig.nameplateSelfMode = mode;
+      },
+    }));
+
+    page.appendChild(this._buildToggle({
+      label: 'Show Mob Plates',
+      initial: ClientConfig.nameplateShowMobs,
+      onChange: (v) => { saveBool(KEY_NP_MOBS, v); ClientConfig.nameplateShowMobs = v; },
+    }));
+    page.appendChild(this._buildToggle({
+      label: 'Show NPC Plates',
+      initial: ClientConfig.nameplateShowNpcs,
+      onChange: (v) => { saveBool(KEY_NP_NPCS, v); ClientConfig.nameplateShowNpcs = v; },
+    }));
+    page.appendChild(this._buildToggle({
+      label: 'Show Player Plates',
+      initial: ClientConfig.nameplateShowPlayers,
+      onChange: (v) => { saveBool(KEY_NP_PLAYERS, v); ClientConfig.nameplateShowPlayers = v; },
+    }));
+    page.appendChild(this._buildToggle({
+      label: 'Show Guild Tags',
+      sublabel: 'Non-party players show [TAG] before their name',
+      initial: ClientConfig.nameplateShowGuildTag,
+      onChange: (v) => { saveBool(KEY_NP_GUILD_TAG, v); ClientConfig.nameplateShowGuildTag = v; },
+    }));
+
+    page.appendChild(this._buildDivider());
+    page.appendChild(this._buildSectionLabel('Target'));
+
+    page.appendChild(this._buildToggle({
+      label: 'Show HP on Target Plate',
+      sublabel: 'Target frame still shows full HP details',
+      initial: ClientConfig.nameplateTargetShowHp,
+      onChange: (v) => { saveBool(KEY_NP_TGT_HP, v); ClientConfig.nameplateTargetShowHp = v; },
+    }));
+    page.appendChild(this._buildToggle({
+      label: 'Show Cast Bar on Target Plate',
+      sublabel: 'Duplicates the target frame’s cast bar — off by default',
+      initial: ClientConfig.nameplateTargetShowCast,
+      onChange: (v) => { saveBool(KEY_NP_TGT_CAST, v); ClientConfig.nameplateTargetShowCast = v; },
+    }));
+
+    page.appendChild(this._buildDivider());
+    page.appendChild(this._buildSectionLabel('Performance'));
+
+    page.appendChild(this._buildSlider({
+      label: 'Visible Range',
+      min: 10, max: 200, step: 5,
+      initial: ClientConfig.nameplateMaxRange,
+      format: (v) => `${v}m`,
+      onChange: (v) => {
+        saveNum(KEY_NP_MAX_RANGE, v);
+        ClientConfig.nameplateMaxRange = v;
+        if (ClientConfig.nameplateFadeStart > v) {
+          ClientConfig.nameplateFadeStart = v;
+          saveNum(KEY_NP_FADE_START, v);
+        }
+      },
+    }));
+    page.appendChild(this._buildSlider({
+      label: 'Fade Start',
+      min: 5, max: 200, step: 5,
+      initial: ClientConfig.nameplateFadeStart,
+      format: (v) => `${v}m`,
+      onChange: (v) => {
+        const clamped = Math.min(v, ClientConfig.nameplateMaxRange);
+        saveNum(KEY_NP_FADE_START, clamped);
+        ClientConfig.nameplateFadeStart = clamped;
+      },
+    }));
+    page.appendChild(this._buildSlider({
+      label: 'Max Plates',
+      min: 5, max: 150, step: 5,
+      initial: ClientConfig.nameplateMaxCount,
+      format: (v) => `${v}`,
+      onChange: (v) => {
+        saveNum(KEY_NP_MAX_COUNT, v);
+        ClientConfig.nameplateMaxCount = v;
+      },
     }));
 
     container.appendChild(page);

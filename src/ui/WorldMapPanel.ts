@@ -680,7 +680,11 @@ export class WorldMapPanel {
 
       let marker = this.allyMarkers.get(e.id);
       if (!marker) {
-        const cls = isParty ? 'wm-ally-dot wm-ally-party' : 'wm-ally-dot wm-ally-companion';
+        const cls = isParty
+          ? 'wm-ally-dot wm-ally-party'
+          : e.type === 'npc'
+            ? 'wm-ally-dot wm-ally-npc'
+            : 'wm-ally-dot wm-ally-companion';
         const icon = L.divIcon({
           className: 'wm-anchor-icon',
           html:      `<div class="${cls}" title="${escapeHtml(e.name ?? '')}"></div>`,
@@ -1197,6 +1201,7 @@ export class WorldMapPanel {
         }
         .wm-ally-party     { background: #5cb8ff; }
         .wm-ally-companion { background: #7ed957; }
+        .wm-ally-npc       { background: #e8b85e; }
 
         /* World-view zone markers (visible only when zoomed out). */
         .wm-world-zone {

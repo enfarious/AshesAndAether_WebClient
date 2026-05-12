@@ -1,5 +1,9 @@
 import * as THREE from 'three';
 import { Sky } from 'three/examples/jsm/objects/Sky.js';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass }     from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { OutputPass }     from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { MiasmaDistortionPass } from '@/world/MiasmaDistortionPass';
 import type { ZoneInfo } from '@/network/Protocol';
 
 /**
@@ -27,6 +31,13 @@ export class SceneManager {
 
   /** Atmospheric sky dome — procedurally tinted by sun direction each frame. */
   private sky:              Sky;
+
+  /** Post-process pipeline. Stood up at construction; render() routes
+   *  through this instead of bare renderer.render(). Stays cheap even
+   *  when MiasmaDistortionPass is in bypass mode (intensity = 0). */
+  private composer:        EffectComposer;
+  private renderPass:      RenderPass;
+  private miasmaPass:      MiasmaDistortionPass;
 
   /** Star field — visible only when the sun is below the horizon. */
   private stars:            THREE.Points;
@@ -183,6 +194,18 @@ export class SceneManager {
     this.stars.renderOrder   = 0;  // before sun/moon (renderOrder 1) so they sit "behind"
     this.scene.add(this.stars);
 
+    // Post-process pipeline. RenderPass output → MiasmaDistortionPass →
+    // OutputPass (handles tone mapping + sRGB encode that bare render did).
+    // The render() method updates renderPass.camera each call since the
+    // game uses different cameras (main vs. sky-view vs. perf-debug).
+    this.composer   = new EffectComposer(this.renderer);
+    this.composer.setSize(window.innerWidth, window.innerHeight);
+    this.renderPass = new RenderPass(this.scene, new THREE.PerspectiveCamera());
+    this.miasmaPass = new MiasmaDistortionPass();
+    this.composer.addPass(this.renderPass);
+    this.composer.addPass(this.miasmaPass);
+    this.composer.addPass(new OutputPass());
+
     window.addEventListener('resize', this._onResize);
   }
 
@@ -297,17 +320,30 @@ export class SceneManager {
     return this.directionalLight.position.clone().normalize();
   }
 
+  /** Push the latest miasma post-process state. Cheap to call every
+   *  frame; the pass short-circuits to passthrough when the player is
+   *  inside the playable ring. `zoneRadiusM` null/0 disables the effect
+   *  (vault zones, pre-load). */
+  tickPostProcess(dt: number, playerX: number, playerZ: number, zoneRadiusM: number | null): void {
+    this.miasmaPass.update(dt, playerX, playerZ, zoneRadiusM);
+  }
+
   render(camera: THREE.Camera): void {
-    this.renderer.render(this.scene, camera);
+    // RenderPass binds a camera at construction. Update to the live
+    // camera before each render so vault/sky-view/perf cameras all work.
+    this.renderPass.camera = camera;
+    this.composer.render();
   }
 
   dispose(): void {
     window.removeEventListener('resize', this._onResize);
+    this.composer.dispose();
     this.renderer.dispose();
   }
 
   private _onResize = (): void => {
     this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.composer.setSize(window.innerWidth, window.innerHeight);
   };
 
   // ── Sun orbit ────────────────────────────────────────────────────────────

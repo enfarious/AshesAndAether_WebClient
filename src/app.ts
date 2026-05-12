@@ -63,6 +63,7 @@ import { SkyHint }            from '@/ui/SkyHint';
 import { CorpseSystem }       from '@/entities/CorpseSystem';
 import { CorruptionMiasma }  from '@/entities/CorruptionMiasma';
 import { MiasmaGroundFog }   from '@/world/MiasmaGroundFog';
+import { MiasmaBoundaryWall } from '@/world/MiasmaBoundaryWall';
 import { WardBeaconManager } from '@/entities/WardBeacon';
 import { GuildBeaconManager, type GuildBeaconData } from '@/entities/GuildBeacon';
 import { DisposableBeaconManager, type DisposableBeaconData } from '@/entities/DisposableBeacon';
@@ -124,6 +125,7 @@ export class App {
   private _heightmap: import('@/world/HeightmapService').HeightmapService | null = null;
   private miasma:     CorruptionMiasma | null = null;
   private miasmaFog:  MiasmaGroundFog | null = null;
+  private miasmaWall: MiasmaBoundaryWall | null = null;
   private beacons:    WardBeaconManager | null = null;
   private guildBeacons: GuildBeaconManager | null = null;
   private disposableBeacons: DisposableBeaconManager | null = null;
@@ -448,6 +450,10 @@ export class App {
       if (payload.eventType !== 'aether_density') return;
       const data = payload.eventTypeData as { value?: number } | undefined;
       if (data && typeof data.value === 'number') {
+        // Centralize on WorldState so post-process / future consumers
+        // can read every frame without resubscribing. HUD also reads
+        // the latest value here for its tier bar.
+        this.world.setAetherDensity(data.value);
         this.hud?.setAetherDensity(data.value);
       }
     });
@@ -606,7 +612,7 @@ export class App {
     tryConnect();
     this.rafId = requestAnimationFrame(this._loop);
 
-    // F8 — toggle OSM forest polygon debug overlay
+    // F8 — toggle OSM forest polygon debug overlay (includes ground ring at zone radius)
     // F9 — toggle GPU perf overlay (draw calls, tris, shadow lights, frame ms)
     window.addEventListener('keydown', (e: KeyboardEvent) => {
       if (e.code === 'F8') this._forestDebug?.toggle();
@@ -626,6 +632,7 @@ export class App {
     this.camera.dispose();
     this.miasma?.dispose();
     this.miasmaFog?.dispose();
+    this.miasmaWall?.dispose();
     this.beacons?.dispose();
     this.guildBeacons?.dispose();
     this.disposableBeacons?.dispose();
@@ -917,6 +924,7 @@ export class App {
       this.miasmaFog.setGuildBeacons(guild);
       this.miasmaFog.update(dt, this.player.position.x, this.player.position.z);
     }
+    this.miasmaWall?.update(dt);
 
     // Harvest proximity check — drives the F-key probe AND the HUD prompt
     // off a single per-frame scan against the live node set. Cheap (XZ
@@ -955,6 +963,16 @@ export class App {
     // render below, so they line up exactly with their entity.
     const _cam = this.camera.getCamera();
     this.nameplates.update(_cam);
+
+    // Update post-process uniforms (time + player position + zone radius)
+    // before rendering. Trigger is position-based — distance from origin
+    // past zoneRadiusM. Cheap when inside the ring (passthrough branch).
+    this.scene.tickPostProcess(
+      dt,
+      this.player.position.x,
+      this.player.position.z,
+      this.world.zone?.zoneRadiusM ?? null,
+    );
 
     // Time the render call. renderer.info auto-resets each frame, so the
     // counts below reflect just this render (including shadow passes).
@@ -1103,6 +1121,8 @@ export class App {
           );
           this.miasmaFog.setVisible(false); // wait for heightmap + anchors
         }
+        // The boundary wall is per-zone (radius differs) so it's built
+        // inside _loadWorldAssets after the heightmap arrives, not here.
         // Create ward beacons above civic anchors
         if (!this.beacons) {
           this.beacons = new WardBeaconManager(this.scene.scene);
@@ -1894,6 +1914,16 @@ export class App {
       this.miasma?.loadForZone(zoneId);
       this.miasmaFog?.setHeightmap(heightmap);
       this.miasmaFog?.setVisible(true);
+      // Boundary wall — radius is per-zone, so rebuild when zone changes.
+      // Dispose any old wall (different zone or radius); skip rebuild for
+      // vault zones where the server sends a null radius.
+      this.miasmaWall?.dispose();
+      this.miasmaWall = null;
+      const wallRadius = this.world.zone?.zoneRadiusM ?? null;
+      if (wallRadius && wallRadius > 0) {
+        this.miasmaWall = new MiasmaBoundaryWall(this.scene.scene, wallRadius);
+        this.miasmaWall.setHeightmap(heightmap);
+      }
 
       this.loading.setStatus('Placing civic beacons…');
       await yieldToBrowser();

@@ -245,6 +245,10 @@ export interface ZoneInfo {
     /** Compass degrees 0–360 */
     direction: number;
   };
+  /** Playable-circle radius in metres for overworld zones — drives the
+   *  miasma boundary wall + post-process distortion. Null/absent for
+   *  vault zones (no overworld boundary applies). */
+  zoneRadiusM?: number | null;
 }
 
 export interface Entity {

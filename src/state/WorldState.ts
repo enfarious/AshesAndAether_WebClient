@@ -35,6 +35,10 @@ export class WorldState {
   private _dangerState = false;
   private _season: string   = 'summer';
   private _dayOfYear: number = 180;
+  /** Latest Aether Density 0..1 pushed by the server (clamped on the wire).
+   *  Updated at 1 Hz; defaults to 0 before the first event. Consumers
+   *  read freely from the render loop — no event subscription needed. */
+  private _aetherDensity = 0;
 
   // ── TOD ───────────────────────────────────────────────────────────────────
   // Server is fully authoritative. We anchor the latest (value, time-received)
@@ -62,6 +66,9 @@ export class WorldState {
   get zone():        ZoneInfo | null            { return this._zone; }
   get proximity():   ProximityRosterPayload | null { return this._proximity; }
   get dangerState(): boolean                    { return this._dangerState; }
+  /** Latest Aether Density (0..1) — last value the server pushed.
+   *  Read every frame by post-process / HUD; no subscription needed. */
+  get aetherDensity(): number                   { return this._aetherDensity; }
   get chatLog():     ChatEntry[]                { return this._chatLog; }
   /** Current season ('spring' | 'summer' | 'fall' | 'winter'). */
   get season():      string                     { return this._season; }
@@ -131,6 +138,13 @@ export class WorldState {
     this._proximity    = payload;
     this._dangerState  = payload.dangerState;
     this._notifyProximity();
+  }
+
+  /** Apply a fresh AD value from the server's 1 Hz push. Clamps to 0..1
+   *  defensively even though the server already clamps on send. */
+  setAetherDensity(value: number): void {
+    if (!Number.isFinite(value)) return;
+    this._aetherDensity = Math.max(0, Math.min(1, value));
   }
 
   applyProximityDelta(delta: ProximityRosterDeltaPayload): void {
@@ -246,6 +260,7 @@ export class WorldState {
     this._zone       = null;
     this._proximity  = null;
     this._dangerState = false;
+    this._aetherDensity = 0;
     this._chatLog    = [];
     this._notifyZone();
     this._notifyProximity();

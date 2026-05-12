@@ -13,7 +13,7 @@ export class ForestDebugRenderer {
   private _heightmap: HeightmapService | null;
   private readonly _meshes: THREE.Mesh[] = [];
   private readonly _lines: THREE.LineSegments[] = [];
-  private _visible = true;
+  private _visible = false;
   /** Zone state stashed at loadForZone time so toggle() can lazy-load
    *  polygon meshes on first F8 press without re-fetching the registry. */
   private _zoneId: string | null = null;
@@ -246,6 +246,7 @@ export class ForestDebugRenderer {
     geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
     const ring = new THREE.LineSegments(geo, this._ringMat);
     ring.renderOrder = 3;
+    ring.visible     = this._visible;
     this._scene.add(ring);
     this._lines.push(ring);
   }

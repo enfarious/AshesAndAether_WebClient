@@ -276,6 +276,11 @@ export interface Entity {
   movementDuration?: number;
   movementSpeed?: number;
   heading?: number;
+  /** True while a player or companion is mid-caravan-ride. Server toggles
+   *  on ride start / end and includes in every per-tick movement update
+   *  so the client can render a cart mesh under the entity for the
+   *  ride's duration. */
+  caravanActive?: boolean;
   /** GLB asset path for 3D model (e.g. "dungeon/Dungeon_Entrance_01.glb"). */
   modelAsset?: string;
   /** Uniform scale multiplier for the GLB model (default 1). */
@@ -418,6 +423,30 @@ export interface EventPayload {
   sound?: string;
   eventTypeData?: Record<string, unknown>;
   [key: string]: unknown;
+}
+
+/** Carried in EventPayload.eventTypeData for `caravan_ride_started`. The
+ *  client drives caravan motion locally from this single broadcast —
+ *  per-tick position updates are suppressed during the ride for both
+ *  rider and party (server still simulates server-side for boundary
+ *  damage / arrival). Path is in world XZ metres; speed in m/s; hover
+ *  is the cart's Y-offset above terrain. */
+export interface CaravanRideStartedData {
+  riderId:       string;
+  startPosition: { x: number; y: number; z: number };
+  path:          { x: number; z: number }[];
+  speedMPS:      number;
+  hoverM:        number;
+  partyOffsets:  { entityId: string; offsetX: number; offsetZ: number }[];
+  heading:       number;
+}
+
+/** Carried in `caravan_ride_ended`. Final authoritative position lets
+ *  the client snap if its prediction drifted; reason is informational. */
+export interface CaravanRideEndedData {
+  riderId:       string;
+  reason:        'arrived' | 'dismount' | 'died' | 'left_zone' | string;
+  finalPosition: { x: number; y: number; z: number };
 }
 
 /** Combat outcome shape carried inside EventPayload.eventTypeData for combat_hit/combat_miss. */

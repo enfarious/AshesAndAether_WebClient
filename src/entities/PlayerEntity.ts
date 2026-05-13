@@ -715,6 +715,11 @@ export class PlayerEntity extends EntityObject {
 
       case PlayerMoveMode.IDLE:
       default: {
+        // Caravan ride: CaravanRide manager drives our position locally
+        // each frame from the server's ride_started event. Yield — any
+        // writes here would race with that authoritative path tick.
+        if (this._caravanRiding) break;
+
         // Click-launch kick: walk locally toward the click target at walk
         // speed until the server's first response arrives (handled in
         // _bufferServerPosition by anchoring prev to the rendered position).
@@ -745,6 +750,9 @@ export class PlayerEntity extends EntityObject {
 
         let x = this._serverPos.x;
         let z = this._serverPos.z;
+        // Y default: server's value (latest snapshot). Overridden below
+        // for caravan (lerp between snapshots) or terrain (default).
+        let yBlend = this._serverPos.y;
 
         if (this._prevServerTime > 0 && this._serverPosTime > this._prevServerTime) {
           const span = this._serverPosTime - this._prevServerTime;
@@ -752,17 +760,27 @@ export class PlayerEntity extends EntityObject {
           if (t <= 0) {
             x = this._prevServerPos.x;
             z = this._prevServerPos.z;
+            yBlend = this._prevServerPos.y;
           } else if (t < 1) {
             x = this._prevServerPos.x + (this._serverPos.x - this._prevServerPos.x) * t;
             z = this._prevServerPos.z + (this._serverPos.z - this._prevServerPos.z) * t;
+            yBlend = this._prevServerPos.y + (this._serverPos.y - this._prevServerPos.y) * t;
           }
-          // t >= 1: fall through to the latest server pos already in x/z
+          // t >= 1: fall through to the latest server pos already in x/z + yBlend
         }
 
-        // Y from terrain at the rendered XZ — never lerped against server Y
-        // (which is the stale spawn value) so we always sit on the ground.
-        const elevI = this._getGroundHeight(x, z);
-        const y = elevI !== null ? elevI : this._serverPos.y;
+        // Y normally comes from terrain at the rendered XZ — never lerped
+        // against server Y (which is the stale spawn value) so we sit on
+        // the ground. EXCEPT when riding a caravan, where the server's Y
+        // is authoritative (includes the cart hover offset) — use the
+        // lerped server Y so the rider hovers + transitions smoothly.
+        let y: number;
+        if (this._caravanRiding) {
+          y = yBlend;
+        } else {
+          const elevI = this._getGroundHeight(x, z);
+          y = elevI !== null ? elevI : this._serverPos.y;
+        }
 
         this.object3d.position.set(x, y, z);
         break;
@@ -781,6 +799,32 @@ export class PlayerEntity extends EntityObject {
     _from?: THREE.Vector3,
   ): void {
     this._bufferServerPosition(position, heading);
+  }
+
+  /**
+   * Apply non-position entity attribute updates. Today: caravan cart
+   * toggle. Mirrors RemoteEntity.applyUpdate for the local player so
+   * the rider sees their own cart appear/disappear.
+   */
+  override applyUpdate(partial: Partial<import('@/network/Protocol').Entity>): void {
+    if (partial.caravanActive !== undefined) {
+      this._caravanRiding = partial.caravanActive === true;
+      this._setCaravanCartVisible(this._caravanRiding);
+    }
+  }
+
+  /** True while the local player is mid-caravan-ride. Read by
+   *  _bufferServerPosition to skip the terrain-Y override so the cart
+   *  visibly hovers at the server's lifted Y. */
+  private _caravanRiding = false;
+  private _caravanCart: THREE.Group | null = null;
+  private _setCaravanCartVisible(visible: boolean): void {
+    if (!this._caravanCart) {
+      if (!visible) return;
+      this._caravanCart = EntityObject._buildCaravanCart();
+      this.object3d.add(this._caravanCart);
+    }
+    this._caravanCart.visible = visible;
   }
 
   /** Predicted position used for camera follow (pre-reconciliation). */
@@ -1002,8 +1046,12 @@ export class PlayerEntity extends EntityObject {
 
     // Roll the snapshot buffer: current → previous, new → current.
     // Replace Y with terrain height so the interp target sits on the ground,
-    // not at the server's stale spawn Y.
-    const terrainY = this._getGroundHeight(position.x, position.z);
+    // not at the server's stale spawn Y — EXCEPT when riding a caravan, in
+    // which case the server's Y already includes the cart's hover offset
+    // and we must keep it (otherwise the cart sits on the ground).
+    const terrainY = this._caravanRiding
+      ? position.y
+      : this._getGroundHeight(position.x, position.z);
 
     // Handoff: if we were kicking (or have been idle) the historical
     // _serverPos is stale and would cause a snap. Anchor prev to the current

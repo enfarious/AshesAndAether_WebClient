@@ -260,6 +260,90 @@ export abstract class EntityObject {
   }
 
   /**
+   * Placeholder caravan cart mesh — attached under a rider during a
+   * caravan ride. Phase C placeholder shape; Phase D replaces with
+   * proper vehicle geometry + animated wheels. A short flat deck +
+   * two wheel discs read as "vehicle" from any angle.
+   *
+   * Returned as a Group so the caller can dispose it cleanly (toggling
+   * visibility on a Group skips child rendering — no per-frame cost
+   * when off).
+   */
+  static _buildCaravanCart(): THREE.Group {
+    const cart = new THREE.Group();
+    cart.name = 'caravan_cart';
+
+    // Deck plank under the rider — wide enough that the player + party
+    // formation reads as "all on the same vehicle."
+    const deckGeo = new THREE.BoxGeometry(4.2, 0.18, 6.0);
+    const deckMat = new THREE.MeshStandardMaterial({ color: 0x3a2818, roughness: 0.85, metalness: 0.05 });
+    const deck = new THREE.Mesh(deckGeo, deckMat);
+    deck.position.y = -0.15;
+    deck.castShadow = true;
+    deck.receiveShadow = true;
+    cart.add(deck);
+
+    // Wheel discs — flat side-rendered cylinders so they read at any angle.
+    const wheelGeo = new THREE.CylinderGeometry(0.55, 0.55, 0.18, 16);
+    wheelGeo.rotateZ(Math.PI / 2);
+    const wheelMat = new THREE.MeshStandardMaterial({ color: 0x1a1410, roughness: 0.7, metalness: 0.25 });
+    const offsets: Array<[number, number]> = [
+      [-2.1, -2.4], [2.1, -2.4], [-2.1, 2.4], [2.1, 2.4],
+    ];
+    for (const [wx, wz] of offsets) {
+      const w = new THREE.Mesh(wheelGeo, wheelMat);
+      w.position.set(wx, -0.5, wz);
+      w.castShadow = true;
+      cart.add(w);
+    }
+
+    return cart;
+  }
+
+  /**
+   * Caravan terminal — boarding kiosk placed south of each civic / guild
+   * beacon. Visual: a low circular pad ("stand here"), a wooden signpost
+   * pole, and an emissive cyan sign so it reads as travel-tier
+   * infrastructure (vs. the hireling console's warm-amber obelisk).
+   * Placeholder geometry until art lands.
+   */
+  static _addCaravanTerminalToGroup(group: THREE.Group): void {
+    // Boarding pad
+    const padGeo = new THREE.CylinderGeometry(1.8, 1.9, 0.18, 24);
+    const padMat = new THREE.MeshStandardMaterial({ color: 0x3a352e, roughness: 0.88 });
+    const pad = new THREE.Mesh(padGeo, padMat);
+    pad.position.y = 0.09;
+    pad.receiveShadow = true;
+    group.add(pad);
+
+    // Signpost pole
+    const poleGeo = new THREE.CylinderGeometry(0.08, 0.08, 2.6, 8);
+    const poleMat = new THREE.MeshStandardMaterial({ color: 0x2c2620, roughness: 0.78 });
+    const pole = new THREE.Mesh(poleGeo, poleMat);
+    pole.position.set(1.3, 1.48, 0);
+    pole.castShadow = true;
+    group.add(pole);
+
+    // Sign — emissive cyan panel, facing south
+    const signGeo = new THREE.BoxGeometry(1.25, 0.55, 0.08);
+    const signMat = new THREE.MeshStandardMaterial({
+      color:             0x1a2a3a,
+      emissive:          0x55a8d8,
+      emissiveIntensity: 1.3,
+      roughness:         0.45,
+      metalness:         0.55,
+    });
+    const sign = new THREE.Mesh(signGeo, signMat);
+    sign.position.set(0.95, 2.45, 0);
+    group.add(sign);
+
+    // Soft cyan light so the terminal reads at distance + dusk.
+    const light = new THREE.PointLight(0x55a8d8, 0.7, 7, 1.5);
+    light.position.set(0.95, 2.45, 0);
+    group.add(light);
+  }
+
+  /**
    * Add procedural tree geometry to a group.  Two variants:
    *   pine  — brown cone trunk + stacked green cone foliage layers
    *   decid — brown cylinder trunk + green sphere crown

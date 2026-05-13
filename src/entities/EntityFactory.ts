@@ -216,8 +216,12 @@ export class EntityFactory {
     if (entity.position) {
       const isLocalPlayer = entity.id === this.registry.playerId;
       let y = entity.position.y;
-      // Snap non-player entities to client terrain elevation
-      if (!isLocalPlayer && this.heightmap) {
+      // Snap non-player entities to client terrain elevation — UNLESS the
+      // server flags the entity as mid-caravan-ride, in which case the
+      // server-sent Y already includes the cart's hover offset and we
+      // shouldn't clobber it with terrain.
+      const caravanRiding = entity.caravanActive === true;
+      if (!isLocalPlayer && !caravanRiding && this.heightmap) {
         const elev = this.heightmap.getElevation(entity.position.x, entity.position.z);
         if (elev !== null) y = elev + EntityFactory.GROUND_CLEARANCE;
       }
@@ -227,7 +231,14 @@ export class EntityFactory {
       const from = entity.fromPosition
         ? new THREE.Vector3(entity.fromPosition.x, y, entity.fromPosition.z)
         : undefined;
-      obj.setTargetPosition(pos, entity.heading, entity.movementDuration, from, entity.movementSpeed);
+      // Caravan-active AI broadcasts every server tick (100ms) at a fast
+      // 30 m/s — each broadcast moves the entity ~3m. Match the lerp
+      // duration to the broadcast cadence so the lerp finishes exactly
+      // as the next snapshot arrives; longer lerps lag visibly when the
+      // path turns and the entity hooks toward the new heading.
+      const durOverride = entity.movementDuration
+        ?? (caravanRiding ? 100 : undefined);
+      obj.setTargetPosition(pos, entity.heading, durOverride, from, entity.movementSpeed);
     }
 
     // Allow entity objects to react to non-position attribute changes

@@ -53,6 +53,7 @@ import { AIDebugWindow }      from '@/ui/AIDebugWindow';
 import { BuildPanel }         from '@/ui/BuildPanel';
 import { RegistrationModal }  from '@/ui/RegistrationModal';
 import { HirelingPanel }      from '@/ui/HirelingPanel';
+import { CaravanPanel }       from '@/ui/CaravanPanel';
 import { DummyPanel }         from '@/ui/DummyPanel';
 import { TravelPanel }        from '@/ui/TravelPanel';
 import { CommandHelpPanel }   from '@/ui/CommandHelpPanel';
@@ -64,6 +65,7 @@ import { CorpseSystem }       from '@/entities/CorpseSystem';
 import { CorruptionMiasma }  from '@/entities/CorruptionMiasma';
 import { MiasmaGroundFog }   from '@/world/MiasmaGroundFog';
 import { MiasmaBoundaryWall } from '@/world/MiasmaBoundaryWall';
+import { CaravanRide }        from '@/world/CaravanRide';
 import { WardBeaconManager } from '@/entities/WardBeacon';
 import { GuildBeaconManager, type GuildBeaconData } from '@/entities/GuildBeacon';
 import { DisposableBeaconManager, type DisposableBeaconData } from '@/entities/DisposableBeacon';
@@ -126,6 +128,7 @@ export class App {
   private miasma:     CorruptionMiasma | null = null;
   private miasmaFog:  MiasmaGroundFog | null = null;
   private miasmaWall: MiasmaBoundaryWall | null = null;
+  private caravanRide: CaravanRide | null = null;
   private beacons:    WardBeaconManager | null = null;
   private guildBeacons: GuildBeaconManager | null = null;
   private disposableBeacons: DisposableBeaconManager | null = null;
@@ -178,6 +181,7 @@ export class App {
   private registrationModal: RegistrationModal  | null = null;
   private hirelingPanel:     HirelingPanel      | null = null;
   private dummyPanel:        DummyPanel         | null = null;
+  private caravanPanel:      CaravanPanel       | null = null;
   private worldMapPanel:     WorldMapPanel      | null = null;
   private travelPanel:       TravelPanel        | null = null;
   private commandHelpPanel:  CommandHelpPanel   | null = null;
@@ -925,6 +929,13 @@ export class App {
       this.miasmaFog.update(dt, this.player.position.x, this.player.position.z);
     }
     this.miasmaWall?.update(dt);
+    // Caravan ride visuals — drives rider + party positions locally
+    // along the server-broadcast path. Runs LAST so it overwrites any
+    // residual position the entity classes might have set during their
+    // own update() (rider's PlayerEntity IDLE-interp, companion's
+    // RemoteEntity interp). Stays safe to call when no rides are
+    // active (cheap iteration over empty map).
+    this.caravanRide?.tick(dt);
 
     // Harvest proximity check — drives the F-key probe AND the HUD prompt
     // off a single per-frame scan against the live node set. Cheap (XZ
@@ -1463,6 +1474,25 @@ export class App {
       // to combat outcomes (filtered to the inspected dummy) and renders
       // rolling 30s DPS + hit/miss/crit/glance/pen/deflect counters.
       this.dummyPanel = new DummyPanel(this.uiRoot, this.socket, this.router);
+    }
+    if (!this.caravanPanel) {
+      // Modal that opens on `open_caravan_panel` (F-key on a caravan
+      // terminal). Rows fire `/caravan <terminalId>` on Hail.
+      this.caravanPanel = new CaravanPanel(this.uiRoot, this.socket);
+    }
+    if (!this.caravanRide) {
+      // Client-side caravan motion driver. Server emits a single
+      // `caravan_ride_started` event with the path + party; this class
+      // drives the rider + party visuals locally each frame using the
+      // same math the server runs internally. No per-tick position
+      // broadcasts during the ride — eliminates wire-induced jitter.
+      this.caravanRide = new CaravanRide(
+        this.factory,
+        () => this.player.id || null,
+        () => this._heightmap,
+        this.socket,
+      );
+      this.caravanRide.bind(this.world);
     }
     if (!this.abilityWindow) {
       this.abilityWindow = new AbilityWindow(this.uiRoot, this.player, this.socket, this.router);

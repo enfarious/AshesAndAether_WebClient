@@ -154,6 +154,11 @@ export class RemoteEntity extends EntityObject {
       // Vault-entry obelisk — the thing players F to open the hireling panel.
       EntityObject._addHirelingConsoleToGroup(root);
       mesh = null as unknown as THREE.Mesh;
+    } else if (entity.tag === 'caravan_terminal') {
+      // Boarding kiosk at each civic / guild beacon — F opens the
+      // destination panel for in-zone fast travel.
+      EntityObject._addCaravanTerminalToGroup(root);
+      mesh = null as unknown as THREE.Mesh;
     } else if (type === 'player' || type === 'companion' || type === 'hireling') {
       mesh = EntityObject._capsuleMesh(EntityObject._entityColor(entity));
     } else if (type === 'wildlife') {
@@ -255,6 +260,11 @@ export class RemoteEntity extends EntityObject {
   }
 
   override update(dt: number): void {
+    // Caravan ride: CaravanRide manager drives this entity's position +
+    // rotation locally each frame. Yield to it — any interp / extrap
+    // writes here would race the manager's authoritative path tick.
+    if (this._caravanRiding) return;
+
     // Two motion sources compete each frame:
     //   - interp (smooth-correction lerp toward latest authoritative position)
     //   - extrapolation (dead-reckon along last-known velocity)
@@ -307,11 +317,23 @@ export class RemoteEntity extends EntityObject {
   override setTargetPosition(
     position:        THREE.Vector3,
     heading?:        number,
-    durationMs    = 100,
+    durationMs?:     number,
     from?:           THREE.Vector3,
     movementSpeed?: number,
   ): void {
-    const snapped = !this.interp.setTarget(this.object3d.position, position, durationMs, from);
+    // Snapshot-interp duration. Players use a short lerp (100ms) and
+    // extrapolate past it for steady WASD where the server suppresses
+    // redundant ticks. AI entities (companions, hirelings, mobs, wildlife)
+    // lerp over ~1.5 server ticks AND skip extrapolation entirely — server
+    // is the only source of truth for them, and predicting forward past
+    // the last snapshot just produces visible snap-back when the BT
+    // changes the entity's heading or stops it. 150ms is close to the
+    // local player's RENDER_DELAY_MS=130 so the party stays in sync
+    // during caravan rides instead of drifting relative to the rider.
+    const isAi = this._entityType !== 'player';
+    const interpMs = durationMs ?? (isAi ? 150 : 100);
+
+    const snapped = !this.interp.setTarget(this.object3d.position, position, interpMs, from);
     if (snapped) {
       this.object3d.position.copy(position);
     }
@@ -324,12 +346,18 @@ export class RemoteEntity extends EntityObject {
       this._targetHeading = targetRad;
     }
 
-    // Refresh dead-reckoning velocity from the authoritative heading + speed.
-    // Server convention: heading 0° = +Z (south), increases clockwise. World
-    // direction is (sin H, cos H). Speed of 0 (or undefined) clears velocity
-    // so a stopped entity stays put between broadcasts.
     this._lastServerUpdateMs = performance.now();
-    if (movementSpeed !== undefined && movementSpeed > 0 && heading !== undefined) {
+    if (isAi) {
+      // No extrapolation for AI — let the lerp do all the smoothing. The
+      // server broadcasts every move with a non-zero speed, so a stationary
+      // entity just sees no update and holds. Predicting past the snapshot
+      // is what produces the jerks user reported.
+      this._velX = 0;
+      this._velZ = 0;
+    } else if (movementSpeed !== undefined && movementSpeed > 0 && heading !== undefined) {
+      // Remote players: keep dead-reckoning for the server's WASD-suppression
+      // window. Server convention: heading 0° = +Z (south), increases
+      // clockwise. World direction is (sin H, cos H).
       const headingRad = THREE.MathUtils.degToRad(heading);
       this._velX = Math.sin(headingRad) * movementSpeed;
       this._velZ = Math.cos(headingRad) * movementSpeed;
@@ -348,9 +376,17 @@ export class RemoteEntity extends EntityObject {
 
   /**
    * React to entity attribute changes beyond position/heading.
-   * Plants update their scale and colour when the growth stage changes.
+   * Plants update their scale and colour when the growth stage changes;
+   * players + companions toggle a placeholder cart mesh when riding a
+   * caravan.
    */
   override applyUpdate(partial: Partial<Entity>): void {
+    // Caravan cart toggle — applies to player + companion entities.
+    if (partial.caravanActive !== undefined) {
+      this._caravanRiding = partial.caravanActive === true;
+      this._setCaravanCartVisible(this._caravanRiding);
+    }
+
     if (this._entityType !== 'plant') return;
     if (!partial.currentAction) return;
 
@@ -370,4 +406,25 @@ export class RemoteEntity extends EntityObject {
       this._plantMeshRef.position.y = (0.70 * s) / 2;
     }
   }
+
+  /** Lazily attach a placeholder cart mesh beneath this entity and
+   *  toggle its visibility. Only player entities render a cart — when
+   *  the lead rider has companions/hirelings as passengers, the server
+   *  flags ALL of them with caravanActive (so the Y-snap skip works for
+   *  the party), but we restrict cart rendering to type === 'player' so
+   *  we don't stack a cart per passenger. */
+  private _setCaravanCartVisible(visible: boolean): void {
+    if (this._entityType !== 'player') return;
+    if (!this._caravanCart) {
+      if (!visible) return; // never showed → nothing to hide
+      this._caravanCart = EntityObject._buildCaravanCart();
+      this.object3d.add(this._caravanCart);
+    }
+    this._caravanCart.visible = visible;
+  }
+
+  private _caravanCart: THREE.Group | null = null;
+  /** True while this entity is locked to a caravan ride. update() yields
+   *  position writes; CaravanRide drives them directly. */
+  private _caravanRiding = false;
 }

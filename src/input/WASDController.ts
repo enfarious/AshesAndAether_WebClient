@@ -86,6 +86,13 @@ export class WASDController {
    *  than harvest in the F-key fallback so /loot beats /harvest when both
    *  are in range. */
   private getLootableCorpseInRange: (() => boolean) | null = null;
+  /** Returns true while the local player is mid-caravan-ride. Used to
+   *  suppress all proximity-based F-key behaviour — the player's
+   *  PlayerState.position is frozen at ride start (server suppresses
+   *  per-tick broadcasts during the ride), so any proximity scan would
+   *  report stale "near terminal" / "near corpse" / etc. and surface
+   *  prompts for things the player can't actually interact with. */
+  private getCaravanRiding:    (() => boolean) | null = null;
   private partyToggle:          (() => void) | null = null;
   private abilitySlotCallback:  ((slotIndex: number) => void) | null = null;
   private marketToggle:         (() => void) | null = null;
@@ -112,6 +119,9 @@ export class WASDController {
   setHarvestableProbe(fn: () => boolean): void { this.getHarvestableInRange = fn; }
   /** Wire the lootable-corpse probe so F-key can fall back to /loot. */
   setLootableCorpseProbe(fn: () => boolean): void { this.getLootableCorpseInRange = fn; }
+  /** Wire the caravan-riding probe so F-key + prompts can suppress
+   *  while the player is on a ride (their position is stale). */
+  setCaravanRidingProbe(fn: () => boolean): void { this.getCaravanRiding = fn; }
   setPartyToggle(fn: () => void):          void { this.partyToggle          = fn; }
   setAbilitySlotCallback(fn: (slotIndex: number) => void): void { this.abilitySlotCallback = fn; }
   setMarketToggle(fn: () => void):         void { this.marketToggle         = fn; }
@@ -520,6 +530,11 @@ export class WASDController {
     //   2. Harvestable glint within range → /harvest
     //   3. Promote current target → focus target
     if (key === 'f') {
+      // F is a no-op while on a caravan ride. All proximity probes lie
+      // (PlayerState position is frozen at ride start) so loot/harvest
+      // fallbacks would also misfire. Player has /dismount, jump, and
+      // WASD to leave the ride.
+      if (this.getCaravanRiding?.()) return;
       const nearest = this.findNearestInteractable();
       if (nearest) {
         this.socket.sendInteract(nearest.id, 'use');
@@ -699,6 +714,12 @@ export class WASDController {
    * HUD prompt — both read the same scan so they stay in sync.
    */
   findNearestInteractable(): import('@/network/Protocol').Entity | null {
+    // Caravan rider's PlayerState.position is frozen at ride start because
+    // the server suppresses per-tick broadcasts for the rider. Any
+    // proximity scan against that stale position would surface bogus
+    // prompts (the terminal we boarded at stays "in range" the whole
+    // ride). Bail out entirely.
+    if (this.getCaravanRiding?.()) return null;
     const px = this.player.position.x;
     const pz = this.player.position.z;
     let best: import('@/network/Protocol').Entity | null = null;

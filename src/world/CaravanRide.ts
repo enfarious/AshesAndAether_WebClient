@@ -3,6 +3,7 @@ import type { EntityFactory } from '@/entities/EntityFactory';
 import type { HeightmapService } from '@/world/HeightmapService';
 import type { SocketClient } from '@/network/SocketClient';
 import type { WorldState } from '@/state/WorldState';
+import type { PlayerState } from '@/state/PlayerState';
 import type {
   CaravanRideStartedData,
   CaravanRideEndedData,
@@ -61,6 +62,10 @@ export class CaravanRide {
     private readonly localPlayerId: () => string | null,
     private readonly getHeightmap: () => HeightmapService | null,
     private readonly socket:     SocketClient,
+    /** Local PlayerState — also updated each tick during the ride so
+     *  map markers + any other PlayerState-position consumers see the
+     *  live location instead of the frozen ride-start position. */
+    private readonly playerState: PlayerState,
   ) {}
 
   bind(world: WorldState): void {
@@ -195,6 +200,18 @@ export class CaravanRide {
       rider.snapToPosition(new THREE.Vector3(ride.curX, y, ride.curZ));
       const r = rider.object3d;
       r.rotation.y = THREE.MathUtils.degToRad(ride.curHeading);
+    }
+
+    // Mirror live position to PlayerState if this ride's rider is the
+    // local player. Map markers + any other PlayerState-position consumer
+    // sees the live ride trajectory instead of the frozen ride-start
+    // position (the server's per-tick broadcasts are suppressed during
+    // the ride, so PlayerState wouldn't update on its own).
+    if (ride.riderId === this.localPlayerId()) {
+      this.playerState.applyServerPosition(
+        { x: ride.curX, y, z: ride.curZ },
+        ride.curHeading,
+      );
     }
 
     for (const p of ride.party) {

@@ -466,14 +466,15 @@ export class TravelPanel {
       hasToll:           stop.tollBooth !== null,
       deferBuild,
     });
-    // Show the loading screen immediately for actual transfers — closes the
-    // 8-second-ish gap between travel_request and zone_transfer (zone-server
-    // spinup) where the player would otherwise see no feedback and could
-    // still wander around in the old zone. For deferBuild the player keeps
-    // playing here, so no loading state.
-    if (!deferBuild) {
-      this.session.setPhase('loading_world');
-    }
+    // Phase change is server-driven now. The server emits zone_transfer
+    // (→ loading_world) for built zones, or zone_build_progress (→ stay
+    // in_world) for unbuilt zones. Optimistically setting loading_world
+    // here was destructive (nulls heightmap, detaches input, resets
+    // _loadedZoneId) — when the server rejected with BUILD_IN_PROGRESS or
+    // routed to defer instead of transfer, reverting back to in_world
+    // re-ran _loadWorldAssets and snapped the player to their DB position.
+    // The system_toast the server fires immediately on travel_request
+    // covers the 50-500ms feedback gap.
     this.hide();
   }
 

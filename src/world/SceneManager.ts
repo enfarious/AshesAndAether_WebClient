@@ -84,6 +84,13 @@ export class SceneManager {
     // back on when authoring or debugging a new custom shader.
     this.renderer.debug.checkShaderErrors = false;
 
+    // Manual info reset so EffectComposer's multiple passes accumulate
+    // into one total instead of each pass clobbering the previous count.
+    // With autoReset=true, the final post-process blit would leave info
+    // showing 1 draw / 2 tris regardless of scene complexity. Reset is
+    // now invoked once at the top of render() below.
+    this.renderer.info.autoReset = false;
+
     this.scene = new THREE.Scene();
     this.scene.fog = new THREE.FogExp2(0x6080a0, 0.0014);
 
@@ -332,6 +339,7 @@ export class SceneManager {
     // RenderPass binds a camera at construction. Update to the live
     // camera before each render so vault/sky-view/perf cameras all work.
     this.renderPass.camera = camera;
+    this.renderer.info.reset();
     this.composer.render();
   }
 

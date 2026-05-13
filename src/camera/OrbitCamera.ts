@@ -46,7 +46,9 @@ export class OrbitCamera {
   // ── Collision (spring-arm) ─────────────────────────────────────────────────
   /** World geometry the camera should not pass through. Set per-zone. */
   private _worldRoot: THREE.Object3D | null = null;
-  /** Pre-computed bounding spheres for broad-phase culling — same filter as PlayerEntity. */
+  /** Pre-computed bounding spheres for broad-phase culling — same filter as PlayerEntity.
+   *  Narrow phase uses Three.js intersectObjects, which is now BVH-accelerated
+   *  globally (main.ts installs three-mesh-bvh + per-chunk computeBoundsTree). */
   private _collisionCandidates: { obj: THREE.Object3D; center: THREE.Vector3; radius: number }[] = [];
   private _camRay = new THREE.Raycaster();
   /** How far to back off from a hit point so the camera isn't kissing the wall. */
@@ -276,6 +278,9 @@ export class OrbitCamera {
   setWorldRoot(root: THREE.Object3D | null): void {
     this._worldRoot = root;
     this._collisionCandidates = [];
+    this._emaBroadMs  = 0;
+    this._emaNarrowMs = 0;
+    this._didDiagnoseNearby = false;
     if (!root) return;
 
     const box    = new THREE.Box3();
@@ -301,6 +306,7 @@ export class OrbitCamera {
         this._drillCandidates(child, box, sphere, 0);
       }
     }
+    console.log(`[OrbitCamera] setWorldRoot: ${this._collisionCandidates.length} collision candidates`);
   }
 
   private _drillCandidates(
@@ -370,9 +376,22 @@ export class OrbitCamera {
   private static readonly RAY_ORIGIN_LIFT = 0.9;
   private _rayOrigin = new THREE.Vector3();
 
+  /** Diagnostic counters — EMA-smoothed ms cost for the spring-arm. */
+  private _emaBroadMs   = 0;
+  private _emaNarrowMs  = 0;
+  private _lastNearby   = 0;
+  /** One-shot flag to dump nearby contents (with BVH status) on first hit. */
+  private _didDiagnoseNearby = false;
+  /** Public accessors used by the F9 overlay. */
+  get debugBroadMs():   number { return this._emaBroadMs;   }
+  get debugNarrowMs():  number { return this._emaNarrowMs;  }
+  get debugCandidates(): number { return this._collisionCandidates.length; }
+  get debugNearby():    number { return this._lastNearby;   }
+
   private _resolveCameraDistance(dirX: number, dirY: number, dirZ: number): number {
     if (this._collisionCandidates.length === 0) return this.distance;
 
+    const tBroad0 = performance.now();
     const reach = this.distance + OrbitCamera.CAMERA_BUFFER;
 
     // Broad phase: candidates whose bounding sphere intersects the ray-band.
@@ -385,9 +404,36 @@ export class OrbitCamera {
       const r = reach + c.radius;
       if (distSq <= r * r) nearby.push(c.obj);
     }
+    const tBroad1 = performance.now();
+    this._emaBroadMs = this._emaBroadMs === 0
+      ? (tBroad1 - tBroad0)
+      : this._emaBroadMs * 0.9 + (tBroad1 - tBroad0) * 0.1;
+    this._lastNearby = nearby.length;
+
     if (nearby.length === 0) return this.distance;
 
-    // Narrow phase: actual ray vs meshes.
+    // One-shot diagnostic: dump the nearby contents on first hit per zone,
+    // so we can verify BVH actually attached to the chunk geometries.
+    // acceleratedRaycast silently falls back without a boundsTree.
+    if (!this._didDiagnoseNearby && nearby.length > 0) {
+      this._didDiagnoseNearby = true;
+      for (let i = 0; i < Math.min(nearby.length, 3); i++) {
+        const obj = nearby[i]!;
+        const summary: Array<{ name: string; type: string; verts: number; bvh: boolean }> = [];
+        obj.traverse(n => {
+          if (n instanceof THREE.Mesh) {
+            const g = n.geometry as THREE.BufferGeometry & { boundsTree?: unknown };
+            summary.push({
+              name:  n.name || '(unnamed)',
+              type:  n.type,
+              verts: g.attributes['position']?.count ?? 0,
+              bvh:   !!g.boundsTree,
+            });
+          }
+        });
+        console.log(`[OrbitCamera] nearby[${i}] type=${obj.type} name=${obj.name}`, summary);
+      }
+    }
     this._rayOrigin.set(
       this.target.x,
       this.target.y + OrbitCamera.RAY_ORIGIN_LIFT,
@@ -396,6 +442,10 @@ export class OrbitCamera {
     this._camRay.set(this._rayOrigin, new THREE.Vector3(dirX, dirY, dirZ));
     this._camRay.far = reach;
     const hits = this._camRay.intersectObjects(nearby, true);
+    const tNarrow1 = performance.now();
+    this._emaNarrowMs = this._emaNarrowMs === 0
+      ? (tNarrow1 - tBroad1)
+      : this._emaNarrowMs * 0.9 + (tNarrow1 - tBroad1) * 0.1;
 
     // Walk hits in order; return first one that should block the camera.
     for (const hit of hits) {

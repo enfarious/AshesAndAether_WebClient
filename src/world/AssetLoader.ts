@@ -1,16 +1,35 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { computeBoundsTree as bvhCompute } from 'three-mesh-bvh';
 import { ClientConfig } from '@/config/ClientConfig';
 import { HeightmapService } from './HeightmapService';
 import { chunkedFor }       from './yieldUtil';
 
+export interface BuildingChunkEntry {
+  /** Chunk centre X in metres (zone world space). */
+  cx:       number;
+  /** Chunk centre Z in metres (zone world space). */
+  cz:       number;
+  /** Path to the LOD0 (full-detail) GLB for this chunk. */
+  lod0Path: string;
+  /** Reserved — decimated geometry for mid-distance chunks (not yet baked). */
+  lod1Path?: string;
+  /** Reserved — billboard impostor for far chunks (not yet baked). */
+  lod2Path?: string;
+}
+
 export interface ManifestAsset {
   id:        string;
-  path:      string;
+  /** Single-file assets use `path`; chunked assets (type=buildings_chunked) use `chunks`. */
+  path?:     string;
   type?:     string;
   optional?: boolean;
   metaPath?: string;  // for terrain_heightmap assets
   scale?:    number;  // per-asset scale multiplier (applied on top of zone unitScale)
+  /** Chunk side length in metres; only present on `buildings_chunked` assets. */
+  chunkSizeM?: number;
+  /** Spatial chunks; only present on `buildings_chunked` assets. */
+  chunks?:   BuildingChunkEntry[];
 }
 
 export interface WorldManifest {
@@ -31,7 +50,7 @@ export interface ZoneAssets {
 
 // ── Road geometry thickening ──────────────────────────────────────────────────
 
-const ROAD_THICKNESS_M = 0.2;
+const ROAD_THICKNESS_M = 0.5;
 
 /**
  * Extrudes each mesh in `scene` downward by `thickness` (in GLB local units),
@@ -113,6 +132,15 @@ function _thickenMesh(mesh: THREE.Mesh, thickness: number): void {
   newGeo.setAttribute('position', new THREE.BufferAttribute(newPos, 3));
   newGeo.setIndex(new THREE.BufferAttribute(newIdxArr, 1));
   newGeo.computeVertexNormals();
+  // Road geometry is replaced wholesale here, AFTER _loadGlb's BVH traverse
+  // ran on the original geometry. Without rebuilding BVH on the new one,
+  // camera spring-arm raycasts on roads fall back to default raycast — was
+  // 26 ms/frame in New Paltz against the 86 k-vert road mesh.
+  try {
+    bvhCompute.call(newGeo);
+  } catch (err) {
+    console.warn('[thickenRoadScene] BVH build threw:', err);
+  }
   geo.dispose();
   mesh.geometry = newGeo;
 }
@@ -154,7 +182,7 @@ type StatusListener   = (msg: string) => void;
 type ProgressListener = (pct: number) => void;
 
 // Bump this when the loader logic changes to invalidate cached GLBs/manifests.
-const DB_VERSION = 6;
+const DB_VERSION = 8;
 
 export class AssetLoader {
   private readonly loader = new GLTFLoader();
@@ -223,6 +251,63 @@ export class AssetLoader {
       }
       loaded++;
       this._progress(total > 0 ? loaded / total : 1);
+    }
+
+    // ── Chunked buildings ─────────────────────────────────────────────────────
+    // One GLB per spatial cell so Three.js frustum-culls per chunk instead
+    // of submitting a city-sized merged mesh that's always in view. Each
+    // chunk is loaded as its own group; offscreen chunks have zero render
+    // cost. lod1Path / lod2Path on each chunk are reserved for the future
+    // decimated + impostor bakes — only lod0Path is consumed today.
+    //
+    // Chunks load with bounded concurrency. Sequential awaits would gate
+    // the whole pipeline on round-trip latency × N — a 1000-chunk city
+    // would take minutes on a cold IDB. The browser caps to 6 concurrent
+    // fetches per origin anyway; 8 here keeps the pipeline saturated
+    // without piling up too many in-flight GLB parses.
+    const chunkedAssets = allAssets.filter(a => a.type === 'buildings_chunked');
+    const CHUNK_CONCURRENCY = 8;
+    for (const asset of chunkedAssets) {
+      const chunks = asset.chunks ?? [];
+      if (chunks.length === 0) continue;
+      this._status(`Loading buildings (0/${chunks.length})…`);
+
+      let next = 0;
+      let loadedChunks = 0;
+      let failedChunks = 0;
+      const t0 = performance.now();
+
+      const worker = async (): Promise<void> => {
+        while (true) {
+          const i = next++;
+          if (i >= chunks.length) return;
+          const chunk = chunks[i]!;
+          try {
+            const group = await this._loadGlb({
+              id:       `${asset.id}_${chunk.cx.toFixed(0)}_${chunk.cz.toFixed(0)}`,
+              path:     chunk.lod0Path,
+              type:     'buildings_chunk',
+              optional: true,
+            }, unitScale);
+            group.name = `${asset.id}_chunk_${chunk.cx.toFixed(0)}_${chunk.cz.toFixed(0)}`;
+            root.add(group);
+            loadedChunks++;
+          } catch (err) {
+            failedChunks++;
+            console.warn(`[AssetLoader] Building chunk failed (${chunk.cx}, ${chunk.cz}):`, err);
+          }
+          // Update at most every 16 completions to avoid status thrash.
+          if ((loadedChunks + failedChunks) % 16 === 0) {
+            this._status(`Loading buildings (${loadedChunks + failedChunks}/${chunks.length})…`);
+          }
+        }
+      };
+
+      await Promise.all(Array.from({ length: CHUNK_CONCURRENCY }, () => worker()));
+
+      const dt = (performance.now() - t0).toFixed(0);
+      console.log(`[AssetLoader] ${asset.id}: ${loadedChunks}/${chunks.length} chunks loaded in ${dt}ms` +
+        (failedChunks > 0 ? ` (${failedChunks} failed)` : ''));
     }
 
     // ── OSM procedural assets (buildings_osm, roads_osm) ──────────────────────
@@ -294,6 +379,7 @@ export class AssetLoader {
   // ── GLB loading ───────────────────────────────────────────────────────────
 
   private async _loadGlb(asset: ManifestAsset, unitScale: number): Promise<THREE.Group> {
+    if (!asset.path) throw new Error(`Asset ${asset.id} has no path (chunked assets must be loaded via their chunk entries, not directly)`);
     const url      = `${ClientConfig.serverUrl}${asset.path}`;
     const cacheKey = `glb:v${DB_VERSION}:${asset.path}`;
 
@@ -339,6 +425,24 @@ export class AssetLoader {
 
       if (!child.geometry.attributes['normal']) {
         child.geometry.computeVertexNormals();
+      }
+      // Build a BVH so any raycast against this geometry uses the
+      // accelerated path patched in by main.ts. Calling the imported
+      // function directly (not via the patched prototype method) means
+      // even if some path of prototype dispatch were broken, this still
+      // attaches a boundsTree to the geometry. acceleratedRaycast falls
+      // back to the default raycast when boundsTree is missing, which
+      // would silently leave the raycast slow.
+      const geomWithBvh = child.geometry as THREE.BufferGeometry & {
+        boundsTree?: unknown;
+      };
+      try {
+        bvhCompute.call(child.geometry);
+        if (!geomWithBvh.boundsTree && verts > 100) {
+          console.warn(`[AssetLoader] BVH build silently failed for ${asset.id} mesh (verts=${verts})`);
+        }
+      } catch (err) {
+        console.warn(`[AssetLoader] BVH build threw for ${asset.id} (verts=${verts}):`, err);
       }
       child.material = mat;
       // Terrain: receive only (flat ground self-shadow is invisible).

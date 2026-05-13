@@ -248,9 +248,30 @@ export class App {
   // ── Perf overlay (F9) ────────────────────────────────────────────────────
   /** EMA of render-call ms — smooths the per-frame jitter on the F9 line. */
   private _perfFrameMs = 0;
+  /** EMA of wall-clock frame time (rAF→rAF delta). Subtracting _perfFrameMs
+   *  exposes the JS work that happens outside the render call. */
+  private _perfTotalFrameMs = 0;
+  private _perfLastTotalAt  = 0;
+  /** Per-section CPU timings, EMA-smoothed. Populated only when perfMode is
+   *  on so the perf.now() calls are free in normal play. The F9 line shows
+   *  the top consumers, which makes "where's the cpu time going" obvious. */
+  private _perfBuckets: Map<string, number> = new Map();
+  private _perfBucketsThisFrame: Map<string, number> = new Map();
+  private _perfSectionT0 = 0;
   /** Last cached snapshot — refreshed at most every 500ms while F9 is on. */
   private _perfSnapshot: PerfSnapshot | null = null;
   private _perfLastGather = 0;
+
+  /** Mark the end of a per-frame section. Accumulates elapsed since the
+   *  last call (or `_perfSectionT0`) into the named bucket for this frame.
+   *  No-op when perf mode is off. */
+  private _perfMark(label: string): void {
+    if (!this.hud?.perfMode) return;
+    const now = performance.now();
+    const dt  = now - this._perfSectionT0;
+    this._perfBucketsThisFrame.set(label, (this._perfBucketsThisFrame.get(label) ?? 0) + dt);
+    this._perfSectionT0 = now;
+  }
 
   // ── Loop ──────────────────────────────────────────────────────────────────
   private rafId: number = 0;
@@ -774,9 +795,25 @@ export class App {
   private _loop = (now: number): void => {
     this.rafId = requestAnimationFrame(this._loop);
 
-    // FPS limiter — skip frame if too soon
-    if (this._fpsLimit > 0 && (now - this._lastRender) < this._frameInterval) return;
+    // FPS limiter — skip frame if too soon. The 1 ms slack accounts for
+    // rAF clock jitter: a 60 Hz display fires rAF roughly every 16.667 ms
+    // but actual deltas often land at 16.6 ms or below. Without slack a
+    // 60 FPS cap drops to 30 because every other tick is ~0.05 ms shy of
+    // the target interval and gets skipped. The slack is well under any
+    // useful FPS cap's interval so it never causes overshoot.
+    if (this._fpsLimit > 0 && (now - this._lastRender) < this._frameInterval - 1) return;
     this._lastRender = now;
+
+    // Sample wall-clock frame delta for the F9 cpu-vs-render split. EMA-
+    // smoothed at the same 0.1 weight as render time so the two read on
+    // the same cadence.
+    if (this._perfLastTotalAt > 0) {
+      const totalMs = now - this._perfLastTotalAt;
+      this._perfTotalFrameMs = this._perfTotalFrameMs === 0
+        ? totalMs
+        : this._perfTotalFrameMs * 0.9 + totalMs * 0.1;
+    }
+    this._perfLastTotalAt = now;
 
     // FPS counter + entity count + position debug
     const _debugPe = this.factory?.getPlayerEntity();
@@ -790,12 +827,18 @@ export class App {
     const dt = Math.min((now - this.lastTime) / 1000, 0.1);
     this.lastTime = now;
 
+    // Per-section perf tracking — free when F9 is off.
+    this._perfBucketsThisFrame.clear();
+    this._perfSectionT0 = performance.now();
+
     // Tick entities
     this.factory.update(dt);
+    this._perfMark('entities');
     if (this._forestRenderer) {
       const fp = this.factory.getPlayerEntity()?.object3d.position;
       if (fp) this._forestRenderer.update(fp.x, fp.z);
     }
+    this._perfMark('forest');
 
     // Wire PlayerEntity + physics deps via reference tracking. We compare
     // each current dep against the last-wired reference and re-apply on diff.
@@ -832,10 +875,12 @@ export class App {
 
     // Tick tendril / corpse effects
     this.corpses.update(dt);
+    this._perfMark('corpses');
 
     // WASD movement + Q/E camera rotation
     this.wasd.tick(dt);
     this.gamepad.tick(dt);
+    this._perfMark('input');
 
     // Follow player with camera
     const playerEntity = this.factory.getPlayerEntity();
@@ -861,12 +906,15 @@ export class App {
       this.camera.isSkyLatched(),
     );
 
+    this._perfMark('camera');
+
     // Advance day/night / weather crossfade + sun orbit
     this.scene.tick(
       dt,
       this.world.getTimeOfDayNormalized(),
       playerEntity?.cameraTarget,
     );
+    this._perfMark('scene');
 
     // Precipitation, lightning, snow — follows the player
     if (playerEntity) {
@@ -893,6 +941,7 @@ export class App {
         wx,
       );
     }
+    this._perfMark('weather');
 
     // Tick action bar cooldowns
     this.actionBar?.tick(dt);
@@ -911,6 +960,7 @@ export class App {
     if (this.miasma && playerEntity) {
       this.miasma.update(dt, playerEntity.cameraTarget);
     }
+    this._perfMark('combat-fx');
 
     // Tick ward beacon animations (ring spin + pulse)
     this.beacons?.update(dt);
@@ -919,6 +969,7 @@ export class App {
     this.playerCorpses?.update(dt);
     this.harvestNodes?.update(dt);
     this.rockRenderer?.update(dt);
+    this._perfMark('beacons-nodes');
     if (this.miasmaFog) {
       // Cheap to push every frame — anchor lists are 6 + ≤32 entries.
       // Auto-reactive: a /beacon-grant placement shows up in fog next tick.
@@ -953,8 +1004,16 @@ export class App {
     // F-key prompt priority: interactable entity (has interactionKind)
     // > lootable corpse > harvest glint. Mobs without a kind don't trip
     // the prompt — they're click-target, not F-interact.
-    const nearestInteractable = this.wasd?.findNearestInteractable() ?? null;
-    if (nearestInteractable?.interactionPrompt) {
+    //
+    // Suppress all prompts mid-caravan-ride: PlayerState.position is
+    // frozen at ride start (server suppresses broadcasts), so every
+    // proximity probe lies.
+    const riding = this.caravanRide?.isLocalRiding() ?? false;
+    const nearestInteractable = riding ? null : (this.wasd?.findNearestInteractable() ?? null);
+    if (riding) {
+      this.hud?.setInteractPrompt(null);
+      this.hud?.setHarvestPromptVisible(false);
+    } else if (nearestInteractable?.interactionPrompt) {
       this.hud?.setInteractPrompt(nearestInteractable.interactionPrompt);
     } else if (this._lootableCorpseInRange) {
       this.hud?.setInteractPrompt('Loot');
@@ -966,6 +1025,7 @@ export class App {
 
     // Tick water shader animation (wave displacement + fog sync)
     this.water?.update(dt, this.scene.getSunDirection());
+    this._perfMark('water-ui');
 
     // Nameplate per-frame: range fade + max-count cap. Must run after
     // entity ticks (factory.update) so plate distances reflect this
@@ -974,6 +1034,7 @@ export class App {
     // render below, so they line up exactly with their entity.
     const _cam = this.camera.getCamera();
     this.nameplates.update(_cam);
+    this._perfMark('nameplates');
 
     // Update post-process uniforms (time + player position + zone radius)
     // before rendering. Trigger is position-based — distance from origin
@@ -997,6 +1058,16 @@ export class App {
       ? _frameMs
       : this._perfFrameMs * 0.9 + _frameMs * 0.1;
 
+    // Mark the render section in the per-section breakdown.
+    if (this.hud?.perfMode) {
+      this._perfBucketsThisFrame.set('render', _frameMs);
+      // EMA-smooth each section into the persistent bucket map.
+      for (const [k, v] of this._perfBucketsThisFrame) {
+        const prev = this._perfBuckets.get(k) ?? 0;
+        this._perfBuckets.set(k, prev === 0 ? v : prev * 0.9 + v * 0.1);
+      }
+    }
+
     // Refresh the perf snapshot at most 2×/sec to match the FPS line cadence.
     // Skipped entirely when the F9 overlay is off.
     if (this.hud?.perfMode) {
@@ -1014,8 +1085,15 @@ export class App {
             }
           }
         });
+        // Top 4 CPU sections, descending. Render is included so we can
+        // see when it's dwarfed by something on the JS side.
+        const topSections = [...this._perfBuckets.entries()]
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 4)
+          .map(([label, ms]) => ({ label, ms }));
         this._perfSnapshot = {
           frameMs:      this._perfFrameMs,
+          totalFrameMs: this._perfTotalFrameMs,
           drawCalls:    info.render.calls,
           triangles:    info.render.triangles,
           programs:     info.programs?.length ?? 0,
@@ -1024,6 +1102,13 @@ export class App {
           shadowLights,
           totalLights,
           indoor:       this.scene.isIndoor,
+          topSections,
+          cameraDebug: {
+            candidates: this.camera.debugCandidates,
+            nearby:     this.camera.debugNearby,
+            broadMs:    this.camera.debugBroadMs,
+            narrowMs:   this.camera.debugNarrowMs,
+          },
         };
       }
     }
@@ -1277,9 +1362,22 @@ export class App {
     const camera = this.camera?.getCamera();
     if (!camera) return;
     const t0 = performance.now();
+    // Bound the wait — compileAsync has been observed to stall indefinitely
+    // on some drivers when the scene graph is large (e.g. ~1000 building
+    // chunks). If it doesn't finish in 5 s, drop through; shaders will
+    // compile lazily on first draw, which is a visible hitch but not a
+    // permanently-stuck loading screen.
+    const WARM_TIMEOUT_MS = 5000;
     try {
-      await this.scene.renderer.compileAsync(this.scene.scene, camera);
-      console.log(`[App] shader warm-cache: ${(performance.now() - t0).toFixed(0)}ms`);
+      const compile  = this.scene.renderer.compileAsync(this.scene.scene, camera);
+      const timeout  = new Promise<'timeout'>(resolve => setTimeout(() => resolve('timeout'), WARM_TIMEOUT_MS));
+      const result   = await Promise.race([compile.then(() => 'done' as const), timeout]);
+      const elapsed  = (performance.now() - t0).toFixed(0);
+      if (result === 'timeout') {
+        console.warn(`[App] shader warm-cache timed out after ${elapsed}ms — proceeding anyway`);
+      } else {
+        console.log(`[App] shader warm-cache: ${elapsed}ms`);
+      }
     } catch (err) {
       console.warn('[App] shader warm-cache failed:', err);
     }
@@ -1491,6 +1589,7 @@ export class App {
         () => this.player.id || null,
         () => this._heightmap,
         this.socket,
+        this.player,
       );
       this.caravanRide.bind(this.world);
     }
@@ -1513,6 +1612,7 @@ export class App {
     // reads — both reflect "is there a glint within range right now?".
     this.wasd.setHarvestableProbe(() => this._harvestableInRange);
     this.wasd.setLootableCorpseProbe(() => this._lootableCorpseInRange);
+    this.wasd.setCaravanRidingProbe(() => this.caravanRide?.isLocalRiding() ?? false);
     if (!this.actionBar) {
       this.actionBar = new ActionBar(this.uiRoot, this.player, this.socket, this.entities);
       this.actionBar.onValidationError = (msg) => this.world.pushMessage('system', msg);

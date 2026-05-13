@@ -1118,8 +1118,20 @@ export class HUD {
         const tris = perf.triangles >= 1000
           ? `${(perf.triangles / 1000).toFixed(1)}k`
           : `${perf.triangles}`;
-        text += `\n${perf.frameMs.toFixed(2)}ms · ${perf.drawCalls} draws · ${tris} tri`
-              + ` · ${perf.programs} prog · g${perf.geometries} t${perf.textures}`
+        // Split frame time into render (renderer.render) and cpu (the rest
+        // of the rAF tick — entity update, AI, input, etc). A big cpu line
+        // with a small render line means GPU work isn't the bottleneck.
+        const cpuMs    = Math.max(0, perf.totalFrameMs - perf.frameMs);
+        const sections = perf.topSections.length === 0
+          ? ''
+          : '\ntop: ' + perf.topSections.map(s => `${s.label} ${s.ms.toFixed(1)}`).join(' · ');
+        const camDbg = perf.cameraDebug
+          ? `\ncam: ${perf.cameraDebug.candidates} cand · ${perf.cameraDebug.nearby} nearby · broad ${perf.cameraDebug.broadMs.toFixed(2)}ms · narrow ${perf.cameraDebug.narrowMs.toFixed(2)}ms`
+          : '';
+        text += `\nframe ${perf.totalFrameMs.toFixed(1)}ms = render ${perf.frameMs.toFixed(1)} + cpu ${cpuMs.toFixed(1)}`
+              + sections
+              + camDbg
+              + `\n${perf.drawCalls} draws · ${tris} tri · ${perf.programs} prog · g${perf.geometries} t${perf.textures}`
               + `\n${perf.shadowLights} shadow lights · ${perf.totalLights} lights total`
               + ` · ${perf.indoor ? 'INDOOR' : 'outdoor'}`;
       }
@@ -1201,7 +1213,12 @@ const AETHER_TIER_COLORS: Record<number, string> = {
 
 /** Per-frame perf snapshot fed into HUD.updateFps for the F9 overlay. */
 export interface PerfSnapshot {
+  /** Time spent inside renderer.render() + nameplate CSS render. */
   frameMs:      number;
+  /** Wall-clock between rAF callbacks. (Total - frameMs) is CPU JS time
+   *  outside the render call (entity ticks, AI, click-move, etc).
+   *  When that gap dwarfs frameMs, the bottleneck is CPU, not GPU. */
+  totalFrameMs: number;
   drawCalls:    number;
   triangles:    number;
   programs:     number;
@@ -1210,4 +1227,14 @@ export interface PerfSnapshot {
   shadowLights: number;
   totalLights:  number;
   indoor:       boolean;
+  /** Top per-section CPU times (EMA-smoothed ms), descending. The 'render'
+   *  section is included so it can be seen against the others. */
+  topSections:  Array<{ label: string; ms: number }>;
+  /** Camera spring-arm diagnostics — populated when F9 is on. */
+  cameraDebug?: {
+    candidates: number;  // total in _collisionCandidates
+    nearby:     number;  // last frame's broad-phase result
+    broadMs:    number;  // EMA ms of broad phase
+    narrowMs:   number;  // EMA ms of intersectObjects
+  };
 }

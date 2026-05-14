@@ -33,12 +33,41 @@ interface TravelRoute {
   stops:      RouteStop[];
 }
 
+/** Caravan fare: matches the server-side debit in TravelHandler. */
+function caravanFare(miles: number): number {
+  return miles > 0 ? Math.max(1, Math.ceil(miles * 0.5)) : 0;
+}
+
 interface TravelData {
   zoneId:      string;
   displayName: string;
   routes:      TravelRoute[];
   generated:   string;
 }
+
+// ── Train tab ───────────────────────────────────────────────────────────────
+
+interface TrainRoute {
+  destZoneId:      string;
+  destDisplayName: string;
+  destStationName: string;
+  miles:           number;
+  gold:            number;
+  bearingDeg:      number;
+  bearingOctant:   Octant;
+  active:          boolean;
+}
+
+interface TrainData {
+  zoneId:      string;
+  displayName: string;
+  station:     { name: string; lat: number; lon: number } | null;
+  routes:      TrainRoute[];
+  generated:   string;
+}
+
+type TravelMode = 'caravan' | 'train';
+type TrainSort  = 'distance-asc' | 'distance-desc' | 'fare-asc' | 'name-asc';
 
 /** A single rendered row in the destination list. The canonical `stop`+
  *  `route` is what the player selects on click (shortest-distance route).
@@ -83,6 +112,13 @@ export class TravelPanel {
   private _loading = false;
   private cleanup: (() => void)[] = [];
 
+  // ── Tab state ───────────────────────────────────────────────────────────
+  private _activeMode:    TravelMode = 'caravan';
+  private _trainRoutes:   TrainRoute[] = [];
+  private _trainStation:  { name: string; lat: number; lon: number } | null = null;
+  private _trainSort:     TrainSort = 'distance-asc';
+  private _trainLastZone: string | null = null;
+
   constructor(
     private readonly uiRoot:  HTMLElement,
     private readonly world:   WorldState,
@@ -100,9 +136,21 @@ export class TravelPanel {
       this._routes      = [];
       this._selected    = null;
       this._activeRoute = null;
-      if (this._visible) this._fetchRoutes();
+      this._trainRoutes  = [];
+      this._trainStation = null;
+      if (this._visible) this._fetchForActiveMode();
     });
     this.cleanup.push(unsubZone);
+
+    // Server signal that opens this panel and pre-selects a tab. Fired by
+    // F-key on a train_station static interactable (and any future
+    // contextual openers). Cheap payload — client fetches the route data
+    // itself via the appropriate HTTP endpoint.
+    socket.on('open_travel_panel', (payload: unknown) => {
+      const tab = (payload as { tab?: TravelMode } | null)?.tab;
+      if (tab === 'train' || tab === 'caravan') this._activeMode = tab;
+      this.show();
+    });
   }
 
   get isVisible(): boolean { return this._visible; }
@@ -113,8 +161,20 @@ export class TravelPanel {
     this._visible = true;
     this.root.style.display = 'flex';
     requestAnimationFrame(() => this.root.classList.add('tp-visible'));
-    if (this._routes.length === 0) this._fetchRoutes();
-    else this._render();
+    this._fetchForActiveMode();
+  }
+
+  /** Dispatch the data fetch for whichever tab is active. Caravan reads
+   *  /api/travel/routes; Train reads /api/train/destinations. Cached on
+   *  the current zone so flipping tabs is instant after first load. */
+  private _fetchForActiveMode(): void {
+    if (this._activeMode === 'caravan') {
+      if (this._routes.length > 0 && this._lastZoneId === this.world.zone?.id) this._render();
+      else this._fetchRoutes();
+    } else {
+      if (this._trainRoutes.length > 0 && this._trainLastZone === this.world.zone?.id) this._render();
+      else void this._fetchTrainRoutes();
+    }
   }
 
   hide(): void {
@@ -156,6 +216,27 @@ export class TravelPanel {
     }
   }
 
+  private async _fetchTrainRoutes(): Promise<void> {
+    const zoneId = this.world.zone?.id;
+    if (!zoneId) { this._showEmpty('No zone loaded.'); return; }
+
+    this._loading = true;
+    this._showLoading();
+    try {
+      const resp = await fetch(`${ClientConfig.serverUrl}/api/train/destinations?zoneId=${encodeURIComponent(zoneId)}`);
+      if (!resp.ok) throw new Error(`${resp.status}`);
+      const data: TrainData = await resp.json();
+      this._trainRoutes   = data.routes ?? [];
+      this._trainStation  = data.station ?? null;
+      this._trainLastZone = zoneId;
+      this._render();
+    } catch (e) {
+      this._showEmpty(`Could not load trains: ${(e as Error).message}`);
+    } finally {
+      this._loading = false;
+    }
+  }
+
   // ── Rendering ─────────────────────────────────────────────────────────────
 
   private _showLoading(): void {
@@ -176,8 +257,26 @@ export class TravelPanel {
     const body = this.root.querySelector('.tp-body') as HTMLElement;
     if (!body) return;
 
+    // Tab bar — always rendered above the body so the player can flip
+    // between travel modes without re-opening the panel.
+    const tabBarHtml = `
+      <div class="tp-mode-tabs">
+        <button class="tp-mode-tab ${this._activeMode === 'caravan' ? 'tp-active' : ''}" data-mode="caravan">Caravan</button>
+        <button class="tp-mode-tab ${this._activeMode === 'train'   ? 'tp-active' : ''}" data-mode="train">Train</button>
+        <button class="tp-mode-tab tp-mode-disabled" data-mode="ship" disabled title="Coming soon">Ship</button>
+      </div>
+    `;
+
+    if (this._activeMode === 'train') {
+      body.innerHTML = tabBarHtml + this._renderTrainBody();
+      this._wireTabBar(body);
+      this._wireTrainBody(body);
+      return;
+    }
+
     if (this._routes.length === 0) {
-      body.innerHTML = `<div class="tp-status">No highway routes pass through this zone.</div>`;
+      body.innerHTML = tabBarHtml + `<div class="tp-status">No highway routes pass through this zone.</div>`;
+      this._wireTabBar(body);
       return;
     }
 
@@ -206,6 +305,7 @@ export class TravelPanel {
       const altsHtml = alternativeRoutes.length > 0
         ? `<span class="tp-stop-route-alts" title="Also reachable via these routes">+${alternativeRoutes.map((r) => this._esc(r)).join(', ')}</span>`
         : '';
+      const fare = caravanFare(stop.distanceMiles);
       return `
         <button class="tp-stop-row ${isSel ? 'tp-stop-selected' : ''} ${stop.active ? 'tp-stop-active' : ''}"
                 data-ref="${this._esc(route.ref)}" data-idx="${route.stops.indexOf(stop)}">
@@ -216,6 +316,7 @@ export class TravelPanel {
             ${stop.tollBooth ? '<span class="tp-toll-icon" title="Toll booth ahead">⚠</span>' : ''}
             ${stop.active ? '<span class="tp-active-icon" title="Playable zone">★</span>' : ''}
             <span class="tp-stop-dist">${stop.distanceMiles} mi</span>
+            <span class="tp-stop-fare" title="Caravan fare">${fare}g</span>
             <span class="tp-stop-octant" title="${stop.bearingDeg}° from here">${this._esc(stop.bearingOctant)}</span>
           </span>
         </button>
@@ -231,11 +332,13 @@ export class TravelPanel {
 
     const footerHtml = this._selected ? (() => {
       const { stop, route } = this._selected;
+      const fare = caravanFare(stop.distanceMiles);
       return `
         <div class="tp-footer-info">
           <span class="tp-footer-dest">${this._esc(stop.name)}</span>
           <span class="tp-footer-detail">
             ${stop.distanceMiles} miles ${this._esc(stop.bearingOctant)} via ${this._esc(route.ref)}
+            · <span class="tp-footer-fare">Fare ${fare}g</span>
             ${stop.tollBooth ? ' · <span class="tp-footer-toll">⚠ toll road</span>' : ' · no toll'}
             ${stop.active ? ' · <span class="tp-footer-active">zone active</span>' : ' · <span class="tp-footer-unbuilt">needs build</span>'}
           </span>
@@ -256,7 +359,7 @@ export class TravelPanel {
                           || this._maxDistance != null
                           || this._activeOnly;
 
-    body.innerHTML = `
+    body.innerHTML = tabBarHtml + `
       <div class="tp-layout">
         <aside class="tp-sidebar">
           <div class="tp-sidebar-label">ROUTES</div>
@@ -307,6 +410,8 @@ export class TravelPanel {
     `;
 
     // ── Wire interactions ──────────────────────────────────────────────────
+
+    this._wireTabBar(body);
 
     // Route tab clicks (incl. the synthetic "All" tab).
     body.querySelectorAll<HTMLButtonElement>('.tp-route-tab').forEach(btn => {
@@ -442,6 +547,102 @@ export class TravelPanel {
       }
     });
     return entries;
+  }
+
+  // ── Tab bar wiring ────────────────────────────────────────────────────────
+
+  private _wireTabBar(body: HTMLElement): void {
+    body.querySelectorAll<HTMLButtonElement>('.tp-mode-tab').forEach(btn => {
+      if (btn.disabled) return;
+      btn.addEventListener('click', () => {
+        const mode = btn.dataset.mode as TravelMode | undefined;
+        if (!mode || mode === this._activeMode) return;
+        this._activeMode = mode;
+        this._selected = null;
+        this._fetchForActiveMode();
+      });
+    });
+  }
+
+  // ── Train tab render + wire ───────────────────────────────────────────────
+
+  private _renderTrainBody(): string {
+    if (!this._trainStation) {
+      return `<div class="tp-status">No train station in this zone. Caravans only — try the Caravan tab.</div>`;
+    }
+
+    if (this._trainRoutes.length === 0) {
+      return `
+        <div class="tp-status">
+          ${this._esc(this._trainStation.name)} is open, but no trains run from here today.<br/>
+          (Train network rebuild needed? Ask an admin to /baketrains.)
+        </div>
+      `;
+    }
+
+    const sortedRoutes = this._trainRoutes.slice().sort((a, b) => this._compareTrain(a, b));
+
+    const rowsHtml = sortedRoutes.map((r) => `
+      <button class="tp-train-row ${r.active ? 'tp-stop-active' : ''}" data-zone="${this._esc(r.destZoneId)}">
+        <span class="tp-train-dest">${this._esc(r.destDisplayName)}</span>
+        <span class="tp-train-meta">
+          <span class="tp-train-station">${this._esc(r.destStationName)}</span>
+          <span class="tp-stop-dist">${r.miles} mi</span>
+          <span class="tp-stop-fare" title="Train fare">${r.gold}g</span>
+          <span class="tp-stop-octant" title="${r.bearingDeg}° from here">${this._esc(r.bearingOctant)}</span>
+        </span>
+      </button>
+    `).join('');
+
+    return `
+      <div class="tp-train-layout">
+        <div class="tp-train-header">
+          <span class="tp-train-station-name">${this._esc(this._trainStation.name)}</span>
+          <span class="tp-train-station-sub">${sortedRoutes.length} destination${sortedRoutes.length !== 1 ? 's' : ''}</span>
+        </div>
+        <div class="tp-filter-bar">
+          <div class="tp-filter-row">
+            <label class="tp-filter-label">Sort</label>
+            <select class="tp-sort-select" id="tp-train-sort">
+              <option value="distance-asc"  ${this._trainSort === 'distance-asc'  ? 'selected' : ''}>Distance · nearest first</option>
+              <option value="distance-desc" ${this._trainSort === 'distance-desc' ? 'selected' : ''}>Distance · farthest first</option>
+              <option value="fare-asc"      ${this._trainSort === 'fare-asc'      ? 'selected' : ''}>Fare · cheapest first</option>
+              <option value="name-asc"      ${this._trainSort === 'name-asc'      ? 'selected' : ''}>Name · A → Z</option>
+            </select>
+          </div>
+        </div>
+        <div class="tp-stop-list">
+          ${rowsHtml}
+        </div>
+      </div>
+    `;
+  }
+
+  private _wireTrainBody(body: HTMLElement): void {
+    body.querySelector<HTMLSelectElement>('#tp-train-sort')?.addEventListener('change', (e) => {
+      this._trainSort = (e.target as HTMLSelectElement).value as TrainSort;
+      this._render();
+    });
+    body.querySelectorAll<HTMLButtonElement>('.tp-train-row').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const destZoneId = btn.dataset.zone;
+        if (!destZoneId) return;
+        // Route through /train slash command — server validates the route,
+        // debits gold, updates DB position, emits zone_transfer. Panel
+        // closes on zone_transfer event.
+        this.socket.sendCommand(`/train ${destZoneId}`);
+        this.hide();
+      });
+    });
+  }
+
+  private _compareTrain(a: TrainRoute, b: TrainRoute): number {
+    switch (this._trainSort) {
+      case 'distance-asc':  return a.miles - b.miles;
+      case 'distance-desc': return b.miles - a.miles;
+      case 'fare-asc':      return a.gold - b.gold;
+      case 'name-asc':      return a.destDisplayName.localeCompare(b.destDisplayName);
+    }
   }
 
   private _depart(route: TravelRoute, stop: RouteStop): void {
@@ -627,6 +828,106 @@ export class TravelPanel {
           text-align: center;
           color: rgba(180, 155, 110, 0.55);
           font-size: 13px;
+        }
+
+        /* ── Mode tabs (Caravan / Train / Ship) ── */
+        .tp-mode-tabs {
+          display: flex;
+          gap: 2px;
+          padding: 10px 14px 0;
+          border-bottom: 1px solid rgba(200, 145, 60, 0.18);
+          flex-shrink: 0;
+        }
+        .tp-mode-tab {
+          background: transparent;
+          border: 1px solid rgba(200, 145, 60, 0.28);
+          border-bottom: none;
+          color: rgba(220, 200, 170, 0.75);
+          padding: 8px 18px;
+          cursor: pointer;
+          font-family: var(--font-mono, monospace);
+          font-size: 12px;
+          letter-spacing: 0.10em;
+          text-transform: uppercase;
+          transition: background 0.12s, color 0.12s;
+        }
+        .tp-mode-tab:hover:not(:disabled) {
+          background: rgba(120, 80, 38, 0.35);
+          color: rgba(245, 215, 150, 0.95);
+        }
+        .tp-mode-tab.tp-active {
+          background: rgba(120, 80, 38, 0.55);
+          color: rgba(255, 225, 150, 1);
+          border-color: rgba(220, 170, 100, 0.55);
+        }
+        .tp-mode-tab.tp-mode-disabled {
+          opacity: 0.35;
+          cursor: not-allowed;
+        }
+
+        /* ── Train tab body ── */
+        .tp-train-layout {
+          display: flex;
+          flex-direction: column;
+          flex: 1;
+          overflow: hidden;
+          min-height: 0;
+          padding: 14px 18px 10px;
+        }
+        .tp-train-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: baseline;
+          padding-bottom: 8px;
+          border-bottom: 1px solid rgba(200, 145, 60, 0.18);
+          margin-bottom: 8px;
+        }
+        .tp-train-station-name {
+          font-family: var(--font-display, serif);
+          font-size: 17px;
+          color: rgba(255, 225, 150, 1);
+          letter-spacing: 0.04em;
+        }
+        .tp-train-station-sub {
+          font-family: var(--font-mono, monospace);
+          font-size: 11px;
+          color: rgba(210, 185, 140, 0.75);
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+        }
+        .tp-train-row {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 14px;
+          padding: 9px 12px;
+          background: rgba(30, 22, 14, 0.6);
+          border: 1px solid rgba(120, 90, 55, 0.3);
+          font-family: var(--font-mono, monospace);
+          color: rgba(240, 225, 200, 1);
+          cursor: pointer;
+          width: 100%;
+          text-align: left;
+        }
+        .tp-train-row:hover {
+          background: rgba(80, 50, 18, 0.5);
+          border-color: rgba(220, 170, 100, 0.55);
+        }
+        .tp-train-dest {
+          color: #fff0d6;
+          font-weight: 600;
+          font-size: 14px;
+        }
+        .tp-train-meta {
+          display: flex;
+          gap: 12px;
+          align-items: center;
+          font-size: 12px;
+          color: rgba(220, 205, 180, 0.92);
+        }
+        .tp-train-station {
+          color: rgba(200, 220, 240, 0.92);
+          font-size: 11px;
         }
 
         /* ── Layout ── */

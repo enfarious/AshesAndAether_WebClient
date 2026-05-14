@@ -890,20 +890,18 @@ export interface ProximityRosterDeltaPayload {
 export type EquipSlot =
   | 'head' | 'body' | 'hands' | 'legs' | 'feet'
   | 'necklace' | 'bracelet' | 'ring1' | 'ring2'
-  | 'mainhand' | 'offhand'
-  | 'mainhand2' | 'offhand2';
+  | 'weapon1' | 'weapon2';
 
 export const EQUIP_SLOTS: EquipSlot[] = [
   'head', 'body', 'hands', 'legs', 'feet',
   'necklace', 'bracelet', 'ring1', 'ring2',
-  'mainhand', 'offhand', 'mainhand2', 'offhand2',
+  'weapon1', 'weapon2',
 ];
 
 export const EQUIP_SLOT_LABELS: Record<EquipSlot, string> = {
   head: 'Head', body: 'Body', hands: 'Hands', legs: 'Legs', feet: 'Feet',
   necklace: 'Necklace', bracelet: 'Bracelet', ring1: 'Ring', ring2: 'Ring',
-  mainhand: 'Main Hand', offhand: 'Off Hand',
-  mainhand2: 'Main Hand', offhand2: 'Off Hand',
+  weapon1: 'Weapon', weapon2: 'Weapon',
 };
 
 export interface ItemInfo {

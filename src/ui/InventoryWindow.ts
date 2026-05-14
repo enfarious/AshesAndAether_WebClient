@@ -39,8 +39,8 @@ const EQUIP_LAYOUT: { label: string; slots: EquipSlot[] }[] = [
   { label: 'Necklace',  slots: ['necklace'] },
   { label: 'Bracelet',  slots: ['bracelet'] },
   { label: 'Ring',      slots: ['ring1', 'ring2'] },
-  { label: 'Weapon Set 1', slots: ['mainhand', 'offhand'] },
-  { label: 'Weapon Set 2', slots: ['mainhand2', 'offhand2'] },
+  { label: 'Weapon Set 1', slots: ['weapon1'] },
+  { label: 'Weapon Set 2', slots: ['weapon2'] },
 ];
 
 export class InventoryWindow {
@@ -169,8 +169,8 @@ export class InventoryWindow {
         }
         .inv-title {
           font-family: var(--font-display, serif);
-          font-size: 13px;
-          color: rgba(200,145,60,0.90);
+          font-size: 16px;
+          color: rgba(240,180,90,1);
           letter-spacing: 0.18em;
           text-transform: uppercase;
         }
@@ -181,11 +181,11 @@ export class InventoryWindow {
         }
         .inv-btn {
           font-family: var(--font-mono);
-          font-size: 10px;
-          color: rgba(212,201,184,0.7);
+          font-size: 12px;
+          color: rgba(232,220,200,0.95);
           background: rgba(30,20,10,0.6);
-          border: 1px solid rgba(200,98,42,0.22);
-          padding: 3px 10px;
+          border: 1px solid rgba(200,98,42,0.35);
+          padding: 4px 12px;
           cursor: pointer;
           letter-spacing: 0.08em;
           text-transform: uppercase;
@@ -193,18 +193,18 @@ export class InventoryWindow {
         }
         .inv-btn:hover {
           background: rgba(80,40,10,0.5);
-          color: rgba(212,180,120,0.95);
-          border-color: rgba(200,98,42,0.5);
+          color: rgba(235,200,130,1);
+          border-color: rgba(200,98,42,0.65);
         }
         .inv-btn.active {
           background: rgba(120,60,10,0.55);
-          color: rgba(230,200,140,1);
-          border-color: rgba(200,120,42,0.55);
+          color: rgba(245,215,150,1);
+          border-color: rgba(200,120,42,0.7);
         }
         .inv-close-btn {
-          font-size: 14px;
-          padding: 2px 8px;
-          color: rgba(180,100,60,0.8);
+          font-size: 16px;
+          padding: 2px 9px;
+          color: rgba(220,120,70,1);
         }
 
         /* Body */
@@ -227,8 +227,8 @@ export class InventoryWindow {
         }
         #inv-grid-label {
           font-family: var(--font-mono);
-          font-size: 10px;
-          color: rgba(150,120,80,0.7);
+          font-size: 12px;
+          color: rgba(215,185,135,0.95);
           letter-spacing: 0.12em;
           text-transform: uppercase;
         }
@@ -269,37 +269,38 @@ export class InventoryWindow {
         }
         .inv-slot-name {
           position: absolute;
-          bottom: 2px;
-          left: 2px;
-          right: 2px;
+          bottom: 3px;
+          left: 3px;
+          right: 3px;
           font-family: var(--font-mono);
-          font-size: 8px;
-          color: rgba(212,201,184,0.85);
+          font-size: 11px;
+          color: rgba(245,232,210,1);
           text-overflow: ellipsis;
           overflow: hidden;
           white-space: nowrap;
-          text-shadow: 0 1px 2px #000;
+          text-shadow: 0 1px 2px #000, 0 0 3px #000;
           line-height: 1.2;
         }
         .inv-slot-type {
           position: absolute;
           top: 2px;
-          right: 2px;
+          right: 3px;
           font-family: var(--font-mono);
-          font-size: 7px;
-          color: rgba(150,110,50,0.75);
+          font-size: 10px;
+          color: rgba(220,170,90,1);
           text-transform: uppercase;
           letter-spacing: 0.04em;
+          text-shadow: 0 1px 2px #000;
         }
         .inv-slot-qty {
           position: absolute;
           top: 2px;
-          left: 3px;
+          left: 4px;
           font-family: var(--font-mono);
-          font-size: 9px;
+          font-size: 12px;
           font-weight: bold;
-          color: rgba(200,170,100,0.9);
-          text-shadow: 0 1px 2px #000;
+          color: rgba(255,225,150,1);
+          text-shadow: 0 1px 2px #000, 0 0 3px #000;
         }
 
         /* Tooltip */
@@ -316,43 +317,44 @@ export class InventoryWindow {
         #inv-tooltip.visible { display: block; }
         .inv-tt-name {
           font-family: var(--font-body, serif);
-          font-size: 12px;
-          color: rgba(230,200,140,0.95);
-          margin-bottom: 3px;
+          font-size: 15px;
+          color: rgba(255,225,170,1);
+          margin-bottom: 4px;
+          font-weight: 600;
         }
         .inv-tt-type {
           font-family: var(--font-mono);
-          font-size: 9px;
-          color: rgba(150,110,50,0.8);
+          font-size: 11px;
+          color: rgba(215,165,90,1);
           text-transform: uppercase;
           letter-spacing: 0.06em;
-          margin-bottom: 5px;
+          margin-bottom: 6px;
         }
         .inv-tt-desc {
           font-family: var(--font-body, serif);
-          font-size: 10px;
-          color: rgba(180,160,130,0.75);
-          line-height: 1.45;
-          margin-bottom: 5px;
+          font-size: 12px;
+          color: rgba(232,218,190,0.95);
+          line-height: 1.5;
+          margin-bottom: 6px;
         }
         .inv-tt-equip-hint {
           font-family: var(--font-mono);
-          font-size: 9px;
-          color: rgba(100,160,100,0.8);
+          font-size: 11px;
+          color: rgba(160,210,150,1);
           letter-spacing: 0.06em;
         }
         .inv-tt-stats {
           font-family: var(--font-mono);
-          font-size: 9px;
-          color: rgba(180,200,220,0.85);
-          line-height: 1.5;
-          margin-bottom: 4px;
+          font-size: 12px;
+          color: rgba(210,225,245,1);
+          line-height: 1.55;
+          margin-bottom: 5px;
         }
         .inv-tt-dur {
           font-family: var(--font-mono);
-          font-size: 9px;
-          color: rgba(140,120,80,0.7);
-          margin-top: 3px;
+          font-size: 11px;
+          color: rgba(195,175,130,0.95);
+          margin-top: 4px;
         }
 
         /* ── Equipment panel ── */
@@ -373,14 +375,14 @@ export class InventoryWindow {
         }
         .equip-group-label {
           font-family: var(--font-mono);
-          font-size: 9px;
-          color: rgba(130,100,60,0.7);
+          font-size: 11px;
+          color: rgba(195,155,90,0.95);
           text-transform: uppercase;
           letter-spacing: 0.10em;
           padding-left: 2px;
         }
         .equip-group-label.weapon-set-active {
-          color: rgba(180,140,60,0.95);
+          color: rgba(240,190,90,1);
         }
         .equip-slot-row {
           display: flex;
@@ -413,17 +415,17 @@ export class InventoryWindow {
         }
         .equip-slot-label {
           font-family: var(--font-mono);
-          font-size: 8px;
-          color: rgba(130,100,60,0.65);
-          min-width: 32px;
+          font-size: 10px;
+          color: rgba(190,150,90,0.95);
+          min-width: 36px;
           text-transform: uppercase;
           letter-spacing: 0.04em;
           flex-shrink: 0;
         }
         .equip-slot-name {
           font-family: var(--font-mono);
-          font-size: 9px;
-          color: rgba(212,201,184,0.85);
+          font-size: 12px;
+          color: rgba(245,232,210,1);
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
@@ -431,7 +433,7 @@ export class InventoryWindow {
           min-width: 0;
         }
         .equip-slot-name.empty {
-          color: rgba(100,80,60,0.4);
+          color: rgba(130,110,80,0.55);
           font-style: italic;
         }
         .equip-slot-unequip {
@@ -450,11 +452,11 @@ export class InventoryWindow {
           width: 100%;
           text-align: center;
           font-family: var(--font-mono);
-          font-size: 9px;
-          color: rgba(180,140,60,0.8);
+          font-size: 11px;
+          color: rgba(225,175,85,1);
           background: rgba(40,25,8,0.55);
-          border: 1px solid rgba(180,120,40,0.30);
-          padding: 4px;
+          border: 1px solid rgba(180,120,40,0.5);
+          padding: 6px;
           cursor: pointer;
           letter-spacing: 0.10em;
           text-transform: uppercase;
@@ -462,8 +464,8 @@ export class InventoryWindow {
         }
         #inv-weapon-swap:hover {
           background: rgba(80,50,10,0.6);
-          color: rgba(230,190,80,1);
-          border-color: rgba(200,150,50,0.55);
+          color: rgba(245,205,95,1);
+          border-color: rgba(200,150,50,0.7);
         }
 
         /* Equip slot picker modal (slot selection for items that fit multiple slots) */
@@ -485,23 +487,23 @@ export class InventoryWindow {
         }
         .inv-sp-title {
           font-family: var(--font-display, serif);
-          font-size: 12px;
-          color: rgba(200,145,60,0.90);
+          font-size: 14px;
+          color: rgba(240,180,90,1);
           letter-spacing: 0.14em;
           text-transform: uppercase;
-          margin-bottom: 10px;
+          margin-bottom: 12px;
         }
         .inv-sp-slot-btn {
           display: block;
           width: 100%;
           text-align: left;
           font-family: var(--font-mono);
-          font-size: 11px;
-          color: rgba(212,201,184,0.80);
+          font-size: 13px;
+          color: rgba(240,225,200,1);
           background: rgba(14,10,6,0.8);
-          border: 1px solid rgba(200,98,42,0.20);
-          padding: 5px 10px;
-          margin-bottom: 4px;
+          border: 1px solid rgba(200,98,42,0.35);
+          padding: 7px 12px;
+          margin-bottom: 5px;
           cursor: pointer;
           letter-spacing: 0.06em;
           transition: background 0.12s, color 0.12s;
@@ -766,9 +768,9 @@ export class InventoryWindow {
       const groupEl = document.createElement('div');
       groupEl.className = 'equip-group';
 
-      const isWeaponGroup = group.slots.some(s => s.startsWith('mainhand') || s.startsWith('offhand'));
-      const isSet1 = group.slots.some(s => s === 'mainhand' || s === 'offhand');
-      const isSet2 = group.slots.some(s => s === 'mainhand2' || s === 'offhand2');
+      const isWeaponGroup = group.slots.some(s => s === 'weapon1' || s === 'weapon2');
+      const isSet1 = group.slots.some(s => s === 'weapon1');
+      const isSet2 = group.slots.some(s => s === 'weapon2');
       const isActiveWeaponGroup = isWeaponGroup && ((isSet1 && activeSet === 1) || (isSet2 && activeSet === 2));
 
       const labelEl = document.createElement('div');
@@ -778,7 +780,7 @@ export class InventoryWindow {
 
       for (const slotKey of group.slots) {
         const item   = equipment[slotKey] ?? null;
-        const isWpn  = slotKey.startsWith('mainhand') || slotKey.startsWith('offhand');
+        const isWpn  = slotKey === 'weapon1' || slotKey === 'weapon2';
         const inactive = isWpn && ((isSet1 && activeSet === 2) || (isSet2 && activeSet === 1));
 
         const rowEl = document.createElement('div');
@@ -813,7 +815,9 @@ export class InventoryWindow {
 
           unequipBtn.addEventListener('click', (e) => {
             e.stopPropagation();
-            this.socket.sendUnequipItem(slotKey as EquipSlot);
+            // Route through /unequip so the zone (combat-state owner)
+            // sees the change. Combat-gated server-side.
+            this.socket.sendCommand(`/unequip ${slotKey}`);
           });
         }
       }
@@ -823,7 +827,7 @@ export class InventoryWindow {
         const swapBtn = document.createElement('button');
         swapBtn.id = 'inv-weapon-swap';
         swapBtn.textContent = `⇄  Swap Weapon Set  (Active: Set ${activeSet})`;
-        swapBtn.addEventListener('click', () => this.socket.sendWeaponSetSwap());
+        swapBtn.addEventListener('click', () => this.socket.sendCommand('/swap'));
         groupEl.appendChild(swapBtn);
       }
 
@@ -881,7 +885,10 @@ export class InventoryWindow {
     if (validSlots.length === 0) return; // un-equippable item
 
     if (validSlots.length === 1) {
-      this.socket.sendEquipItem(item.id, validSlots[0]!);
+      // Route through /equip so the zone (combat-state owner) sees the
+      // change. Combat-gated server-side. Use templateId for unambiguous
+      // substring match (name may have spaces / duplicates).
+      this.socket.sendCommand(`/equip ${item.templateId} ${validSlots[0]}`);
       return;
     }
 
@@ -903,7 +910,7 @@ export class InventoryWindow {
         : EQUIP_SLOT_LABELS[slot];
       btn.addEventListener('click', () => {
         picker.classList.remove('visible');
-        this.socket.sendEquipItem(item.id, slot);
+        this.socket.sendCommand(`/equip ${item.templateId} ${slot}`);
       });
       slotList.appendChild(btn);
     }
@@ -1014,9 +1021,8 @@ function validEquipSlotsFor(itemType: string): EquipSlot[] {
   switch (itemType.toLowerCase()) {
     case 'weapon':
     case 'sword': case 'axe': case 'staff': case 'wand': case 'bow': case 'dagger':
-      return ['mainhand', 'offhand', 'mainhand2', 'offhand2'];
-    case 'shield': case 'offhand':
-      return ['offhand', 'offhand2'];
+    case 'rune_blade': case 'crook':
+      return ['weapon1', 'weapon2'];
     case 'armor': case 'chest': case 'body':
       return ['body'];
     case 'helm': case 'hat': case 'head':

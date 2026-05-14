@@ -53,6 +53,7 @@ import { AIDebugWindow }      from '@/ui/AIDebugWindow';
 import { BuildPanel }         from '@/ui/BuildPanel';
 import { RegistrationModal }  from '@/ui/RegistrationModal';
 import { HirelingPanel }      from '@/ui/HirelingPanel';
+import { MerchantPanel }      from '@/ui/MerchantPanel';
 import { CaravanPanel }       from '@/ui/CaravanPanel';
 import { DummyPanel }         from '@/ui/DummyPanel';
 import { TravelPanel }        from '@/ui/TravelPanel';
@@ -180,6 +181,7 @@ export class App {
   private marketPanel:       MarketPanel       | null = null;
   private registrationModal: RegistrationModal  | null = null;
   private hirelingPanel:     HirelingPanel      | null = null;
+  private merchantPanel:     MerchantPanel      | null = null;
   private dummyPanel:        DummyPanel         | null = null;
   private caravanPanel:      CaravanPanel       | null = null;
   private worldMapPanel:     WorldMapPanel      | null = null;
@@ -1567,6 +1569,14 @@ export class App {
       // success). No host-side wiring beyond construction.
       this.hirelingPanel = new HirelingPanel(this.uiRoot, this.socket);
     }
+    if (!this.merchantPanel) {
+      // Listens for `open_merchant_panel` (F-key on vendor NPC + on
+      // buy/sell success refresh). Buttons fire /buy and /sell.
+      this.merchantPanel = new MerchantPanel(this.uiRoot, this.socket);
+    }
+    // Train UI lives as a tab inside TravelPanel — F-key on a station
+    // fires `open_travel_panel { tab: 'train' }`, the TravelPanel listens
+    // and opens itself on the Train tab. No separate panel.
     if (!this.dummyPanel) {
       // Empirical-readout modal for F-keyed training dummies. Subscribes
       // to combat outcomes (filtered to the inspected dummy) and renders

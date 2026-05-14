@@ -7,7 +7,6 @@ import type {
   MovementSpeed,
   CommunicationChannel,
   InteractionAction,
-  EquipSlot,
   CompanionCreateData,
 } from './Protocol';
 
@@ -99,6 +98,10 @@ export class SocketClient {
       'open_hireling_panel',
       'open_dummy_panel',
       'open_caravan_panel',
+      'open_merchant_panel',
+      // Server signal to open TravelPanel pre-selected to a tab — used by
+      // F-key on train_station today; future ship terminal will reuse.
+      'open_travel_panel',
       'combat_error',
       'cast_start', 'cast_complete', 'cast_break',
       'channel_start', 'channel_tick', 'channel_complete', 'channel_break',
@@ -284,17 +287,9 @@ export class SocketClient {
     this._send('map_unsubscribe', { timestamp: Date.now() });
   }
 
-  sendEquipItem(itemId: string, slot: EquipSlot): void {
-    this._send('equip_item', { itemId, slot, timestamp: Date.now() });
-  }
-
-  sendUnequipItem(slot: EquipSlot): void {
-    this._send('unequip_item', { slot, timestamp: Date.now() });
-  }
-
-  sendWeaponSetSwap(): void {
-    this._send('weapon_set_swap', { timestamp: Date.now() });
-  }
+  // Equip / unequip / weapon-set-swap now flow through slash commands
+  // (/equip, /unequip, /swap) so the zone-server (combat-state owner) is
+  // the single source of truth. UI sites call socket.sendCommand directly.
 
   sendLootRoll(sessionId: string, itemId: string, roll: 'need' | 'want' | 'pass'): void {
     this._send('loot_roll', { sessionId, itemId, roll });

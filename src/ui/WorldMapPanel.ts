@@ -34,6 +34,9 @@ interface GuildBeacon {
   id: string; guildId: string; guildName: string;
   worldX: number; worldY: number; worldZ: number; effectRadius: number;
 }
+interface TrainStationMarker {
+  worldX: number; worldY: number; worldZ: number; name: string;
+}
 interface MapSnapshot {
   zoneId:       string;
   version:      number;
@@ -41,6 +44,8 @@ interface MapSnapshot {
   origin:       { lat: number; lon: number } | null;
   civicAnchors: CivicAnchor[];
   guildBeacons: GuildBeacon[];
+  /** Null when this zone has no rail station in train-network.json. */
+  trainStation: TrainStationMarker | null;
   adGrid:       Grid;
   rockDensity:  Grid;
   treeDensity:  Grid;
@@ -159,6 +164,7 @@ export class WorldMapPanel {
   private wardCircles:  L.Circle[]            = [];
   private anchorMarkers: L.Marker[]           = [];
   private guildMarkers:  L.Marker[]           = [];
+  private trainMarker:  L.Marker | null      = null;
   private playerMarker:  L.Marker | null      = null;
 
   // OSM polygon layers — lazily fetched on first toggle, cached for the
@@ -356,6 +362,7 @@ export class WorldMapPanel {
     this._renderForestOverlay();
     this._renderCivic();
     this._renderGuilds();
+    this._renderTrainStation();
     this._renderPlayerMarker();
     this._renderAllies();
     this._fitToZone();
@@ -657,6 +664,35 @@ export class WorldMapPanel {
     }
   }
 
+  private _renderTrainStation(): void {
+    if (!this.map || !this.snapshot || !this.projector) return;
+
+    if (this.trainMarker) { this.trainMarker.remove(); this.trainMarker = null; }
+    const s = this.snapshot.trainStation;
+    if (!s) return;
+
+    const ll = this.projector.worldToLatLng(s.worldX, s.worldZ);
+    const icon = L.divIcon({
+      className: 'wm-anchor-icon',
+      // Train icon. Keep the divIcon shape consistent with civic/guild so
+      // hover + popup behave the same. Color: amber to read distinctly from
+      // civic green and guild purple.
+      html:      '<div class="wm-icon wm-icon-train">&#9981;</div>',
+      iconSize:  [22, 22],
+      iconAnchor: [11, 11],
+    });
+    this.trainMarker = L.marker(ll, { icon })
+      .addTo(this.map)
+      .bindPopup(`
+        <div style="font-family:monospace;font-size:11px;color:#d4c9b8;">
+          <strong style="color:#ffb060;">${escapeHtml(s.name)}</strong><br/>
+          Train Station<br/>
+          Press F here or open Travel (R) → Train
+        </div>
+      `, { className: 'wm-popup' });
+    this.trainMarker.setZIndexOffset(975);
+  }
+
   private _renderPlayerMarker(): void {
     if (!this.map || !this.projector) return;
     if (this.playerMarker) { this.playerMarker.remove(); this.playerMarker = null; }
@@ -898,6 +934,7 @@ export class WorldMapPanel {
     // guild circles mismatch the existing civic circles' show/hide state.
     this._renderCivic();
     this._renderGuilds();
+    this._renderTrainStation();
   }
 
   /** Server says a pile of AD cells changed.  Mutate the values in place
@@ -1209,6 +1246,7 @@ export class WorldMapPanel {
         .wm-icon-townhall { background: rgba(200,145,60,0.85);  color: #fff; }
         .wm-icon-civic    { background: rgba(120,210,140,0.85); color: #052; }
         .wm-icon-guild    { background: rgba(160,120,220,0.90); color: #fff; }
+        .wm-icon-train    { background: rgba(220,140,60,0.92);  color: #fff; }
 
         .wm-player {
           width: 22px; height: 22px;
@@ -1320,6 +1358,10 @@ export class WorldMapPanel {
           <div class="wm-legend-item">
             <div class="wm-icon wm-icon-guild" style="width:14px;height:14px;font-size:9px;">&#9670;</div>
             Guild
+          </div>
+          <div class="wm-legend-item">
+            <div class="wm-icon wm-icon-train" style="width:14px;height:14px;font-size:9px;">&#9981;</div>
+            Train
           </div>
         </div>
       </div>

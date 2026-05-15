@@ -59,6 +59,12 @@ export class TargetWindow {
   private _marketToggle: (() => void) | null = null;
   setMarketToggle(fn: () => void): void { this._marketToggle = fn; }
 
+  /** Bail out of the window-level arrow-key handler when a modal panel is
+   *  open — otherwise the gamepad's modal-mode arrow-key dispatch moves both
+   *  the modal cursor AND the TargetWindow cursor at the same time. */
+  private _isModalOpen: (() => boolean) | null = null;
+  setModalOpenCheck(fn: () => boolean): void { this._isModalOpen = fn; }
+
   /** Brief client-side spam guard after clicking Harvest. */
   private _harvestCooldown = false;
 
@@ -663,6 +669,9 @@ export class TargetWindow {
     // Don't steal keys when typing in the chat box
     const tag = (document.activeElement as HTMLElement)?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    // Yield to modals — when the gamepad dispatches arrow keys to drive a
+    // panel cursor, this handler must not also move the target-action cursor.
+    if (this._isModalOpen?.()) return;
 
     switch (ev.key) {
       case 'ArrowUp':    ev.preventDefault(); this.cursorUp();    break;

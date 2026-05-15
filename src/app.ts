@@ -1480,6 +1480,9 @@ export class App {
     }
     if (!this.targetWindow) {
       this.targetWindow = new TargetWindow(this.uiRoot, this.player, this.entities, this.socket);
+      // When a modal panel is open the gamepad synthesizes arrow keys for the
+      // modal — TargetWindow's keydown handler must NOT also consume them.
+      this.targetWindow.setModalOpenCheck(() => this.modalStack.anyOpen);
     }
     if (!this.inventoryWindow) {
       this.inventoryWindow = new InventoryWindow(this.uiRoot, this.player, this.socket);
@@ -1763,6 +1766,10 @@ export class App {
     }
     if (!this.systemMenu) {
       this.systemMenu = new SystemMenu(this.uiRoot);
+      // SystemMenu reports isVisible = true only while in nav mode (i.e.
+      // gamepad has it focused). Registering with ModalStack lets the gamepad
+      // route d-pad arrow keys to its keydown handler during navigation.
+      this.modalStack.register(this.systemMenu);
       this.systemMenu.setCallbacks({
         character:  () => this.characterSheet?.toggle(),
         inventory:  () => this.inventoryWindow?.toggle(),
@@ -1913,6 +1920,39 @@ export class App {
       // Dash — shares the V-key path inside WASDController (stamina gate +
       // local snap). Direction comes from the stick state in the gamepad tick.
       this.gamepad.setOnDash((dir) => this.wasd.triggerDash(dir));
+
+      // Cancel-while-modal → close the topmost panel via ModalStack.
+      // Bypasses each panel's own Esc listener so we don't (a) close every
+      // open panel at once and (b) miss panels that never wired Esc.
+      this.gamepad.setOnCancelModal(() => this.modalStack.closeTop());
+
+      // Cancel-while-idle → drop the soft target. Mirrors TargetWindow's
+      // keyboard-Escape path. Doesn't touch lock state (that's lock_toggle).
+      this.gamepad.setOnCancelIdle(() => {
+        if (this.player.targetId) this.player.clearTarget();
+      });
+
+      // Menu — Start button (default). Disambiguation:
+      //   - Currently arming an ability     → abort arming, then enter nav mode
+      //                                       (arming state would otherwise win
+      //                                        over modal in the state machine
+      //                                        and swallow the d-pad)
+      //   - Already in SystemMenu nav mode  → exit nav mode
+      //   - Some other modal is open        → close it (Start = close-modal shortcut)
+      //   - Otherwise                       → enter SystemMenu nav mode
+      this.gamepad.setOnMenu(() => {
+        if (this.abilityArming?.isArming) this.abilityArming.abort();
+        const navOn = this.systemMenu?.isVisible ?? false;
+        if (navOn) {
+          this.systemMenu?.exitNavMode();
+          return;
+        }
+        if (this.modalStack.anyOpen) {
+          this.modalStack.closeTop();
+          return;
+        }
+        this.systemMenu?.enterNavMode();
+      });
     }
     if (!this.villagePanel) {
       this.villagePanel = new VillagePanel(this.uiRoot, this.world, this.player, this.socket);

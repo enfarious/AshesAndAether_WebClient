@@ -1,11 +1,17 @@
 /**
  * SystemMenu — FFXIV-style button bar for opening game panels.
  *
- * Always visible during gameplay. Sits at the top-left of the screen
- * as a vertical column. Each button toggles the corresponding panel
- * and shows the keybind hint.
+ * Always-visible vertical column at the top-left during gameplay. Each
+ * button toggles the corresponding panel and shows the keybind hint.
  *
- * Escape key toggles the menu visibility for a cleaner screen when desired.
+ * Gamepad nav mode (entered via the bound `menu` action, default Start):
+ *   - Highlights one button at a time with an arrow cursor
+ *   - Arrow keys / d-pad walk the cursor (gamepad goes to `modal` state)
+ *   - Enter / Confirm activates the highlighted panel and exits nav mode
+ *   - Escape / Cancel exits without activating
+ *   - Reports `isVisible = true` to ModalStack ONLY while in nav mode, so
+ *     the gamepad routes d-pad to arrow keys without affecting the rest
+ *     of the input flow. The visual panel itself is always shown.
  */
 
 export interface SystemMenuCallbacks {
@@ -30,22 +36,28 @@ interface MenuEntry {
 }
 
 const ENTRIES: MenuEntry[] = [
-  { id: 'character',  icon: '\u2666', label: 'Character',  keybind: 'C' },
-  { id: 'inventory',  icon: '\u25C8', label: 'Inventory',  keybind: 'I' },
-  { id: 'abilities',  icon: '\u2726', label: 'Abilities',  keybind: 'K' },
-  { id: 'companion',  icon: '\u2740', label: 'Companion',  keybind: 'N' },
-  { id: 'guild',      icon: '\u269C', label: 'Guild',      keybind: 'G' },
-  { id: 'party',      icon: '\u2630', label: 'Party',      keybind: 'P' },
-  { id: 'map',        icon: '\u25CE', label: 'Map',        keybind: 'M' },
-  { id: 'travel',     icon: '\u2708', label: 'Travel',     keybind: 'R' },
-  { id: 'market',     icon: '\u2696', label: 'Market',     keybind: 'Ctrl+M' },
-  { id: 'layout',     icon: '\u2B1A', label: 'Layout',     keybind: 'F10' },
-  { id: 'settings',   icon: '\u2699', label: 'Settings',   keybind: 'O' },
+  { id: 'character',  icon: '♦', label: 'Character',  keybind: 'C' },
+  { id: 'inventory',  icon: '◈', label: 'Inventory',  keybind: 'I' },
+  { id: 'abilities',  icon: '✦', label: 'Abilities',  keybind: 'K' },
+  { id: 'companion',  icon: '❀', label: 'Companion',  keybind: 'N' },
+  { id: 'guild',      icon: '⚜', label: 'Guild',      keybind: 'G' },
+  { id: 'party',      icon: '☰', label: 'Party',      keybind: 'P' },
+  { id: 'map',        icon: '◎', label: 'Map',        keybind: 'M' },
+  { id: 'travel',     icon: '✈', label: 'Travel',     keybind: 'R' },
+  { id: 'market',     icon: '⚖', label: 'Market',     keybind: 'Ctrl+M' },
+  { id: 'layout',     icon: '⬚', label: 'Layout',     keybind: 'F10' },
+  { id: 'settings',   icon: '⚙', label: 'Settings',   keybind: 'O' },
 ];
 
 export class SystemMenu {
   private root: HTMLElement;
-  private _visible = true;
+  /** Panel visibility on screen — driven by show/hide (e.g. phase changes). */
+  private _shown = true;
+  /** Gamepad nav-mode flag. Doubles as the ModalLike `isVisible` signal so
+   *  the gamepad routes d-pad to this panel's keydown handler. */
+  private _navMode = false;
+  private _cursor = 0;
+  private _keyHandler: ((e: KeyboardEvent) => void) | null = null;
   private callbacks: Partial<SystemMenuCallbacks> = {};
 
   constructor(private readonly uiRoot: HTMLElement) {
@@ -55,32 +67,62 @@ export class SystemMenu {
     this.root.id = 'system-menu';
     this._build();
     uiRoot.appendChild(this.root);
+
+    this._keyHandler = (e: KeyboardEvent) => this._onKey(e);
+    window.addEventListener('keydown', this._keyHandler);
   }
 
-  // ── Public API ──────────────────────────────────────────────────────────────
-
-  get isVisible(): boolean { return this._visible; }
+  // ── ModalLike contract ──────────────────────────────────────────────────
+  // isVisible reports nav-mode (not panel visibility). When true, ModalStack
+  // treats SystemMenu as the active modal and the gamepad routes d-pad arrows
+  // to this panel. When false (default), SystemMenu is a passive HUD bar.
+  get isVisible(): boolean { return this._navMode; }
+  close(): void { this.exitNavMode(); }
 
   setCallbacks(cbs: SystemMenuCallbacks): void {
     this.callbacks = cbs;
   }
 
   show(): void {
-    this._visible = true;
+    this._shown = true;
     this.root.style.display = '';
   }
 
   hide(): void {
-    this._visible = false;
+    this._shown = false;
     this.root.style.display = 'none';
+    // Hiding the bar also drops any nav-mode in progress.
+    if (this._navMode) this.exitNavMode();
   }
 
+  /** Legacy toggle — flips screen visibility, not nav mode. */
   toggle(): void {
-    if (this._visible) this.hide();
-    else               this.show();
+    if (this._shown) this.hide();
+    else             this.show();
+  }
+
+  // ── Nav mode (gamepad) ──────────────────────────────────────────────────
+
+  enterNavMode(): void {
+    if (this._navMode) return;
+    this._navMode = true;
+    this._cursor = 0;
+    this._updateCursor();
+  }
+
+  exitNavMode(): void {
+    if (!this._navMode) return;
+    this._navMode = false;
+    this._updateCursor();
+  }
+
+  toggleNavMode(): void {
+    if (this._navMode) this.exitNavMode();
+    else               this.enterNavMode();
   }
 
   dispose(): void {
+    if (this._keyHandler) window.removeEventListener('keydown', this._keyHandler);
     this.root.remove();
   }
 
@@ -91,6 +133,7 @@ export class SystemMenu {
     for (const entry of ENTRIES) {
       html += `
         <button class="sm-btn" data-panel="${entry.id}" title="${entry.label} (${entry.keybind})">
+          <span class="sm-cursor">▸</span>
           <span class="sm-icon">${entry.icon}</span>
           <span class="sm-label">${entry.label}</span>
           <span class="sm-key">${entry.keybind}</span>
@@ -100,12 +143,60 @@ export class SystemMenu {
     this.root.innerHTML = html;
 
     // Wire click handlers
-    this.root.querySelectorAll<HTMLButtonElement>('.sm-btn').forEach(btn => {
+    this.root.querySelectorAll<HTMLButtonElement>('.sm-btn').forEach((btn, i) => {
       btn.addEventListener('click', () => {
         const id = btn.dataset.panel as keyof SystemMenuCallbacks;
+        // Click also drops nav mode so the user doesn't end up with a stale cursor.
+        if (this._navMode) this.exitNavMode();
+        this._cursor = i;
         this.callbacks[id]?.();
       });
     });
+  }
+
+  // ── Keyboard (only handles while in nav mode — silent otherwise) ────────
+
+  private _onKey(e: KeyboardEvent): void {
+    if (!this._navMode) return;
+    // Don't steal keys when typing in chat.
+    const tag = (document.activeElement as HTMLElement | null)?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+
+    switch (e.key) {
+      case 'ArrowUp':
+      case 'ArrowLeft':
+        e.preventDefault(); e.stopPropagation();
+        this._cursor = (this._cursor - 1 + ENTRIES.length) % ENTRIES.length;
+        this._updateCursor();
+        break;
+      case 'ArrowDown':
+      case 'ArrowRight':
+        e.preventDefault(); e.stopPropagation();
+        this._cursor = (this._cursor + 1) % ENTRIES.length;
+        this._updateCursor();
+        break;
+      case 'Enter':
+      case 'NumpadEnter': {
+        e.preventDefault(); e.stopPropagation();
+        const entry = ENTRIES[this._cursor];
+        if (!entry) break;
+        this.exitNavMode();           // exit before invoking so the new panel takes over modal duty cleanly
+        this.callbacks[entry.id]?.();
+        break;
+      }
+      case 'Escape':
+        e.preventDefault(); e.stopPropagation();
+        this.exitNavMode();
+        break;
+    }
+  }
+
+  private _updateCursor(): void {
+    const buttons = this.root.querySelectorAll<HTMLElement>('.sm-btn');
+    buttons.forEach((btn, i) => {
+      btn.classList.toggle('sm-nav-active', this._navMode && i === this._cursor);
+    });
+    this.root.classList.toggle('sm-nav-mode', this._navMode);
   }
 
   // ── Styles ──────────────────────────────────────────────────────────────────
@@ -128,6 +219,14 @@ export class SystemMenu {
         border-radius: 4px;
         z-index: 600;
         pointer-events: auto;
+        transition: border-color 0.15s, box-shadow 0.15s;
+      }
+
+      /* Nav-mode framing — subtle outline so the player knows the bar is
+       * "live" and listening for d-pad input. */
+      #system-menu.sm-nav-mode {
+        border-color: rgba(220, 165, 80, 0.75);
+        box-shadow: 0 0 12px rgba(220, 165, 80, 0.35);
       }
 
       .sm-btn {
@@ -154,13 +253,33 @@ export class SystemMenu {
         background: rgba(70, 42, 10, 0.9);
       }
 
+      /* Gamepad cursor selection — distinct from hover so a mouseover doesn't
+       * mask the d-pad position. */
+      .sm-btn.sm-nav-active {
+        background: rgba(70, 45, 10, 0.95);
+        border-color: rgba(220, 165, 80, 0.85);
+        box-shadow: inset 0 0 0 1px rgba(220, 165, 80, 0.4);
+      }
+
+      .sm-cursor {
+        width: 8px;
+        font-size: 10px;
+        color: var(--ember, #c86a2a);
+        line-height: 1;
+        opacity: 0;
+        flex-shrink: 0;
+      }
+
+      .sm-btn.sm-nav-active .sm-cursor { opacity: 1; }
+
       .sm-icon {
         font-size: 16px;
         color: rgba(212, 201, 184, 0.75);
         line-height: 1;
       }
 
-      .sm-btn:hover .sm-icon {
+      .sm-btn:hover .sm-icon,
+      .sm-btn.sm-nav-active .sm-icon {
         color: var(--ember, #c86a2a);
       }
 
@@ -170,6 +289,10 @@ export class SystemMenu {
         color: rgba(212, 201, 184, 0.55);
         letter-spacing: 0.04em;
         flex: 1;
+      }
+
+      .sm-btn.sm-nav-active .sm-label {
+        color: #e8cc88;
       }
 
       .sm-key {

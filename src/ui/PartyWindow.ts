@@ -289,6 +289,22 @@ export class PartyWindow {
           color: rgba(140, 200, 240, 0.85);
           font-size: 10px;
         }
+        /* Current main target — distinct from focus/sub-target above. Ember
+         * highlight on the leading edge plus a brightened name. */
+        .pw-member.targeted {
+          background: rgba(220, 165, 80, 0.10);
+          box-shadow: inset 3px 0 0 rgba(220, 165, 80, 0.85);
+          padding-left: 4px;
+        }
+        .pw-member.targeted .pw-name {
+          color: #e8cc88;
+        }
+        /* If a row is both targeted and focused, stack the indicators by
+         * letting targeted's inset shadow override the left edge while
+         * focused's diamond glyph still appears next to the name. */
+        .pw-member.targeted.focused {
+          box-shadow: inset 3px 0 0 rgba(220, 165, 80, 0.85);
+        }
 
         .pw-name-row {
           display: flex;
@@ -558,6 +574,10 @@ export class PartyWindow {
 
       card.classList.toggle('dead', !isAlive);
       card.classList.toggle('focused', this.player.focusTargetId === id);
+      // Main-target highlight — reflects whatever the player has currently
+      // targeted (mouse click, Tab cycle, d-pad U/D). Updates automatically
+      // because the constructor wires _scheduleRefresh to player.onChange.
+      card.classList.toggle('targeted', this.player.targetId === id);
 
       // Role tag — refresh on every pass since players' role changes when
       // they re-slot passives (PASSIVE_LOADOUT_CHANGED → entity update).

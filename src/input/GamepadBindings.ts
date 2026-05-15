@@ -23,6 +23,7 @@ export type GamepadAction =
   | 'interact'
   | 'confirm'
   | 'cancel'
+  | 'menu'
   | 'lock_toggle'
   | 'slot_modifier_low'
   | 'slot_modifier_high';
@@ -34,6 +35,7 @@ export const GAMEPAD_ACTIONS: readonly GamepadAction[] = [
   'interact',
   'confirm',
   'cancel',
+  'menu',
   'lock_toggle',
   'slot_modifier_low',
   'slot_modifier_high',
@@ -47,6 +49,7 @@ export const ACTION_LABELS: Record<GamepadAction, string> = {
   interact:            'Interact',
   confirm:             'Confirm / Fire',
   cancel:              'Cancel / Back',
+  menu:                'Main Menu',
   lock_toggle:         'Lock / Unlock Target',
   slot_modifier_low:   'Slot 1-4 Modifier',
   slot_modifier_high:  'Slot 5-8 Modifier',
@@ -60,6 +63,7 @@ export const ACTION_DESCRIPTIONS: Record<GamepadAction, string> = {
   interact:            'Synthesizes F — proximity interact with the nearest object.',
   confirm:             'Locks soft target (idle), activates cursor (targeted), confirms armed cast.',
   cancel:              'Closes the top modal, aborts an armed cast, otherwise no-op.',
+  menu:                'Open SystemMenu nav mode (d-pad picks a panel, Confirm opens). Also closes the topmost modal.',
   lock_toggle:         'Toggles target lock on the current soft target.',
   slot_modifier_low:   'Hold + face button = direct slot 1-4 fire (ARPG fast path).',
   slot_modifier_high:  'Hold + face button = direct slot 5-8 fire.',
@@ -104,6 +108,7 @@ export const DEFAULT_BINDINGS: Record<GamepadAction, number> = {
   dash:                5,  // RB
   slot_modifier_low:   6,  // LT
   slot_modifier_high:  7,  // RT
+  menu:                9,  // Start / Options
   sprint:              10, // L3 (left stick click)
 };
 

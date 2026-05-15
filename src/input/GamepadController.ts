@@ -153,6 +153,9 @@ export class GamepadController {
   private _isArming:              (() => boolean) | null = null;
   private _onSlotShortcut:        ((slotIdx: number) => void) | null = null;
   private _onDash:                ((direction: 'forward' | 'back') => void) | null = null;
+  private _onMenu:                (() => void) | null = null;
+  private _onCancelModal:         (() => void) | null = null;
+  private _onCancelIdle:          (() => void) | null = null;
 
   // Fired once on the rising edge into `targeted` state. App layer uses this
   // to reset surface visuals (show TargetWindow cursor, clear ActionBar focus)
@@ -204,6 +207,21 @@ export class GamepadController {
   // a direct callback so we can pass 'forward' (stick deflected) vs 'back'
   // (stick idle, retreat-from-heading).
   setOnDash(fn: (direction: 'forward' | 'back') => void): void { this._onDash = fn; }
+
+  // Menu — toggles SystemMenu nav mode (or closes the topmost modal if one
+  // is already open and SystemMenu nav isn't). App layer handles the
+  // disambiguation since it has both modalStack and systemMenu in scope.
+  setOnMenu(fn: () => void): void { this._onMenu = fn; }
+
+  // Cancel-while-modal — routed through ModalStack.closeTop so only the
+  // top-most panel closes. Synthesizing Escape would fire every panel's
+  // own keydown listener at once (and miss panels with no Esc handler).
+  setOnCancelModal(fn: () => void): void { this._onCancelModal = fn; }
+
+  // Cancel-while-idle — clears the soft target if one is set. Lock state
+  // can't be true in idle (targeted is its own state), so the unlock case
+  // is owned by lock_toggle elsewhere.
+  setOnCancelIdle(fn: () => void): void { this._onCancelIdle = fn; }
 
   constructor(
     private readonly camera: OrbitCamera,
@@ -575,6 +593,10 @@ export class GamepadController {
   private _tickFaceButtons(snap: GamepadSnapshot, state: InputState): void {
     const b = this.bindings;
 
+    // Menu — fires in any state. App layer disambiguates: enter SystemMenu
+    // nav mode, exit it, or close the top non-SystemMenu modal.
+    if (this._firedAction('menu', snap)) this._onMenu?.();
+
     // L2 / R2 modifier check first. While either is held, face buttons 0-3
     // become slot shortcuts and all other bound actions are suppressed for
     // those four indices so the user doesn't double-fire jump on L2+A, etc.
@@ -619,12 +641,17 @@ export class GamepadController {
     }
 
     // cancel — state-routed:
-    //   arming → abort arming
-    //   modal  → Escape
-    //   else   → no-op (lock_toggle owns unlock now)
+    //   arming   → abort arming
+    //   modal    → close the top modal (NOT a synthesized Escape — that fired
+    //              every panel's own listener simultaneously and missed panels
+    //              without an Esc handler)
+    //   idle     → clear soft target if any (TargetWindow keyboard Esc does
+    //              the same; this is the gamepad parity path)
+    //   targeted → no-op (lock_toggle owns unlock)
     if (this._firedAction('cancel', snap)) {
       if (state === 'arming')     this._onCancelArming?.();
-      else if (state === 'modal') this._dispatchKey('Escape');
+      else if (state === 'modal') this._onCancelModal?.();
+      else if (state === 'idle')  this._onCancelIdle?.();
     }
 
     // confirm — state-routed:

@@ -26,9 +26,37 @@ export interface ModalLike {
 export class ModalStack {
   private panels: ModalLike[] = [];
   private order: ModalLike[] = [];
+  /** Monotonic z-index assigned by bringToFront. Baseline 1000 stays above
+   *  general HUD elements but below the ultra-high-z items like toasts. */
+  private _zCounter = 1000;
 
   register(panel: ModalLike): void {
     if (!this.panels.includes(panel)) this.panels.push(panel);
+    this._wrapShowForZOrder(panel);
+  }
+
+  /** Bump a panel's root element to the top of the modal z-stack. */
+  bringToFront(root: HTMLElement): void {
+    root.style.zIndex = String(++this._zCounter);
+  }
+
+  /** Monkey-patch the panel's show() once at register time so every call
+   *  bumps the z-index of its root element. Avoids per-panel edits — every
+   *  modal panel in this codebase has a `root` HTMLElement field, accessible
+   *  at runtime regardless of TypeScript's compile-time `private`. */
+  private _wrapShowForZOrder(panel: ModalLike): void {
+    const carrier = panel as { root?: HTMLElement; show?: (...args: unknown[]) => unknown; _zWrapped?: true };
+    if (carrier._zWrapped) return;            // idempotent
+    const root = carrier.root;
+    const orig = carrier.show;
+    if (!root || typeof orig !== 'function') return;
+    const bound = orig.bind(panel);
+    carrier.show = (...args: unknown[]) => {
+      const result = bound(...args);
+      this.bringToFront(root);
+      return result;
+    };
+    carrier._zWrapped = true;
   }
 
   unregister(panel: ModalLike): void {
@@ -55,10 +83,16 @@ export class ModalStack {
     return this.panels.find(p => p.isVisible) ?? null;
   }
 
-  /** Close the top visible panel via its close() hook, if any. */
+  /** Close the top visible panel. Prefers an explicit `close()` hook; falls
+   *  back to a duck-typed `hide()` so panels that only implement the legacy
+   *  show/hide pair still respond to the gamepad menu-button "close any
+   *  modal" shortcut without each needing a `close` alias. */
   closeTop(): boolean {
     const top = this.top;
-    if (top?.close) { top.close(); return true; }
+    if (!top) return false;
+    if (top.close) { top.close(); return true; }
+    const hideable = top as { hide?: () => void };
+    if (typeof hideable.hide === 'function') { hideable.hide(); return true; }
     return false;
   }
 }

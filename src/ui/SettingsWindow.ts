@@ -22,6 +22,10 @@ import {
   type CompanionLLMConfig, type LLMProvider, type CompanionFullSettings,
 } from '@/companion/CompanionSettings';
 import type { CommunicationChannel } from '@/network/Protocol';
+import {
+  GAMEPAD_ACTIONS, ACTION_LABELS, ACTION_DESCRIPTIONS,
+  buttonLabel, type GamepadAction, type GamepadBindings,
+} from '@/input/GamepadBindings';
 
 // ── Callback interface ──────────────────────────────────────────────────────
 
@@ -67,6 +71,10 @@ const KEY_NP_MAX_RANGE   = 'aa_np_max_range';
 const KEY_NP_FADE_START  = 'aa_np_fade_start';
 const KEY_NP_MAX_COUNT   = 'aa_np_max_count';
 const KEY_NP_SCALE       = 'aa_np_scale';
+// Controls
+const KEY_ATTACK_AUTO_LOCK    = 'aa_attack_auto_lock';
+const KEY_AUTO_FACE_ACTION    = 'aa_auto_face_on_action';
+const KEY_SPRINT_TOGGLE_MODE  = 'aa_sprint_toggle_mode';
 
 // ── Defaults ────────────────────────────────────────────────────────────────
 
@@ -106,13 +114,14 @@ function saveBool(key: string, v: boolean): void {
 
 // ── Tabs ────────────────────────────────────────────────────────────────────
 
-type TabId = 'display' | 'camera' | 'audio' | 'nameplates' | 'companion';
+type TabId = 'display' | 'camera' | 'audio' | 'nameplates' | 'controls' | 'companion';
 
 const TABS: { id: TabId; label: string }[] = [
   { id: 'display',    label: 'Display' },
   { id: 'camera',     label: 'Camera' },
   { id: 'audio',      label: 'Audio' },
   { id: 'nameplates', label: 'Nameplates' },
+  { id: 'controls',   label: 'Controls' },
   { id: 'companion',  label: 'Companion' },
 ];
 
@@ -150,6 +159,7 @@ export class SettingsWindow {
   constructor(
     private readonly uiRoot: HTMLElement,
     private readonly callbacks: SettingsCallbacks,
+    private readonly gamepadBindings: GamepadBindings | null = null,
   ) {
     this._injectStyles();
 
@@ -180,6 +190,8 @@ export class SettingsWindow {
     this._visible = false;
     this.root.classList.remove('visible');
     this.root.style.display = 'none';
+    // Drop any pending rebind so the next-press doesn't apply after close.
+    this.gamepadBindings?.cancelCapture();
   }
 
   toggle(): void {
@@ -202,6 +214,13 @@ export class SettingsWindow {
 
   private _onKeyDown = (e: KeyboardEvent): void => {
     if (e.key === 'Escape' && this._visible) {
+      // While rebinding, Esc cancels the capture instead of closing.
+      if (this.gamepadBindings?.capturingAction()) {
+        e.stopPropagation();
+        e.preventDefault();
+        this.gamepadBindings.cancelCapture();
+        return;
+      }
       e.stopPropagation();
       e.preventDefault();
       this.hide();
@@ -249,6 +268,11 @@ export class SettingsWindow {
                                          Math.max(5, loadNum(KEY_NP_FADE_START, 35)));
     ClientConfig.nameplateMaxCount   = Math.min(150, Math.max(5,   loadNum(KEY_NP_MAX_COUNT, 30)));
     ClientConfig.nameplateScale      = Math.min(2.5, Math.max(0.6, loadNum(KEY_NP_SCALE,     1.0)));
+
+    // Controls
+    ClientConfig.attackAutoLock   = loadBool(KEY_ATTACK_AUTO_LOCK,   true);
+    ClientConfig.autoFaceOnAction = loadBool(KEY_AUTO_FACE_ACTION,   true);
+    ClientConfig.sprintToggleMode = loadBool(KEY_SPRINT_TOGGLE_MODE, false);
   }
 
   // ── Build DOM ───────────────────────────────────────────────────────────
@@ -300,6 +324,7 @@ export class SettingsWindow {
     this._buildCameraPage(content);
     this._buildAudioPage(content);
     this._buildNameplatesPage(content);
+    this._buildControlsPage(content);
     this._buildCompanionPage(content);
     body.appendChild(content);
 
@@ -624,6 +649,133 @@ export class SettingsWindow {
         ClientConfig.nameplateMaxCount = v;
       },
     }));
+
+    container.appendChild(page);
+  }
+
+  // ── Controls tab ──────────────────────────────────────────────────────
+
+  private _buildControlsPage(container: HTMLElement): void {
+    const page = this._makePage('controls');
+
+    page.appendChild(this._buildSectionLabel('Behavior'));
+    page.appendChild(this._buildToggle({
+      label:    'Auto-lock on Attack',
+      sublabel: 'Picking Attack also locks the target so cycling doesn\'t drop the engagement',
+      initial:  ClientConfig.attackAutoLock,
+      onChange: (v) => {
+        saveBool(KEY_ATTACK_AUTO_LOCK, v);
+        ClientConfig.attackAutoLock = v;
+      },
+    }));
+    page.appendChild(this._buildToggle({
+      label:    'Auto-face on Action',
+      sublabel: 'Server rotates you toward your target on Attack and on each cast start',
+      initial:  ClientConfig.autoFaceOnAction,
+      onChange: (v) => {
+        saveBool(KEY_AUTO_FACE_ACTION, v);
+        ClientConfig.autoFaceOnAction = v;
+      },
+    }));
+    page.appendChild(this._buildToggle({
+      label:    'Sprint as Toggle',
+      sublabel: 'Press once to sprint; auto-stops on out-of-stamina or movement stop. Off = hold-to-sprint',
+      initial:  ClientConfig.sprintToggleMode,
+      onChange: (v) => {
+        saveBool(KEY_SPRINT_TOGGLE_MODE, v);
+        ClientConfig.sprintToggleMode = v;
+      },
+    }));
+
+    page.appendChild(this._buildDivider());
+
+    if (!this.gamepadBindings) {
+      const msg = document.createElement('div');
+      msg.className = 'sw-section-label';
+      msg.textContent = 'Gamepad bindings unavailable.';
+      page.appendChild(msg);
+      container.appendChild(page);
+      return;
+    }
+
+    page.appendChild(this._buildSectionLabel('Gamepad'));
+
+    const help = document.createElement('div');
+    help.style.cssText = 'color:rgba(212,201,184,0.55);font-size:11px;margin:-4px 0 8px 0;';
+    help.textContent = 'Click Rebind, then press the gamepad button you want. Esc cancels.';
+    page.appendChild(help);
+
+    // Track each row's elements so we can refresh them after a rebind.
+    const rowRefs: { action: GamepadAction; valueEl: HTMLElement; btnEl: HTMLButtonElement }[] = [];
+
+    const refreshAll = (): void => {
+      for (const r of rowRefs) {
+        r.valueEl.textContent = buttonLabel(this.gamepadBindings!.get(r.action));
+      }
+    };
+
+    const bindings = this.gamepadBindings;
+
+    for (const action of GAMEPAD_ACTIONS) {
+      const row = document.createElement('div');
+      row.className = 'sw-row';
+      row.style.cssText = 'flex-wrap: wrap;';
+
+      const lbl = document.createElement('span');
+      lbl.className = 'sw-lbl';
+      lbl.textContent = ACTION_LABELS[action];
+      lbl.title = ACTION_DESCRIPTIONS[action];
+
+      const value = document.createElement('span');
+      value.className = 'sw-val';
+      value.style.cssText = 'min-width: 120px; text-align: right;';
+      value.textContent = buttonLabel(bindings.get(action));
+
+      const btn = document.createElement('button');
+      btn.className = 'sw-preset';
+      btn.textContent = 'Rebind';
+      btn.style.cssText = 'min-width: 80px; margin-left: 8px;';
+
+      btn.addEventListener('click', () => {
+        if (btn.classList.contains('active')) {
+          // Already listening — cancel.
+          bindings.cancelCapture();
+          return;
+        }
+        btn.classList.add('active');
+        btn.textContent = 'Press a button…';
+        bindings.captureNext(action).then((idx) => {
+          btn.classList.remove('active');
+          btn.textContent = 'Rebind';
+          if (idx !== null) value.textContent = buttonLabel(idx);
+        });
+      });
+
+      row.appendChild(lbl);
+      row.appendChild(value);
+      row.appendChild(btn);
+      page.appendChild(row);
+
+      rowRefs.push({ action, valueEl: value, btnEl: btn });
+    }
+
+    page.appendChild(this._buildDivider());
+
+    const resetRow = document.createElement('div');
+    resetRow.className = 'sw-row';
+    resetRow.style.cssText = 'justify-content: flex-end;';
+    const resetBtn = document.createElement('button');
+    resetBtn.className = 'sw-preset';
+    resetBtn.textContent = 'Reset to Defaults';
+    resetBtn.addEventListener('click', () => {
+      bindings.reset();
+      refreshAll();
+    });
+    resetRow.appendChild(resetBtn);
+    page.appendChild(resetRow);
+
+    // Cancel an in-flight capture if the page is left / settings closed.
+    page.addEventListener('blur', () => bindings.cancelCapture(), true);
 
     container.appendChild(page);
   }

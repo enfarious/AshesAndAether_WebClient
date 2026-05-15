@@ -102,6 +102,32 @@ export class TabTargetService {
     this.player.setTarget(member.id, member.name);
   }
 
+  /** Acquire the nearest hostile-first candidate in front of the camera and
+   *  set it as the main target. No-op if nothing is in view. Used by the
+   *  gamepad's confirm-with-no-target path: first press picks a target, the
+   *  second press fires the TargetWindow action (usually Attack).
+   *
+   *  forwardX / forwardZ are the camera's normalized forward vector in world
+   *  space. fovDot is the dot-product threshold for "in view": 0.5 ≈ ±60°,
+   *  0 = front hemisphere (180°). */
+  targetClosestInView(forwardX: number, forwardZ: number, fovDot = 0.5): boolean {
+    const candidates = this._buildEnemyCandidates();
+    if (candidates.length === 0) return false;
+    const playerPos = this.getPlayerPosition();
+
+    for (const e of candidates) {
+      const dx = e.position.x - playerPos.x;
+      const dz = e.position.z - playerPos.z;
+      const len = Math.hypot(dx, dz);
+      if (len === 0) continue;
+      const dot = (dx / len) * forwardX + (dz / len) * forwardZ;
+      if (dot < fovDot) continue;
+      this.player.setTarget(e.id, e.name);
+      return true;
+    }
+    return false;
+  }
+
   /* ── Internals ─────────────────────────────────────────────────────────── */
 
   /** Tab cycles "engagement candidates" — non-ally entities within 50m.

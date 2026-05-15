@@ -166,6 +166,10 @@ export class MerchantPanel {
     this.root.style.display = 'none';
   }
 
+  close(): void { this.hide(); }
+
+  get isVisible(): boolean { return this._open; }
+
   dispose(): void {
     this.cleanup.forEach(fn => fn());
     this.root.remove();

@@ -42,6 +42,10 @@ export class VillagePanel {
     this.root.style.display = 'none';
   }
 
+  close(): void { this.hide(); }
+
+  get isVisible(): boolean { return this.visible; }
+
   setPlaceCallback(fn: () => void): void {
     this.onPlaceClick = fn;
   }

@@ -479,13 +479,7 @@ export class WASDController {
     // waiting on the other.
     if (key === 'v' && !e.repeat) {
       e.preventDefault();
-      const direction = this._currentDirectionFromHeld();
-      this.socket.sendCommand(`/retreat ${direction}`);
-      // Mirror the server-side stamina gate so we don't visually teleport
-      // on a dash the server is going to reject.
-      if (this.player.stamina.current >= DASH_STAMINA_COST) {
-        this._localDashSnap(direction);
-      }
+      this.triggerDash(this._currentDirectionFromHeld());
       return;
     }
 
@@ -704,6 +698,15 @@ export class WASDController {
       return 'forward';
     }
     return 'back';
+  }
+
+  /** Public dash trigger so the gamepad path can share the local-snap + stamina
+   *  gate with the V-key handler. Caller passes 'forward' or 'back'. */
+  triggerDash(direction: string): void {
+    this.socket.sendCommand(`/retreat ${direction}`);
+    if (this.player.stamina.current >= DASH_STAMINA_COST) {
+      this._localDashSnap(direction);
+    }
   }
 
   /**

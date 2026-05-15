@@ -93,6 +93,21 @@ let _nameplateFadeStart:    number  = 35;     // metres — opacity drop begins
 let _nameplateMaxCount:     number  = 30;     // hard cap on concurrent plates
 let _nameplateScale:        number  = 1.0;    // size multiplier for fonts + HP bar
 
+/** When true, picking Attack on a target also locks it (so subsequent
+ *  d-pad cycling doesn't accidentally drop the engagement). User-toggleable
+ *  in Settings → Controls. */
+let _attackAutoLock:        boolean = true;
+
+/** When true, the server rotates the player to face the target on Attack
+ *  engage and on each cast start. Off = manual facing only — pulls aggro
+ *  cleanly but you have to aim yourself. User-toggleable in Settings → Controls. */
+let _autoFaceOnAction:      boolean = true;
+
+/** When true, the gamepad sprint binding latches: press once to start,
+ *  again to stop. Auto-clears on movement stop or stamina depletion. Off =
+ *  hold-to-sprint (matches the keyboard Shift convention). */
+let _sprintToggleMode:      boolean = false;
+
 /** Plane size in metres — controls how far the fog extends around the
  *  player. Combined with subdivisions, determines vertex spacing
  *  (planeSize / subdivisions). 'long' (1000m) is the default. */
@@ -233,6 +248,15 @@ export const ClientConfig = {
 
   get nameplateTargetShowHp(): boolean { return _nameplateTargetShowHp; },
   set nameplateTargetShowHp(v: boolean) { _nameplateTargetShowHp = v; },
+
+  get attackAutoLock(): boolean { return _attackAutoLock; },
+  set attackAutoLock(v: boolean) { _attackAutoLock = v; },
+
+  get autoFaceOnAction(): boolean { return _autoFaceOnAction; },
+  set autoFaceOnAction(v: boolean) { _autoFaceOnAction = v; },
+
+  get sprintToggleMode(): boolean { return _sprintToggleMode; },
+  set sprintToggleMode(v: boolean) { _sprintToggleMode = v; },
 
   get nameplateTargetShowCast(): boolean { return _nameplateTargetShowCast; },
   set nameplateTargetShowCast(v: boolean) { _nameplateTargetShowCast = v; },

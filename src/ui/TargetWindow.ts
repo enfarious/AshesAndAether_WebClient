@@ -2,6 +2,7 @@ import type { PlayerState }    from '@/state/PlayerState';
 import type { EntityRegistry } from '@/state/EntityRegistry';
 import type { SocketClient }   from '@/network/SocketClient';
 import type { Entity }         from '@/network/Protocol';
+import { ClientConfig }        from '@/config/ClientConfig';
 
 /** How close the Approach button stops short of the target, in metres.
  *  Tuned for a melee-weapon-length gap — close enough to swing, not face-to-face. */
@@ -37,6 +38,10 @@ export class TargetWindow {
   private root:    HTMLElement;
   private cleanup: (() => void)[] = [];
   private _cursor  = 0;
+  /** When false, no item shows the ▸ / tw-active highlight. Used by the
+   *  gamepad's targeted state so the cursor doesn't conflict with the
+   *  ActionBar's slot-focus ring — only one is visible at a time. */
+  private _cursorVisible = true;
   private _rafId: number | null = null;
 
   // Track which entity state last drove a menu build, so we skip it on HP/distance ticks
@@ -68,7 +73,15 @@ export class TargetWindow {
         !!(e.hostile || e.type === 'mob' || e.type === 'wildlife')
         && this.player.combat.autoAttackTarget !== e.id
       ),
-      execute: e => this.socket.sendCombatAction('basic_attack', e.id),
+      execute: e => {
+        this.socket.sendCombatAction('basic_attack', e.id);
+        // Committing to attack also commits to the target — lock it so the
+        // auto-attack loop survives accidental d-pad cycling / misclicks.
+        // Gated by ClientConfig.attackAutoLock (Settings → Controls).
+        if (ClientConfig.attackAutoLock && !this.player.targetLocked) {
+          this.player.toggleTargetLock();
+        }
+      },
     },
     {
       // Disengage — appears in place of Attack when we're auto-attacking this
@@ -609,7 +622,7 @@ export class TargetWindow {
     this._cursor = Math.min(this._cursor, Math.max(0, visible.length - 1));
 
     visible.forEach((item, i) => {
-      const isActive  = i === this._cursor;
+      const isActive  = this._cursorVisible && i === this._cursor;
       const isDisabled = entity ? (item.disabled?.(entity) ?? false) : false;
       const row = document.createElement('div');
       row.className = 'tw-item'
@@ -628,6 +641,7 @@ export class TargetWindow {
 
       if (!isDisabled) {
         row.addEventListener('mouseenter', () => {
+          this._cursorVisible = true;
           this._cursor = i;
           this._updateCursor();
         });
@@ -650,43 +664,71 @@ export class TargetWindow {
     const tag = (document.activeElement as HTMLElement)?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
 
-    const entity  = this.entities.get(this.player.targetId);
-    const visible = entity
-      ? this._menu.filter(m => m.visible(entity))
-      : [];
-
     switch (ev.key) {
-      case 'ArrowUp':
-        ev.preventDefault();
-        this._cursor = (this._cursor - 1 + visible.length) % visible.length;
-        this._updateCursor();
-        break;
-
-      case 'ArrowDown':
-        ev.preventDefault();
-        this._cursor = (this._cursor + 1) % visible.length;
-        this._updateCursor();
-        break;
-
+      case 'ArrowUp':    ev.preventDefault(); this.cursorUp();    break;
+      case 'ArrowDown':  ev.preventDefault(); this.cursorDown();  break;
       case 'Enter':
-      case 'NumpadEnter': {
-        ev.preventDefault();
-        const item = visible[this._cursor];
-        if (item && entity && !(item.disabled?.(entity))) item.execute(entity);
-        break;
-      }
-
-      case 'Escape':
-        ev.preventDefault();
-        this.player.clearTarget();
-        break;
+      case 'NumpadEnter': ev.preventDefault(); this.activate();   break;
+      case 'Escape':     ev.preventDefault(); this.player.clearTarget(); break;
     }
+  }
+
+  // ── Public cursor API ─────────────────────────────────────────────────────
+  // Wraps the keyboard-handler logic so gamepad / state-machine layers can
+  // drive the cursor without faking key events. Wired in via the gamepad
+  // controller's `targeted` state (d-pad U/D + fb3 activate).
+
+  cursorUp(): void {
+    const visible = this._visibleMenu();
+    if (visible.length === 0) return;
+    this._cursorVisible = true;
+    this._cursor = (this._cursor - 1 + visible.length) % visible.length;
+    this._updateCursor();
+  }
+
+  cursorDown(): void {
+    const visible = this._visibleMenu();
+    if (visible.length === 0) return;
+    this._cursorVisible = true;
+    this._cursor = (this._cursor + 1) % visible.length;
+    this._updateCursor();
+  }
+
+  /** Hide the cursor highlight without losing the cursor position. Used when
+   *  the gamepad d-pad shifts to the ActionBar so only one focus is visible. */
+  hideCursor(): void {
+    if (!this._cursorVisible) return;
+    this._cursorVisible = false;
+    this._updateCursor();
+  }
+
+  /** Restore the cursor highlight at its current position. */
+  showCursor(): void {
+    if (this._cursorVisible) return;
+    this._cursorVisible = true;
+    this._updateCursor();
+  }
+
+  activate(): void {
+    const tid = this.player.targetId;
+    if (!tid) return;
+    const entity = this.entities.get(tid);
+    if (!entity) return;
+    const visible = this._menu.filter(m => m.visible(entity));
+    const item = visible[this._cursor];
+    if (item && !(item.disabled?.(entity))) item.execute(entity);
+  }
+
+  private _visibleMenu(): MenuItem[] {
+    if (!this.player.targetId) return [];
+    const entity = this.entities.get(this.player.targetId);
+    return entity ? this._menu.filter(m => m.visible(entity)) : [];
   }
 
   private _updateCursor(): void {
     const items = this.root.querySelectorAll<HTMLElement>('.tw-item');
     items.forEach((el, i) => {
-      const active = i === this._cursor;
+      const active = this._cursorVisible && i === this._cursor;
       el.classList.toggle('tw-active', active);
       const glyph = el.querySelector<HTMLElement>('.tw-glyph');
       if (glyph) glyph.textContent = active ? '▸' : '';

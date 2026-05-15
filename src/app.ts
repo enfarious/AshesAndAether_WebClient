@@ -21,10 +21,13 @@ import { CameraInput }        from '@/camera/CameraInput';
 import { ClickMoveController } from '@/input/ClickMoveController';
 import { WASDController }      from '@/input/WASDController';
 import { GamepadController }   from '@/input/GamepadController';
+import { GamepadBindings }     from '@/input/GamepadBindings';
+import { AbilityArming }       from '@/input/AbilityArming';
 import { TabTargetService }    from '@/input/TabTargetService';
 import { HUD, type PerfSnapshot } from '@/ui/HUD';
 import { ChatPanel }          from '@/ui/ChatPanel';
 import { TargetWindow }       from '@/ui/TargetWindow';
+import { ModalStack }         from '@/ui/ModalStack';
 import { InventoryWindow }    from '@/ui/InventoryWindow';
 import { LootWindow }         from '@/ui/LootWindow';
 import { ExamineWindow }      from '@/ui/ExamineWindow';
@@ -197,6 +200,20 @@ export class App {
   private buildPanel:        BuildPanel         | null = null;
   private placementMode:     PlacementMode      | null = null;
 
+  // Central registry of modal-style panels — `setIsMenuOpen` queries this
+  // instead of hand-rolled OR-chains. Panels register themselves at
+  // construction site. See ModalStack for the contract.
+  private modalStack = new ModalStack();
+
+  // Gamepad ability-arming controller — bridges fb3-on-slot → confirm prompt
+  // → fire. Constructed once the ActionBar exists. Self-cast only for now;
+  // enemy/ally sub-target picker is Phase 4b.
+  private abilityArming: AbilityArming | null = null;
+
+  // User-rebindable gamepad button-to-action map. Loaded once from localStorage;
+  // shared with the Settings → Controls tab so changes propagate live.
+  private gamepadBindings = new GamepadBindings();
+
   // ── BYOLLM ──────────────────────────────────────────────────────────────
   private chatLogger:    ChatLogger           | null = null;
   private memoryStore:   CompanionMemoryStore | null = null;
@@ -299,7 +316,8 @@ export class App {
       onBeaconDetailChange: () => { this.guildBeacons?.rebuildAuras(); },
       onMiasmaQualityChange: () => { this._rebuildMiasmaFog(); },
       onMiasmaRangeChange:   () => { this._rebuildMiasmaFog(); },
-    });
+    }, this.gamepadBindings);
+    this.modalStack.register(this.settingsWindow);
 
     // Network
     this.socket = new SocketClient();
@@ -333,7 +351,7 @@ export class App {
       canvas, this.camera, this.socket, this.player, this.entities, this.factory,
     );
     this.wasd = new WASDController(this.camera, this.socket, this.player, this.entities);
-    this.gamepad = new GamepadController(this.camera, this.socket, this.player);
+    this.gamepad = new GamepadController(this.camera, this.socket, this.player, this.gamepadBindings);
 
     // Asset loader status → loading screen
     this.assets.onStatus(msg  => loading.setStatus(msg));
@@ -1465,6 +1483,7 @@ export class App {
     }
     if (!this.inventoryWindow) {
       this.inventoryWindow = new InventoryWindow(this.uiRoot, this.player, this.socket);
+      this.modalStack.register(this.inventoryWindow);
       // Wire 'I' key to inventory toggle via WASDController callback
       this.wasd.setInventoryToggle(() => this.inventoryWindow!.toggle());
     }
@@ -1477,6 +1496,7 @@ export class App {
     }
     if (!this.scriptEditor) {
       this.scriptEditor = new ScriptEditor(this.uiRoot, this.socket);
+      this.modalStack.register(this.scriptEditor);
       this.router.onEditorOpen(p => this.scriptEditor!.open(p));
       this.router.onEditorResult(p => this.scriptEditor!.handleResult(p));
     }
@@ -1568,11 +1588,13 @@ export class App {
       // when the player F-keys the entry-room obelisk, and on hire/dismiss
       // success). No host-side wiring beyond construction.
       this.hirelingPanel = new HirelingPanel(this.uiRoot, this.socket);
+      this.modalStack.register(this.hirelingPanel);
     }
     if (!this.merchantPanel) {
       // Listens for `open_merchant_panel` (F-key on vendor NPC + on
       // buy/sell success refresh). Buttons fire /buy and /sell.
       this.merchantPanel = new MerchantPanel(this.uiRoot, this.socket);
+      this.modalStack.register(this.merchantPanel);
     }
     // Train UI lives as a tab inside TravelPanel — F-key on a station
     // fires `open_travel_panel { tab: 'train' }`, the TravelPanel listens
@@ -1587,6 +1609,7 @@ export class App {
       // Modal that opens on `open_caravan_panel` (F-key on a caravan
       // terminal). Rows fire `/caravan <terminalId>` on Hail.
       this.caravanPanel = new CaravanPanel(this.uiRoot, this.socket);
+      this.modalStack.register(this.caravanPanel);
     }
     if (!this.caravanRide) {
       // Client-side caravan motion driver. Server emits a single
@@ -1605,6 +1628,7 @@ export class App {
     }
     if (!this.abilityWindow) {
       this.abilityWindow = new AbilityWindow(this.uiRoot, this.player, this.socket, this.router);
+      this.modalStack.register(this.abilityWindow);
       this.abilityWindow.setBeaconRangeCheck(() =>
         this.beacons?.isPositionInRange(this.player.position.x, this.player.position.z) ?? false,
       );
@@ -1613,6 +1637,7 @@ export class App {
     }
     if (!this.characterSheet) {
       this.characterSheet = new CharacterSheet(this.uiRoot, this.player, this.socket);
+      this.modalStack.register(this.characterSheet);
       this.characterSheet.setBeaconRangeCheck(() =>
         this.beacons?.isPositionInRange(this.player.position.x, this.player.position.z) ?? false,
       );
@@ -1630,8 +1655,21 @@ export class App {
       this.router.onCombatOutcome((data) => this.actionBar!.flashOutcome(data));
       this.router.onCombatError((err)    => this.actionBar!.flashError(err));
     }
+    if (!this.abilityArming) {
+      this.abilityArming = new AbilityArming(
+        this.player,
+        this.uiRoot,
+        (idx) => this.actionBar!.probeSlot(idx),
+        (idx) => this.actionBar!.activateSlot(idx),
+      );
+    }
     if (!this.partyWindow) {
       this.partyWindow = new PartyWindow(this.uiRoot, this.player, this.entities, this.socket);
+      // NOT registered with ModalStack — PartyWindow is a HUD element, not a
+      // modal panel. The idle d-pad U/D already cycles party targets and
+      // updates the panel's highlight via player.targetId. Registering it
+      // would put the gamepad into 'modal' state any time the player has a
+      // party, swallowing d-pad L/R tab-target inputs.
       this.wasd.setPartyToggle(() => this.partyWindow!.toggle());
     }
     if (!this.minimap) {
@@ -1639,23 +1677,28 @@ export class App {
     }
     if (!this.marketPanel) {
       this.marketPanel = new MarketPanel(this.uiRoot, this.player, this.socket, this.router);
+      this.modalStack.register(this.marketPanel);
       this.wasd.setMarketToggle(() => this.marketPanel!.toggle());
       this.targetWindow!.setMarketToggle(() => this.marketPanel!.show());
     }
     if (!this.worldMapPanel) {
       this.worldMapPanel = new WorldMapPanel(this.uiRoot, this.player, this.entities, this.world, this.socket);
+      this.modalStack.register(this.worldMapPanel);
       this.wasd.setWorldMapToggle(() => this.worldMapPanel!.toggle());
     }
     if (!this.travelPanel) {
       this.travelPanel = new TravelPanel(this.uiRoot, this.world, this.socket, this.session);
+      this.modalStack.register(this.travelPanel);
       this.wasd.setTravelToggle(() => this.travelPanel!.toggle());
     }
     if (!this.guildPanel) {
       this.guildPanel = new GuildPanel(this.uiRoot, this.player, this.socket, this.router);
+      this.modalStack.register(this.guildPanel);
       this.wasd.setGuildToggle(() => this.guildPanel!.toggle());
     }
     if (!this.companionPanel) {
       this.companionPanel = new CompanionPanel(this.uiRoot, this.player, this.socket, this.router);
+      this.modalStack.register(this.companionPanel);
       this.wasd.setCompanionToggle(() => this.companionPanel!.toggle());
     }
     if (!this.companionHUD) {
@@ -1710,6 +1753,7 @@ export class App {
     }
     if (!this.buildPanel) {
       this.buildPanel = new BuildPanel(this.uiRoot, this.socket, this.router);
+      this.modalStack.register(this.buildPanel);
       // B key — only toggle if in own village
       this.wasd.setBuildToggle(() => {
         if (this.world.isVillage && this.world.villageOwnerId === this.player.id) {
@@ -1782,28 +1826,97 @@ export class App {
         this.player.setFocusTarget(tid, ent.name ?? tid);
       });
 
-      // Gamepad — same targeting callbacks + layout/menu awareness
+      // Gamepad — d-pad (idle state): same targeting callbacks as keyboard
       this.gamepad.setTabTargetNext(() => this.tabTarget!.cycleTarget(1));
       this.gamepad.setTabTargetPrev(() => this.tabTarget!.cycleTarget(-1));
       this.gamepad.setPartyTargetNext(() => this.tabTarget!.cyclePartyTarget(1));
       this.gamepad.setPartyTargetPrev(() => this.tabTarget!.cyclePartyTarget(-1));
       this.gamepad.setLayoutEditActive(() => this.layoutEditor?.isActive ?? false);
-      this.gamepad.setIsMenuOpen(() =>
-        (this.inventoryWindow?.isVisible ?? false) ||
-        (this.characterSheet?.isVisible  ?? false) ||
-        (this.abilityWindow?.isVisible   ?? false) ||
-        (this.marketPanel?.isVisible     ?? false) ||
-        (this.worldMapPanel?.isVisible   ?? false) ||
-        (this.travelPanel?.isVisible     ?? false) ||
-        (this.guildPanel?.isVisible      ?? false) ||
-        (this.companionPanel?.isVisible  ?? false) ||
-        (this.partyWindow?.isVisible     ?? false) ||
-        (this.buildPanel?.isVisible      ?? false) ||
-        (this.scriptEditor?.isVisible    ?? false)
-      );
+      // Single source of truth for "is any modal panel open?" — panels
+      // register themselves with the ModalStack at construction. New windows
+      // are picked up automatically; no closure to keep in sync.
+      this.gamepad.setIsMenuOpen(() => this.modalStack.anyOpen);
+
+      // d-pad (targeted state): U/D walks TargetWindow's action cursor,
+      // L/R walks ActionBar's slot-focus cursor. Each axis hides the other
+      // surface's highlight so only one is visible at a time — otherwise
+      // "press confirm" is ambiguous.
+      this.gamepad.setTargetCursorUp(() => {
+        this.actionBar?.clearFocus();
+        this.targetWindow?.cursorUp();   // also flips _cursorVisible true
+      });
+      this.gamepad.setTargetCursorDown(() => {
+        this.actionBar?.clearFocus();
+        this.targetWindow?.cursorDown();
+      });
+      this.gamepad.setActionSlotPrev(() => {
+        this.targetWindow?.hideCursor();
+        this.actionBar?.focusSlotPrev();
+      });
+      this.gamepad.setActionSlotNext(() => {
+        this.targetWindow?.hideCursor();
+        this.actionBar?.focusSlotNext();
+      });
+
+      // On every fresh lock, start with the TargetWindow cursor visible and
+      // no slot focus — the typical post-lock action is Attack/Talk.
+      this.gamepad.setOnEnterTargeted(() => {
+        this.targetWindow?.showCursor();
+        this.actionBar?.clearFocus();
+      });
+
+      // Face buttons (state-routed inside the controller, button-action map
+      // owned by GamepadBindings):
+      //   confirm targeted  → fire surface whose cursor moved last
+      //                       ('ud' = TargetWindow, 'lr' = focused slot)
+      //   lock_toggle       → toggle lock on current soft target;
+      //                       also clears slot focus on unlock
+      this.gamepad.setOnConfirmTargetWindow(() => {
+        // No target yet? Acquire the closest hostile-first entity in camera
+        // view as a first-press affordance. User presses confirm again to
+        // actually fire the TargetWindow action (Attack/Talk/etc).
+        if (!this.player.targetId) {
+          const yaw = this.camera.getYaw();
+          const forwardX = -Math.sin(yaw);
+          const forwardZ = -Math.cos(yaw);
+          this.tabTarget?.targetClosestInView(forwardX, forwardZ);
+          return;
+        }
+        this.targetWindow?.activate();
+      });
+      this.gamepad.setOnConfirmActionBar(() => {
+        // Route through arming — self-cast/aoe/untyped gets a confirm prompt;
+        // enemy/ally fall through to immediate fire (Phase 4b will add picker).
+        const slot = this.actionBar?.getFocusedSlot();
+        if (slot === null || slot === undefined) return;
+        this.abilityArming?.arm(slot);
+      });
+      this.gamepad.setOnLockToggle(() => {
+        if (!this.player.targetId) return;
+        const wasLocked = this.player.targetLocked;
+        this.player.toggleTargetLock();
+        // If we just unlocked, clear the slot-focus ring so the next lock
+        // starts on the TargetWindow cursor (handled by setOnEnterTargeted).
+        if (wasLocked) this.actionBar?.clearFocus();
+      });
+
+      // Arming state — overrides every other input state until the player
+      // confirms (fb3 fires) or cancels (fb2 aborts).
+      this.gamepad.setIsArming(()       => this.abilityArming?.isArming ?? false);
+      this.gamepad.setOnConfirmArming(() => this.abilityArming?.confirm());
+      this.gamepad.setOnCancelArming(()  => this.abilityArming?.abort());
+
+      // ARPG fast-path: L2/R2 + fb[1..4] = direct slot fire (1-4 / 5-8).
+      // Bypasses arming entirely — straight to ActionBar.activateSlot.
+      this.gamepad.setOnSlotShortcut((idx) => this.actionBar?.activateSlot(idx));
+
+      // Dash — shares the V-key path inside WASDController (stamina gate +
+      // local snap). Direction comes from the stick state in the gamepad tick.
+      this.gamepad.setOnDash((dir) => this.wasd.triggerDash(dir));
     }
     if (!this.villagePanel) {
       this.villagePanel = new VillagePanel(this.uiRoot, this.world, this.player, this.socket);
+      this.modalStack.register(this.villagePanel);
       this.villagePanel.setPlaceCallback(() => this.buildPanel?.show());
     }
     if (!this.placementMode) {

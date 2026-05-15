@@ -53,6 +53,10 @@ export class ActionBar {
   private _lastCastSlot: number | null = null;
   private _lastCastAt   = 0;
 
+  // Gamepad slot-focus cursor. Null = no focus rendered (idle / target-unlocked).
+  // d-pad L/R in the `targeted` state walks this; fb3 fires `activateSlot(focused)`.
+  private _focusedSlot: number | null = null;
+
   /** Optional callback for showing validation feedback (e.g. chat system message). */
   onValidationError: ((msg: string) => void) | null = null;
 
@@ -151,6 +155,58 @@ export class ActionBar {
 
       el.classList.toggle('ab-blocked', blocked);
       el.classList.toggle('ab-ready',   !blocked);
+    }
+  }
+
+  // ── Gamepad slot-focus cursor ──────────────────────────────────────────────
+
+  /** Move focus to the previous slot (wraps). Wakes from null at slot 0. */
+  focusSlotPrev(): void {
+    this._focusedSlot = this._focusedSlot === null
+      ? 0
+      : (this._focusedSlot - 1 + SLOT_COUNT) % SLOT_COUNT;
+    this._updateFocusVisual();
+  }
+
+  /** Move focus to the next slot (wraps). Wakes from null at slot 0. */
+  focusSlotNext(): void {
+    this._focusedSlot = this._focusedSlot === null
+      ? 0
+      : (this._focusedSlot + 1) % SLOT_COUNT;
+    this._updateFocusVisual();
+  }
+
+  /** Fire the focused slot via the existing activateSlot path. No-op when no focus. */
+  fireFocusedSlot(): void {
+    if (this._focusedSlot === null) return;
+    this.activateSlot(this._focusedSlot);
+  }
+
+  /** Hide the focus ring. Called when leaving the `targeted` input state. */
+  clearFocus(): void {
+    if (this._focusedSlot === null) return;
+    this._focusedSlot = null;
+    this._updateFocusVisual();
+  }
+
+  /** Current focused slot index, or null if no focus is rendered. */
+  getFocusedSlot(): number | null { return this._focusedSlot; }
+
+  /** Slot-level lookup for the arming flow — returns name + targetType, or null
+   *  when the slot is empty or the ability is unknown to the local manifest. */
+  probeSlot(index: number): { name: string; targetType: string | undefined } | null {
+    const nodeId = this.player.activeLoadout[index];
+    if (!nodeId) return null;
+    const node = this._manifestMap().get(nodeId);
+    if (!node) return null;
+    return { name: node.name, targetType: node.targetType };
+  }
+
+  private _updateFocusVisual(): void {
+    for (let i = 0; i < this.slotEls.length; i++) {
+      const el = this.slotEls[i];
+      if (!el) continue;
+      el.classList.toggle('ab-focused', i === this._focusedSlot);
     }
   }
 
@@ -426,6 +482,15 @@ export class ActionBar {
       #action-bar .ab-slot.ab-empty:hover {
         border-color: rgba(200, 98, 42, 0.2);
         background: rgba(10, 8, 6, 0.75);
+      }
+
+      /* Gamepad focus ring — pulses to make the cursor unmissable */
+      #action-bar .ab-slot.ab-focused {
+        border-color: rgba(220, 165, 80, 0.95);
+        box-shadow:
+          0 0 0 1px rgba(220, 165, 80, 0.85),
+          0 0 12px rgba(220, 165, 80, 0.55);
+        z-index: 2;
       }
 
       /* Capstone (slot 8) */

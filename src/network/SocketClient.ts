@@ -214,11 +214,15 @@ export class SocketClient {
     });
   }
 
-  sendMoveContinuous(heading: number, speed: MovementSpeed): void {
+  sendMoveContinuous(heading: number, speed: MovementSpeed, magnitude?: number): void {
     this._send('move', {
       method: 'continuous',
       heading,
       speed,
+      // Analog stick magnitude (0..1) in the jog band. Server interpolates
+      // jog speed down to walk speed when below 1.0. Omitted by WASD —
+      // server defaults to 1.0 = tier-multiplier behavior unchanged.
+      magnitude,
       timestamp: Date.now(),
     });
   }
@@ -248,7 +252,9 @@ export class SocketClient {
     position?:    Vector3,
   ): void {
     console.log(`[SocketClient] sendCombatAction → ability="${abilityId}" target="${targetId}" sub="${subTargetId ?? ''}"`, position ?? '');
-    this._send('combat_action', { abilityId, targetId, subTargetId, position, timestamp: Date.now() });
+    // autoFace defaults true server-side; only send when off so the wire stays clean.
+    const autoFace = ClientConfig.autoFaceOnAction ? undefined : false;
+    this._send('combat_action', { abilityId, targetId, subTargetId, position, autoFace, timestamp: Date.now() });
   }
 
   sendCommand(

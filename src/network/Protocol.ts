@@ -322,6 +322,12 @@ export interface Entity {
   /** Guild tag (3-5 uppercase chars) for non-party player plates —
    *  rendered as "[TAG] Name". Resolved server-side at zone-in. */
   guildTag?: string;
+  /** Mob-only: the id of whatever entity this mob is currently auto-
+   *  attacking. Server pushes on AA-target transition + initial spawn.
+   *  Drives the sub-target indicator (red when this mob is engaged with
+   *  the viewer or an ally, yellow otherwise) and AoE colour coding.
+   *  `null` = explicitly cleared; `undefined` = field absent / unknown. */
+  combatTargetId?: string | null;
 }
 
 export interface Exit {
@@ -945,6 +951,9 @@ export interface AbilityNodeSummary {
   castTime?:          number;
   targetType?:        string;
   range?:             number;
+  /** AoE footprint when the ability has one — drives the armed-preview
+   *  indicator and any future shape-aware UI. Single-target abilities omit. */
+  aoe?:               AoeShape;
   // Passive stat bonuses
   statBonuses?: Record<string, number>;
   questGate?:   string;
@@ -1154,9 +1163,16 @@ export interface LootSessionEndPayload {
 export type EnmityLevel = 'red' | 'yellow' | 'blue';
 
 export interface EnmityEntry {
-  entityId: string;
-  name:     string;
-  level:    EnmityLevel;
+  entityId:       string;
+  name:           string;
+  level:          EnmityLevel;
+  /** Player's own threat value against this mob. */
+  myThreat?:      number;
+  /** Highest threat value against this mob — could be you, a companion,
+   *  a hireling, or another player. Lets the HUD show "you vs top". */
+  topThreat?:     number;
+  /** Name of the current top-threat entity. Surfaces who's tanking. */
+  topEntityName?: string;
 }
 
 // ── Village / Plot System ────────────────────────────────────────────────────

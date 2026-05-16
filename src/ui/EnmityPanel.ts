@@ -85,9 +85,12 @@ export class EnmityPanel {
     if (!this._visible) return;
 
     const list = this.player.enmityList;
-    const inCombat = this.player.combat.inCombat;
 
-    if (!inCombat || list.length === 0) {
+    // Visible whenever any mob has the player on its enmity table — even
+    // when the player's own combat state has lapsed (timeout, fled, etc.).
+    // The list IS the "mobs that remember you" signal, which is what the
+    // player wants to see at a glance.
+    if (list.length === 0) {
       this.root.classList.add('enmity-hidden');
       this._lastEnmityKey = '';
       return;
@@ -100,8 +103,11 @@ export class EnmityPanel {
       (a, b) => (LEVEL_ORDER[a.level] ?? 3) - (LEVEL_ORDER[b.level] ?? 3),
     );
 
-    // Skip DOM rebuild if the list hasn't changed
-    const key = sorted.map(e => `${e.entityId}:${e.level}`).join('|');
+    // Skip DOM rebuild if the list hasn't changed (include threat values
+    // so the panel updates as threat shifts during a fight).
+    const key = sorted.map(e =>
+      `${e.entityId}:${e.level}:${Math.round(e.myThreat ?? 0)}:${Math.round(e.topThreat ?? 0)}`,
+    ).join('|');
     if (key === this._lastEnmityKey) return;
     this._lastEnmityKey = key;
 
@@ -121,6 +127,20 @@ export class EnmityPanel {
 
       row.appendChild(dot);
       row.appendChild(name);
+
+      // Debug numbers — your threat / top threat (top entity name if not you).
+      // Will hide behind a setting once combat balance is tuned and the
+      // colored dot conveys enough on its own.
+      if (entry.myThreat !== undefined && entry.topThreat !== undefined) {
+        const threat = document.createElement('span');
+        threat.className = 'enmity-threat';
+        const my  = Math.round(entry.myThreat);
+        const top = Math.round(entry.topThreat);
+        threat.textContent = entry.topEntityName && entry.level !== 'red'
+          ? `${my}/${top} (${entry.topEntityName})`
+          : `${my}/${top}`;
+        row.appendChild(threat);
+      }
 
       row.addEventListener('click', () => {
         this.onTargetClick?.(entry.entityId);
@@ -198,6 +218,14 @@ export class EnmityPanel {
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+        flex: 1;
+      }
+
+      .enmity-threat {
+        font-family: var(--font-mono, monospace);
+        font-size: 10px;
+        color: rgba(212, 201, 184, 0.55);
+        flex-shrink: 0;
       }
     `;
     document.head.appendChild(style);

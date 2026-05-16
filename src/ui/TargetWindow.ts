@@ -352,6 +352,26 @@ export class TargetWindow {
             inset 0 1px 0 rgba(255,200,100,0.04);
         }
 
+        /* AbilityArming sub-target picker — pulse the panel border so the
+         * player sees which entity their D-pad is walking through. Colour
+         * tracks kind: amber for enemy, green for ally. */
+        @keyframes tw-pick-pulse-enemy {
+          0%, 100% { box-shadow: 0 0 0 1px rgba(220, 80, 60, 0.55), 0 0 14px rgba(220, 80, 60, 0.45); }
+          50%      { box-shadow: 0 0 0 1px rgba(220, 80, 60, 0.95), 0 0 22px rgba(220, 80, 60, 0.75); }
+        }
+        @keyframes tw-pick-pulse-ally {
+          0%, 100% { box-shadow: 0 0 0 1px rgba(110, 200, 130, 0.55), 0 0 14px rgba(110, 200, 130, 0.45); }
+          50%      { box-shadow: 0 0 0 1px rgba(110, 200, 130, 0.95), 0 0 22px rgba(110, 200, 130, 0.75); }
+        }
+        body.aa-picking-enemy #target-window .tw-panel {
+          animation: tw-pick-pulse-enemy 0.9s ease-in-out infinite;
+          border-color: rgba(220, 80, 60, 0.85);
+        }
+        body.aa-picking-ally  #target-window .tw-panel {
+          animation: tw-pick-pulse-ally  0.9s ease-in-out infinite;
+          border-color: rgba(110, 200, 130, 0.85);
+        }
+
         /* ── Header: name + HP ── */
 
         .tw-header {

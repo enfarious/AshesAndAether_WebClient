@@ -228,6 +228,17 @@ export class WorldMapPanel {
     requestAnimationFrame(() => this.root.classList.add('wm-visible'));
     this.visible = true;
 
+    // Instance zones (vault: / boss_arena:) have no real geography — show
+    // a friendly "no map" panel instead of fetching/rendering stale data
+    // from the player's previous overworld zone.
+    const zoneId = this.world.zone?.id ?? '';
+    const isInstance = zoneId.startsWith('vault:') || zoneId.startsWith('boss_arena:');
+    const mapEl   = this.root.querySelector<HTMLElement>('#wm-map');
+    const noMapEl = this.root.querySelector<HTMLElement>('#wm-no-map');
+    if (mapEl)   mapEl.style.display   = isInstance ? 'none' : '';
+    if (noMapEl) noMapEl.style.display = isInstance ? 'flex' : 'none';
+    if (isInstance) return;
+
     if (!this.map) this._initMap();
     else this.map!.invalidateSize();
 
@@ -1184,6 +1195,35 @@ export class WorldMapPanel {
 
         #wm-map { flex: 1; min-height: 0; }
 
+        #wm-no-map {
+          flex: 1;
+          min-height: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: rgba(12, 8, 4, 0.88);
+        }
+        .wm-no-map-inner {
+          text-align: center;
+          color: rgba(212, 201, 184, 0.7);
+          font-family: var(--font-body, serif);
+        }
+        .wm-no-map-icon {
+          font-size: 48px;
+          color: rgba(200, 145, 60, 0.45);
+          line-height: 1;
+          margin-bottom: 12px;
+        }
+        .wm-no-map-text {
+          font-size: 16px;
+          font-weight: 500;
+          margin-bottom: 4px;
+        }
+        .wm-no-map-sub {
+          font-size: 12px;
+          color: rgba(212, 201, 184, 0.4);
+        }
+
         /* Smooth AD overlay — let the browser bilinearly interpolate the
          * 64-cell grid up to display res so the field reads as a gradient
          * rather than discrete cells. */
@@ -1344,6 +1384,13 @@ export class WorldMapPanel {
         </div>
 
         <div id="wm-map"></div>
+        <div id="wm-no-map" style="display:none;">
+          <div class="wm-no-map-inner">
+            <div class="wm-no-map-icon">⊘</div>
+            <div class="wm-no-map-text">No map for this area.</div>
+            <div class="wm-no-map-sub">Instanced zones don't appear on the world map.</div>
+          </div>
+        </div>
 
         <div class="wm-legend">
           <div class="wm-legend-bar-wrap" title="Aether Density — colors mirror the live overlay. Lethal mechanic deferred; threshold shown anyway.">

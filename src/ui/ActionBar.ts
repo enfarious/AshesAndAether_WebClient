@@ -192,14 +192,15 @@ export class ActionBar {
   /** Current focused slot index, or null if no focus is rendered. */
   getFocusedSlot(): number | null { return this._focusedSlot; }
 
-  /** Slot-level lookup for the arming flow — returns name + targetType, or null
-   *  when the slot is empty or the ability is unknown to the local manifest. */
-  probeSlot(index: number): { name: string; targetType: string | undefined } | null {
+  /** Slot-level lookup for the arming flow — returns name + targetType + AoE
+   *  shape (when set), or null when the slot is empty or the ability is
+   *  unknown to the local manifest. */
+  probeSlot(index: number): { name: string; targetType: string | undefined; aoe: AbilityNodeSummary['aoe'] } | null {
     const nodeId = this.player.activeLoadout[index];
     if (!nodeId) return null;
     const node = this._manifestMap().get(nodeId);
     if (!node) return null;
-    return { name: node.name, targetType: node.targetType };
+    return { name: node.name, targetType: node.targetType, aoe: node.aoe };
   }
 
   private _updateFocusVisual(): void {
@@ -491,6 +492,14 @@ export class ActionBar {
           0 0 0 1px rgba(220, 165, 80, 0.85),
           0 0 12px rgba(220, 165, 80, 0.55);
         z-index: 2;
+      }
+      /* Stop the ready-pulse animation while focused — otherwise its
+       * box-shadow keyframes mask the static focus ring on any slot that
+       * has an ability (i.e. has .ab-ready). Empty slots have no ab-ready
+       * and were the only ones where the ring was visible before. */
+      #action-bar .ab-slot.ab-focused.ab-ready,
+      #action-bar .ab-slot.ab-focused.ab-ready.ab-capstone {
+        animation: none;
       }
 
       /* Capstone (slot 8) */

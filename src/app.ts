@@ -13,6 +13,8 @@ import { AssetLoader }        from '@/world/AssetLoader';
 import { EntityFactory }      from '@/entities/EntityFactory';
 import { RemoteEntity }       from '@/entities/RemoteEntity';
 import { AutoAttackRing }     from '@/entities/AutoAttackRing';
+import { SubTargetIndicator } from '@/entities/SubTargetIndicator';
+import { AoEPreviewIndicator } from '@/entities/AoEPreviewIndicator';
 import { TelegraphRenderer } from '@/entities/TelegraphRenderer';
 import { NameplateManager } from '@/entities/NameplateManager';
 import { VaultStagingMarker } from '@/vault/VaultStagingMarker';
@@ -121,6 +123,8 @@ export class App {
   private assets:  AssetLoader;
   private factory: EntityFactory;
   private autoAttackRing: AutoAttackRing;
+  private subTargetIndicator: SubTargetIndicator;
+  private aoePreviewIndicator: AoEPreviewIndicator;
   private telegraphs:    TelegraphRenderer;
   private nameplates:    NameplateManager;
   private stagingMarker: VaultStagingMarker;
@@ -281,6 +285,61 @@ export class App {
   private _perfSnapshot: PerfSnapshot | null = null;
   private _perfLastGather = 0;
 
+  /** Max angular rate (rad/s) the lock-on camera can slerp toward target. */
+  private static readonly _LOCK_ON_CAM_YAW_RATE = 4.0;  // ~230°/s
+
+  /** Half-width of the free-look window around the target direction (rad).
+   *  Inside this window the player can right-stick yaw freely; outside,
+   *  the camera slerps back to the boundary so the target re-enters the
+   *  cone. 60° on each side = 120° of total free yaw. */
+  private static readonly _LOCK_ON_CAM_FREE_HALF_RAD = (60 * Math.PI) / 180;
+
+  /** Per-frame lock-on camera slerp. Pulls the camera yaw back toward the
+   *  target only when the target has left the free-look cone (±60° around
+   *  forward). Inside the cone, right-stick yaw works without resistance
+   *  — typical lock-on cam feel with breathing room to peek around. */
+  private _tickLockOnCamera(dt: number): void {
+    if (!ClientConfig.lockOnCamera) return;
+    if (!this.player.targetLocked) return;
+    const targetId = this.player.lockedTargetId;
+    if (!targetId) return;
+
+    const targetObj = this.factory.getObject(targetId);
+    if (!targetObj) return;
+    const playerObj = this.factory.getObject(this.player.id ?? '');
+    if (!playerObj) return;
+
+    const tp = targetObj.object3d.position;
+    const pp = playerObj.object3d.position;
+    const dx = tp.x - pp.x;
+    const dz = tp.z - pp.z;
+    if (dx === 0 && dz === 0) return;
+
+    // OrbitCamera convention: forward look = (-sin(yaw), -cos(yaw)).
+    // Solve for the yaw that points forward at the target.
+    let desiredYaw = Math.atan2(dx, dz) + Math.PI;
+    const TWO_PI = Math.PI * 2;
+    desiredYaw = ((desiredYaw % TWO_PI) + TWO_PI) % TWO_PI;
+
+    const currentYaw = this.camera.getYaw();
+    let delta = desiredYaw - currentYaw;
+    if (delta >  Math.PI) delta -= TWO_PI;
+    if (delta < -Math.PI) delta += TWO_PI;
+
+    // Inside the free-look cone — no slerp, manual yaw stands.
+    const absDelta = Math.abs(delta);
+    if (absDelta <= App._LOCK_ON_CAM_FREE_HALF_RAD) return;
+
+    // Outside the cone — slerp back just enough to bring the target back
+    // to the boundary (not all the way to centered). Capped by rate so
+    // big snaps still feel smooth rather than instant.
+    const overshoot = absDelta - App._LOCK_ON_CAM_FREE_HALF_RAD;
+    const direction = delta > 0 ? 1 : -1;
+    const maxStep = App._LOCK_ON_CAM_YAW_RATE * dt;
+    const step = Math.min(overshoot, maxStep) * direction;
+    if (Math.abs(step) > 0.0001) this.camera.addYaw(step);
+  }
+
   /** Mark the end of a per-frame section. Accumulates elapsed since the
    *  last call (or `_perfSectionT0`) into the named bucket for this frame.
    *  No-op when perf mode is off. */
@@ -333,7 +392,24 @@ export class App {
     this.assets  = new AssetLoader();
     this.factory = new EntityFactory(this.scene.scene, this.entities, this.player);
     this.autoAttackRing = new AutoAttackRing(this.scene.scene, this.factory, this.player);
+    this.subTargetIndicator = new SubTargetIndicator(
+      this.scene.scene,
+      this.factory,
+      this.entities,
+      this.player,
+      // AbilityArming is built lazily on world entry — getter avoids capturing null.
+      () => this.abilityArming ?? null,
+    );
     this.telegraphs     = new TelegraphRenderer(this.scene.scene, this.router, this.factory, this.entities, this.player);
+    // AoEPreviewIndicator depends on TelegraphRenderer for its shape-mesh
+    // factory — must be constructed after it.
+    this.aoePreviewIndicator = new AoEPreviewIndicator(
+      this.scene.scene,
+      this.factory,
+      this.player,
+      this.telegraphs,
+      () => this.abilityArming ?? null,
+    );
     this.nameplates     = new NameplateManager(
       this.entities,
       this.player,
@@ -350,8 +426,8 @@ export class App {
     this.clickMove = new ClickMoveController(
       canvas, this.camera, this.socket, this.player, this.entities, this.factory,
     );
-    this.wasd = new WASDController(this.camera, this.socket, this.player, this.entities);
-    this.gamepad = new GamepadController(this.camera, this.socket, this.player, this.gamepadBindings);
+    this.wasd = new WASDController(this.camera, this.socket, this.player, this.entities, this.factory);
+    this.gamepad = new GamepadController(this.camera, this.socket, this.player, this.gamepadBindings, this.factory);
 
     // Asset loader status → loading screen
     this.assets.onStatus(msg  => loading.setStatus(msg));
@@ -493,13 +569,15 @@ export class App {
     // ── Aether Density (1Hz server push of player's local DangerMap value) ─
     this.world.onEvent(payload => {
       if (payload.eventType !== 'aether_density') return;
-      const data = payload.eventTypeData as { value?: number } | undefined;
+      const data = payload.eventTypeData as { value?: number; lethal?: boolean } | undefined;
       if (data && typeof data.value === 'number') {
         // Centralize on WorldState so post-process / future consumers
         // can read every frame without resubscribing. HUD also reads
-        // the latest value here for its tier bar.
+        // the latest value here for its tier bar. `lethal` distinguishes
+        // outside-the-wall damage zone from inside-the-wall T5 plateau.
+        const lethal = data.lethal === true;
         this.world.setAetherDensity(data.value);
-        this.hud?.setAetherDensity(data.value);
+        this.hud?.setAetherDensity(data.value, lethal);
       }
     });
 
@@ -553,6 +631,10 @@ export class App {
       // so the HUD can show a countdown and the WASDController can listen.
       if (entityId === this.player.id) {
         this.player.setCorpseDissolvesAt(Date.now() + dissolveDurationSecs * 1000);
+        // Clear the selected target on death — otherwise the HUD's target
+        // reticle and any "auto-resume on respawn" wiring point at whatever
+        // killed you. Player can re-target after respawn deliberately.
+        this.player.clearTarget();
       }
     });
   }
@@ -721,6 +803,8 @@ export class App {
     this.placementMode?.dispose();
     this.settingsWindow?.dispose();
     this.autoAttackRing.dispose();
+    this.subTargetIndicator.dispose();
+    this.aoePreviewIndicator.dispose();
     this.telegraphs.dispose();
     this.stagingMarker.dispose();
   }
@@ -968,6 +1052,18 @@ export class App {
 
     // Tick auto-attack ring (lerp + reposition)
     this.autoAttackRing.update(dt);
+
+    // Tick sub-target picker indicator (cone above currently picked entity)
+    this.subTargetIndicator.update(dt);
+
+    // Tick AoE armed-preview (ghost shape at anchor during gamepad arming)
+    this.aoePreviewIndicator.update(dt);
+
+    // Lock-on camera: smoothly slerp camera yaw toward locked target each
+    // frame. No-op when the toggle is off or no target is locked. Coexists
+    // with right-stick yaw — the slerp re-pulls back each frame so manual
+    // input feels like resistance rather than a hard block.
+    this._tickLockOnCamera(dt);
 
     // Tick AoE telegraphs (reposition follow-anchors, advance cast fill,
     // decay tick pulses, dispose naturally-expired entries)
@@ -1817,6 +1913,18 @@ export class App {
         this.tabTarget.setOrderedAllyIdsProvider(() => this.partyWindow!.getOrderedAllyIds());
       }
 
+      // Wire the AbilityArming picker (Phase 4b sub-target). Reuses the same
+      // TabTargetService candidate logic the keyboard Tab/Ctrl+Tab cycles use,
+      // so the picker walks the exact same hostile/ally sets.
+      if (this.abilityArming) {
+        this.abilityArming.setPickerCallbacks({
+          cycleEnemy:          (dir) => this.tabTarget!.cycleTarget(dir),
+          cycleAlly:           (dir) => this.tabTarget!.cyclePartyTarget(dir),
+          hasValidEnemyTarget: ()    => this.tabTarget!.hasValidEnemyTarget(),
+          hasValidAllyTarget:  ()    => this.tabTarget!.hasValidAllyTarget(),
+        });
+      }
+
       // Ctrl+F — toggle focus on the current main target. Skips self and any
       // hostile/dead/non-existent entity; ally casts will fall back to the
       // standard chain when no focus is set.
@@ -1912,6 +2020,11 @@ export class App {
       this.gamepad.setIsArming(()       => this.abilityArming?.isArming ?? false);
       this.gamepad.setOnConfirmArming(() => this.abilityArming?.confirm());
       this.gamepad.setOnCancelArming(()  => this.abilityArming?.abort());
+      // Picker d-pad: cycles enemy/ally candidates during arming. AbilityArming
+      // routes the call to cycleEnemy or cycleAlly based on its current mode;
+      // a no-op for the self/AoE confirm path.
+      this.gamepad.setOnArmingPickPrev(() => this.abilityArming?.cyclePick(-1));
+      this.gamepad.setOnArmingPickNext(() => this.abilityArming?.cyclePick(1));
 
       // ARPG fast-path: L2/R2 + fb[1..4] = direct slot fire (1-4 / 5-8).
       // Bypasses arming entirely — straight to ActionBar.activateSlot.

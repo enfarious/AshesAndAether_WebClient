@@ -102,6 +102,23 @@ export class TabTargetService {
     this.player.setTarget(member.id, member.name);
   }
 
+  /** True iff the player's current main target is still a valid enemy candidate
+   *  (hostile, alive, in range). Used by the gamepad sub-target picker so it
+   *  can keep the existing target on entry rather than cycling past it. */
+  hasValidEnemyTarget(): boolean {
+    const id = this.player.targetId;
+    if (!id) return false;
+    return this._buildEnemyCandidates().some(e => e.id === id);
+  }
+
+  /** True iff the player's current main target is in the ally candidate list
+   *  (self / party / hirelings / companions). Mirror of hasValidEnemyTarget. */
+  hasValidAllyTarget(): boolean {
+    const id = this.player.targetId;
+    if (!id) return false;
+    return this._buildAllyCandidates().some(a => a.id === id);
+  }
+
   /** Acquire the nearest hostile-first candidate in front of the camera and
    *  set it as the main target. No-op if nothing is in view. Used by the
    *  gamepad's confirm-with-no-target path: first press picks a target, the

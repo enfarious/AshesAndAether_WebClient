@@ -1175,20 +1175,22 @@ export class HUD {
   }
 
   /** Update the Aether Density panel from the server's per-player push.
-   *  value is 0..1 (DangerMap output). Future: values >1 represent the
-   *  lethal-zone mechanic — when that ships, this widget should show a
-   *  warning state past 1.0. */
-  setAetherDensity(value: number): void {
+   *  value is 0..1 (clamped DangerMap output). `lethal` fires when the
+   *  player is outside the playable circle — renders a distinct red
+   *  "LETHAL" tier so the in-wall T5 plateau (gold) is visibly different
+   *  from the past-the-wall damage zone. */
+  setAetherDensity(value: number, lethal = false): void {
     if (!this.aetherFillEl || !this.aetherValueEl || !this.aetherTierEl) return;
 
     const clamped = Math.max(0, Math.min(1, value));
-    const tier    = aetherTier(clamped);
+    const tier    = lethal ? 6 : aetherTier(clamped);
     const color   = AETHER_TIER_COLORS[tier] ?? '#cccccc';
+    const label   = lethal ? 'LETHAL' : `T${tier}`;
 
     this.aetherFillEl.style.width = `${(clamped * 100).toFixed(1)}%`;
     this.aetherFillEl.style.background = color;
     this.aetherValueEl.textContent = clamped.toFixed(2);
-    this.aetherTierEl.textContent  = `T${tier}`;
+    this.aetherTierEl.textContent  = label;
     this.aetherTierEl.style.color  = color;
   }
 }
@@ -1209,6 +1211,7 @@ const AETHER_TIER_COLORS: Record<number, string> = {
   3: '#4ea0ff', // blue
   4: '#c060ff', // purple
   5: '#ffcc44', // gold — deep, brave or dead
+  6: '#ff3030', // red — lethal, past the wall
 };
 
 /** Per-frame perf snapshot fed into HUD.updateFps for the F9 overlay. */

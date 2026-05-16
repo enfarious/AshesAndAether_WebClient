@@ -75,6 +75,9 @@ const KEY_NP_SCALE       = 'aa_np_scale';
 const KEY_ATTACK_AUTO_LOCK    = 'aa_attack_auto_lock';
 const KEY_AUTO_FACE_ACTION    = 'aa_auto_face_on_action';
 const KEY_SPRINT_TOGGLE_MODE  = 'aa_sprint_toggle_mode';
+const KEY_GAMEPAD_DEADZONE    = 'aa_gamepad_deadzone';
+const KEY_LOCK_ON_MOVEMENT    = 'aa_lock_on_movement';
+const KEY_LOCK_ON_CAMERA      = 'aa_lock_on_camera';
 
 // ── Defaults ────────────────────────────────────────────────────────────────
 
@@ -273,6 +276,10 @@ export class SettingsWindow {
     ClientConfig.attackAutoLock   = loadBool(KEY_ATTACK_AUTO_LOCK,   true);
     ClientConfig.autoFaceOnAction = loadBool(KEY_AUTO_FACE_ACTION,   true);
     ClientConfig.sprintToggleMode = loadBool(KEY_SPRINT_TOGGLE_MODE, false);
+    ClientConfig.gamepadDeadzone  = Math.min(0.40, Math.max(0.05,
+                                       loadNum(KEY_GAMEPAD_DEADZONE, 0.15)));
+    ClientConfig.lockOnMovement   = loadBool(KEY_LOCK_ON_MOVEMENT, false);
+    ClientConfig.lockOnCamera     = loadBool(KEY_LOCK_ON_CAMERA, false);
   }
 
   // ── Build DOM ───────────────────────────────────────────────────────────
@@ -687,6 +694,26 @@ export class SettingsWindow {
       },
     }));
 
+    page.appendChild(this._buildToggle({
+      label:    'Lock-on Movement',
+      sublabel: 'With a locked target: forward approaches (stops at 1.5m), back retreats, A/D strafe. Body faces target.',
+      initial:  ClientConfig.lockOnMovement,
+      onChange: (v) => {
+        saveBool(KEY_LOCK_ON_MOVEMENT, v);
+        ClientConfig.lockOnMovement = v;
+      },
+    }));
+
+    page.appendChild(this._buildToggle({
+      label:    'Lock-on Camera',
+      sublabel: 'Camera follows the locked target. Right-stick yaw still works but elastically pulls back.',
+      initial:  ClientConfig.lockOnCamera,
+      onChange: (v) => {
+        saveBool(KEY_LOCK_ON_CAMERA, v);
+        ClientConfig.lockOnCamera = v;
+      },
+    }));
+
     page.appendChild(this._buildDivider());
 
     if (!this.gamepadBindings) {
@@ -699,6 +726,22 @@ export class SettingsWindow {
     }
 
     page.appendChild(this._buildSectionLabel('Gamepad'));
+
+    // Stick deadzone — varies per controller (worn sticks drift; fresh ones
+    // very little). Sourced fresh by GamepadController on every tick, so the
+    // slider applies live without a reconnect.
+    page.appendChild(this._buildSlider({
+      label:   'Stick Deadzone',
+      min:     0.05,
+      max:     0.40,
+      step:    0.01,
+      initial: ClientConfig.gamepadDeadzone,
+      format:  (v) => `${Math.round(v * 100)}%`,
+      onChange: (v) => {
+        saveNum(KEY_GAMEPAD_DEADZONE, v);
+        ClientConfig.gamepadDeadzone = v;
+      },
+    }));
 
     const help = document.createElement('div');
     help.style.cssText = 'color:rgba(212,201,184,0.55);font-size:11px;margin:-4px 0 8px 0;';

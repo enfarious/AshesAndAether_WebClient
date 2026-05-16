@@ -3,8 +3,10 @@ import type { SocketClient } from '@/network/SocketClient';
 import type { PlayerState }  from '@/state/PlayerState';
 import type { PlayerEntity } from '@/entities/PlayerEntity';
 import type { GamepadBindings, GamepadAction } from '@/input/GamepadBindings';
+import type { EntityFactory } from '@/entities/EntityFactory';
 import { SPEED_MULTIPLIERS } from '@/network/Protocol';
 import { ClientConfig } from '@/config/ClientConfig';
+import { resolveMovement as resolveLockOnMovement } from '@/input/LockOnMovement';
 
 /**
  * GamepadController — Xbox / PS / Switch Pro controller input.
@@ -54,7 +56,9 @@ function showToast(msg: string): void {
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-const STICK_DEADZONE      = 0.15;
+/** Stick magnitude below this is treated as no input. Sourced from
+ *  ClientConfig.gamepadDeadzone (settings-tunable per controller) — read
+ *  fresh each tick so slider changes apply without a reconnect. */
 /** Magnitude above which the stick sends 'jog' instead of 'walk'. The range
  *  below this (between deadzone and threshold) maps to walk so the player can
  *  sneak / position deliberately with a partial stick tilt. */
@@ -150,6 +154,8 @@ export class GamepadController {
   private _onLockToggle:          (() => void) | null = null;  // dedicated lock/unlock
   private _onConfirmArming:       (() => void) | null = null;  // fb3 while armed
   private _onCancelArming:        (() => void) | null = null;  // fb2 while armed
+  private _onArmingPickPrev:      (() => void) | null = null;  // d-pad U/L while picking
+  private _onArmingPickNext:      (() => void) | null = null;  // d-pad D/R while picking
   private _isArming:              (() => boolean) | null = null;
   private _onSlotShortcut:        ((slotIdx: number) => void) | null = null;
   private _onDash:                ((direction: 'forward' | 'back') => void) | null = null;
@@ -166,7 +172,11 @@ export class GamepadController {
   // fb3 fires on whichever surface had focus last (TargetWindow vs. ActionBar).
   // Resets to 'ud' on lock so the first fb3 always hits the TargetWindow action.
   private _lastTargetedAxis: 'ud' | 'lr' = 'ud';
-  private _wasTargeted = false;
+  // Tracks the previous frame's state so we can detect rising edges into
+  // `targeted` from a fresh-lock transition (idle/modal → targeted) vs. an
+  // arming-exit (arming → targeted, which happens after every cast). Only
+  // the fresh-lock path should reset surface visuals.
+  private _prevState: InputState = 'idle';
 
   // ── Setters ──────────────────────────────────────────────────────────────
 
@@ -195,6 +205,8 @@ export class GamepadController {
   setIsArming(fn: () => boolean): void           { this._isArming = fn; }
   setOnConfirmArming(fn: () => void): void       { this._onConfirmArming = fn; }
   setOnCancelArming(fn: () => void): void        { this._onCancelArming = fn; }
+  setOnArmingPickPrev(fn: () => void): void      { this._onArmingPickPrev = fn; }
+  setOnArmingPickNext(fn: () => void): void      { this._onArmingPickNext = fn; }
 
   // ARPG-shortcut: L2 / R2 held + fb[1-4] = direct slot fire, bypassing arming.
   setOnSlotShortcut(fn: (slotIdx: number) => void): void { this._onSlotShortcut = fn; }
@@ -228,6 +240,7 @@ export class GamepadController {
     private readonly socket: SocketClient,
     private readonly player: PlayerState,
     private readonly bindings: GamepadBindings,
+    private readonly factory: EntityFactory,
   ) {
     // Detect Tauri — if present, use native gilrs events instead of browser API
     if ((window as any).__TAURI_INTERNALS__) {
@@ -259,11 +272,14 @@ export class GamepadController {
     const snap = this._readGamepad();
     if (!snap) return;
 
+    // Stick deadzone — read once per tick, applied to both sticks below.
+    const deadzone = ClientConfig.gamepadDeadzone;
+
     // ── Right stick → camera ──────────────────────────────────────────────
     const rx = snap.axes[2] ?? 0;
     const ry = snap.axes[3] ?? 0;
     const rMag = Math.hypot(rx, ry);
-    if (rMag > STICK_DEADZONE) {
+    if (rMag > deadzone) {
       this.camera.addYaw(-rx * CAM_YAW_SPEED * dt);
       this.camera.addPitch(-ry * CAM_PITCH_SPEED * dt);
     }
@@ -290,11 +306,17 @@ export class GamepadController {
     // the TargetWindow action (Attack/Talk by default). Subsequent L/R will
     // flip it to ActionBar focus. App layer also resets surface visuals via
     // _onEnterTargeted.
-    if (state === 'targeted' && !this._wasTargeted) {
+    //
+    // We only reset on FRESH locks (idle/modal → targeted), NOT on the
+    // arming → targeted edge that fires after every cast — otherwise the
+    // slot focus snaps back to the start every time the player fires an
+    // ability with the d-pad, which is exactly the behaviour that breaks
+    // muscle memory for controller rotation play.
+    if (state === 'targeted' && this._prevState !== 'targeted' && this._prevState !== 'arming') {
       this._lastTargetedAxis = 'ud';
       this._onEnterTargeted?.();
     }
-    this._wasTargeted = state === 'targeted';
+    this._prevState = state;
 
     // ── D-pad + face buttons ──────────────────────────────────────────────
     this._tickDpad(snap, state);
@@ -311,7 +333,7 @@ export class GamepadController {
     const ly = snap.axes[1] ?? 0;
     const lMag = Math.hypot(lx, ly);
 
-    if (lMag < STICK_DEADZONE) {
+    if (lMag < deadzone) {
       this._stopMovement();
       return;
     }
@@ -320,10 +342,12 @@ export class GamepadController {
     const nx = lx / lMag;
     const nz = -ly / lMag;
 
-    // Rotate by camera yaw → world-space (identical to WASDController)
-    const yaw    = this.camera.getYaw();
-    const worldX =  nx * Math.cos(yaw) - nz * Math.sin(yaw);
-    const worldZ = -nx * Math.sin(yaw) - nz * Math.cos(yaw);
+    // Resolve input → world-space. Same lock-on-aware helper WASDController
+    // uses, so keyboard and gamepad behave identically in lock-on mode.
+    const yaw = this.camera.getYaw();
+    const resolved = resolveLockOnMovement(nx, nz, this.player, this.factory, yaw);
+    const { worldX, worldZ } = resolved;
+    const lockFacing = resolved.facingHeadingDeg;
 
     const len = Math.hypot(worldX, worldZ);
     if (len === 0) return;
@@ -400,7 +424,10 @@ export class GamepadController {
     // line 280. Without this, the model only rotates when the server's
     // 10Hz state_update echoes back, so the visible facing snaps on stop
     // instead of tracking the stick.
-    this._playerEntity?.setHeading(headingDeg);
+    //
+    // Lock-on: body faces the locked target instead of the movement
+    // direction (see WASDController for the same override + rationale).
+    this._playerEntity?.setHeading(lockFacing ?? headingDeg);
 
     const headingDelta = Math.abs(headingDeg - this._lastSentHeading);
     const wrappedDelta = Math.min(headingDelta, 360 - headingDelta);
@@ -546,7 +573,13 @@ export class GamepadController {
 
 
     if (state === 'arming') {
-      // No cycling yet (Phase 4 ships self-cast confirm only). d-pad ignored.
+      // Picker cycles candidates during enemy/ally arming. U/L = prev, D/R = next.
+      // No-op for self/AoE arming (callbacks are null when AbilityArming isn't
+      // in a picker mode) — d-pad effectively ignored, same as before Phase 4b.
+      this._dpadButton(0, pressed[0], () => this._onArmingPickPrev?.());
+      this._dpadButton(1, pressed[1], () => this._onArmingPickNext?.());
+      this._dpadButton(2, pressed[2], () => this._onArmingPickPrev?.());
+      this._dpadButton(3, pressed[3], () => this._onArmingPickNext?.());
     } else if (state === 'modal') {
       this._dpadButton(0, pressed[0], () => this._dispatchKey('ArrowUp'));
       this._dpadButton(1, pressed[1], () => this._dispatchKey('ArrowDown'));
@@ -627,7 +660,7 @@ export class GamepadController {
     if (this._firedAction('dash', snap)) {
       const lx = snap.axes[0] ?? 0;
       const ly = snap.axes[1] ?? 0;
-      const dashing = Math.hypot(lx, ly) > STICK_DEADZONE ? 'forward' : 'back';
+      const dashing = Math.hypot(lx, ly) > ClientConfig.gamepadDeadzone ? 'forward' : 'back';
       this._onDash?.(dashing);
     }
 

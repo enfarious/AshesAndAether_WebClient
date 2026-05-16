@@ -3,7 +3,9 @@ import type { SocketClient }   from '@/network/SocketClient';
 import type { PlayerState }    from '@/state/PlayerState';
 import type { PlayerEntity }   from '@/entities/PlayerEntity';
 import type { EntityRegistry } from '@/state/EntityRegistry';
+import type { EntityFactory }  from '@/entities/EntityFactory';
 import { SPEED_MULTIPLIERS }   from '@/network/Protocol';
+import { resolveMovement as resolveLockOnMovement } from '@/input/LockOnMovement';
 
 /** F-key proximity-interact range, metres. */
 const F_INTERACT_RANGE = 5;
@@ -148,6 +150,7 @@ export class WASDController {
     private readonly socket:   SocketClient,
     private readonly player:   PlayerState,
     private readonly entities: EntityRegistry,
+    private readonly factory:  EntityFactory,
   ) {
     window.addEventListener('keydown', this._onKeyDown);
     window.addEventListener('keyup',   this._onKeyUp);
@@ -206,10 +209,14 @@ export class WASDController {
       return;
     }
 
-    // Rotate input by camera yaw -> world-space XZ direction.
-    const yaw    = this.camera.getYaw();
-    const worldX =  inputX * Math.cos(yaw) - inputZ * Math.sin(yaw);
-    const worldZ = -inputX * Math.sin(yaw) - inputZ * Math.cos(yaw);
+    // Resolve input → world-space direction. Lock-on mode flips this from
+    // camera-relative to target-relative when the player has a locked target
+    // (see LockOnMovement). `lockFacing` is non-null only in lock-on; it's
+    // the heading the body should face independent of movement direction.
+    const yaw = this.camera.getYaw();
+    const resolved = resolveLockOnMovement(inputX, inputZ, this.player, this.factory, yaw);
+    const { worldX, worldZ } = resolved;
+    const lockFacing = resolved.facingHeadingDeg;
 
     const len = Math.hypot(worldX, worldZ);
     if (len === 0) return;
@@ -277,7 +284,14 @@ export class WASDController {
     // state_update lands (~10Hz, async, sometimes dropped for own player),
     // so the visible facing lagged or stuck mid-strafe. With prediction the
     // forward arrow tracks camera+input at full framerate.
-    this._playerEntity?.setHeading(headingDeg);
+    //
+    // Lock-on: facing decouples from movement direction. Body always points
+    // at the locked target while WASD strafes/backpedals. Server still gets
+    // the movement-direction heading (it uses heading as the velocity
+    // vector), so other players currently see facing = movement direction.
+    // A proper fix would split movement + facing on the wire; until then,
+    // local override is the cheapest path to the right feel.
+    this._playerEntity?.setHeading(lockFacing ?? headingDeg);
 
     // Tier resolution (priority: sprint hold > walk mode > jog default).
     // Shift-hold also keeps the cap rolling — when stamina hits 0 the server
@@ -449,8 +463,7 @@ export class WASDController {
       let velZ = 0;
       if (inputX !== 0 || inputZ !== 0) {
         const yaw    = this.camera.getYaw();
-        const worldX =  inputX * Math.cos(yaw) - inputZ * Math.sin(yaw);
-        const worldZ = -inputX * Math.sin(yaw) - inputZ * Math.cos(yaw);
+        const { worldX, worldZ } = resolveLockOnMovement(inputX, inputZ, this.player, this.factory, yaw);
         const len    = Math.hypot(worldX, worldZ);
         if (len > 0) {
           const tier: 'walk' | 'jog' | 'sprint' =
@@ -655,8 +668,7 @@ export class WASDController {
 
     if (inputX !== 0 || inputZ !== 0) {
       const yaw    = this.camera.getYaw();
-      const worldX =  inputX * Math.cos(yaw) - inputZ * Math.sin(yaw);
-      const worldZ = -inputX * Math.sin(yaw) - inputZ * Math.cos(yaw);
+      const { worldX, worldZ } = resolveLockOnMovement(inputX, inputZ, this.player, this.factory, yaw);
       const len    = Math.hypot(worldX, worldZ);
       if (len > 0) {
         dirX = worldX / len;

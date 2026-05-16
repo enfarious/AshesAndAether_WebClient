@@ -90,6 +90,7 @@ export default defineConfig({
     host: true,           // 0.0.0.0 — accept connections from LAN
     port: 5173,
     strictPort: true,
+    allowedHosts: ['fusoya.servegame.com'],
     proxy: {
       '/socket.io': {
         target: 'http://localhost:5000',

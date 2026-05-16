@@ -108,6 +108,26 @@ let _autoFaceOnAction:      boolean = true;
  *  hold-to-sprint (matches the keyboard Shift convention). */
 let _sprintToggleMode:      boolean = false;
 
+/** Stick magnitude below which input is treated as "no movement." Different
+ *  controllers have different mechanical play after the stick is released
+ *  (worn-out Xbox sticks drift more, fresh PS controllers very little).
+ *  Tuned per-user via Settings → Gamepad. Range 0.05 (very sensitive) to
+ *  0.40 (heavy deadzone for drifting controllers). Default 0.15 matches
+ *  the pre-slider hardcoded value. */
+let _gamepadDeadzone:       number  = 0.15;
+
+/** Lock-on movement style — when on and the player has a locked target:
+ *  W/forward approaches (capped at 1.5m), S/back retreats, A/D strafe
+ *  pure left/right perpendicular to target. Body always faces the locked
+ *  target. Dash still resolves from the input direction. Off = classic
+ *  free-move where heading tracks input. */
+let _lockOnMovement:        boolean = false;
+
+/** Lock-on camera — when on (and target locked), the camera smoothly
+ *  yaws to keep the locked target ahead. Implies orbit-style A/D feel
+ *  because camera-relative input becomes target-relative. */
+let _lockOnCamera:          boolean = false;
+
 /** Plane size in metres — controls how far the fog extends around the
  *  player. Combined with subdivisions, determines vertex spacing
  *  (planeSize / subdivisions). 'long' (1000m) is the default. */
@@ -153,8 +173,10 @@ export const ClientConfig = {
   /** Target server updates per second. */
   maxUpdateRate: 20,
 
-  /** Camera orbit elevation in degrees (initial). */
-  cameraElevation: 58,
+  /** Camera orbit elevation in degrees (initial). Lower = more 3rd-person
+   *  over-shoulder, higher = more top-down. 30° gives a recognizable
+   *  3rd-person action-RPG feel without obscuring the world ahead. */
+  cameraElevation: 30,
 
   /** Min/max elevation (pitch) in degrees. */
   // Lower min so the camera can sit nearly on the horizon — lets you look up
@@ -163,11 +185,13 @@ export const ClientConfig = {
   cameraMaxElevation: 85,
 
   /** Initial camera distance from player. */
-  cameraDistance: 22,
+  cameraDistance: 14,
 
-  /** Min/max zoom distance. */
-  cameraMinDistance: 8,
-  cameraMaxDistance: 500,
+  /** Min/max zoom distance. Max capped at 60 so the default range stays
+   *  in playable-tactical territory; for screenshots/scenic shots use a
+   *  future dedicated photo-mode rather than the live combat camera. */
+  cameraMinDistance: 6,
+  cameraMaxDistance: 60,
 
   /** How fast yaw drag rotates (radians per pixel). Adjustable via Settings. */
   get cameraYawSensitivity(): number { return _cameraYawSensitivity; },
@@ -257,6 +281,15 @@ export const ClientConfig = {
 
   get sprintToggleMode(): boolean { return _sprintToggleMode; },
   set sprintToggleMode(v: boolean) { _sprintToggleMode = v; },
+
+  get gamepadDeadzone(): number { return _gamepadDeadzone; },
+  set gamepadDeadzone(v: number) { _gamepadDeadzone = v; },
+
+  get lockOnMovement(): boolean { return _lockOnMovement; },
+  set lockOnMovement(v: boolean) { _lockOnMovement = v; },
+
+  get lockOnCamera(): boolean { return _lockOnCamera; },
+  set lockOnCamera(v: boolean) { _lockOnCamera = v; },
 
   get nameplateTargetShowCast(): boolean { return _nameplateTargetShowCast; },
   set nameplateTargetShowCast(v: boolean) { _nameplateTargetShowCast = v; },

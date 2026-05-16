@@ -193,8 +193,23 @@ export class EntityFactory {
       // skip the sync while WASD is active, otherwise the (lagging) server
       // heading would clobber the (live) camera-relative prediction and
       // freeze the rotation mid-strafe.
+      //
+      // Lock-on movement override: if the player is locked on with the
+      // lock-on toggle, the body must always face the locked target — not
+      // the heading the server echoes (which is the last MOVEMENT direction,
+      // since the wire uses one heading for both move + face). Otherwise
+      // the moment stopWASD() flips out of WASD mode on stick release, the
+      // server's stop-ack would snap the body to the strafe direction.
       this._playerHeadingUnsub = this.playerState.onChange(() => {
         if (pe.mode === PlayerMoveMode.WASD) return;
+
+        if (ClientConfig.lockOnMovement && this.playerState.targetLocked) {
+          const facing = this._computeLockOnFacingDeg(pe);
+          if (facing !== null) {
+            pe.setHeading(facing);
+            return;
+          }
+        }
         pe.setHeading(this.playerState.heading);
       });
     } else {
@@ -276,6 +291,26 @@ export class EntityFactory {
     this.highlightRing.rotation.x = Math.PI / 2; // lay flat on XZ plane
     this.highlightRing.visible = false;
     this.scene.add(this.highlightRing);
+  }
+
+  /** Heading (server convention, degrees, 0=+Z CW) that points the player
+   *  at their currently-locked target. Returns null when no locked target is
+   *  rendered or the player is on top of it. Used by the playerState
+   *  subscription to override server-echoed heading during lock-on. */
+  private _computeLockOnFacingDeg(pe: PlayerEntity): number | null {
+    const targetId = this.playerState.lockedTargetId;
+    if (!targetId) return null;
+    const targetObj = this.getObject(targetId);
+    if (!targetObj) return null;
+    const tp = targetObj.object3d.position;
+    const pp = pe.object3d.position;
+    const dx = tp.x - pp.x;
+    const dz = tp.z - pp.z;
+    if (dx === 0 && dz === 0) return null;
+    const facingRad = Math.atan2(dx, dz);
+    let deg = (facingRad * 180) / Math.PI;
+    if (deg < 0) deg += 360;
+    return deg;
   }
 
   /** Called when playerState changes — show/hide ring based on target presence. */

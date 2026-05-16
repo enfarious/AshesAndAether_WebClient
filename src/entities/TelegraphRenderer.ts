@@ -45,12 +45,29 @@ const COLOR_BENEFICIAL   = new THREE.Color(0x52e07a);   // green — incoming he
 const COLOR_OWN_OFFENSE  = new THREE.Color(0x4a8fff);   // blue — my own AoE on enemies
 const PULSE_DECAY_PER_SEC = 4.0;   // pulse fades from 1.0 → 0 in ~250ms.
 
-type TelegraphRole = 'danger' | 'beneficial' | 'own_offense' | 'skip';
+/** Renderable telegraph roles — the colour band the mesh draws in. 'skip'
+ *  is a classification result, not a renderable role; meshes are never
+ *  created for it. */
+export type TelegraphRole = 'danger' | 'beneficial' | 'own_offense';
+type ClassifyResult = TelegraphRole | 'skip';
 
-const VERTEX_SHADER = /* glsl */`
+/** Vertex shader for XY-plane geometry (the existing circle path). The mesh
+ *  is rotated -90° around X afterwards so the disc lies flat on XZ. */
+const VERTEX_XY = /* glsl */`
   varying vec2 vLocalPos;
   void main() {
-    vLocalPos   = position.xy;            // PlaneGeometry XY before flat rotation
+    vLocalPos   = position.xy;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+
+/** Vertex shader for XZ-plane geometry (cone, line). Geometry is built
+ *  already flat on the ground (Y=0), so no axis flip is needed and
+ *  mesh.rotation.y aligns the shape to the server's heading directly. */
+const VERTEX_XZ = /* glsl */`
+  varying vec2 vLocalPos;
+  void main() {
+    vLocalPos   = vec2(position.x, position.z);
     gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
   }
 `;
@@ -76,6 +93,76 @@ const FRAGMENT_CIRCLE = /* glsl */`
     float inside = step(r, uFillProgress) * (0.55 - r * 0.15);
 
     float a = border * 0.95 + max(inside, 0.0);
+    a = min(a + uPulse * 0.35, 1.0);
+    gl_FragColor = vec4(uColor, a * uOpacity);
+  }
+`;
+
+/** Cone (sector): apex at local origin (0,0,0), forward = +Z (server heading
+ *  convention), unit radius. Geometry is a wide fan (±90°); shader narrows
+ *  to the actual half-angle so geometry can be shared across cone sizes.
+ *  Fill grows radially outward from the apex. */
+const FRAGMENT_CONE = /* glsl */`
+  uniform vec3  uColor;
+  uniform float uFillProgress;
+  uniform float uPulse;
+  uniform float uOpacity;
+  uniform float uHalfAngleRad;   // half of the cone's angular spread
+  varying vec2  vLocalPos;       // x = sin(a), y = cos(a) at arc; (0,0) at apex
+
+  void main() {
+    float r = length(vLocalPos);
+    if (r > 1.0) discard;
+
+    // Angle from forward axis (+y). Range (-π, π]; cone is symmetric.
+    float ang = atan(vLocalPos.x, vLocalPos.y);
+    float absAng = abs(ang);
+    if (absAng > uHalfAngleRad) discard;
+
+    // Far-edge ring (same shape as the circle's border).
+    float border = smoothstep(0.86, 0.94, r) * (1.0 - smoothstep(0.95, 1.0, r));
+
+    // Soft fade at angular edges so the cone reads as outlined, not jagged.
+    float sideFade = 1.0 - smoothstep(max(uHalfAngleRad - 0.05, 0.0), uHalfAngleRad, absAng);
+
+    // Side-rail outline along the two straight edges — bright like the border.
+    float sideRail = smoothstep(uHalfAngleRad - 0.04, uHalfAngleRad - 0.005, absAng);
+
+    // Interior fill grows from apex outward.
+    float inside = step(r, uFillProgress) * (0.55 - r * 0.15);
+
+    float a = max(border, sideRail) * 0.95 + max(inside, 0.0);
+    a = min(a + uPulse * 0.35, 1.0);
+    gl_FragColor = vec4(uColor, a * uOpacity * sideFade);
+  }
+`;
+
+/** Line (rectangle): origin at one short edge, forward = +Z, length 1, width 1.
+ *  Mesh scales x = width, z = length to reach world dimensions. Border is the
+ *  rectangle perimeter; fill marches from start edge to uFillProgress*length. */
+const FRAGMENT_LINE = /* glsl */`
+  uniform vec3  uColor;
+  uniform float uFillProgress;
+  uniform float uPulse;
+  uniform float uOpacity;
+  varying vec2  vLocalPos;       // x in [-0.5, 0.5], y in [0, 1]
+
+  void main() {
+    // Distance to nearest perimeter edge in unit-rectangle space.
+    float distLat  = 0.5 - abs(vLocalPos.x);
+    float distLong = min(vLocalPos.y, 1.0 - vLocalPos.y);
+    float dist = min(distLat, distLong);
+
+    // Perimeter border — bright within ~0.04 of any edge. Note: because the
+    // mesh is scaled non-uniformly (width vs length), border thickness in
+    // world units differs between long and short sides. Acceptable for a
+    // first cut; symmetric outline would need aspect-aware shading.
+    float border = (1.0 - smoothstep(0.0, 0.04, dist)) * 0.95;
+
+    // Interior fill grows lengthwise from the start edge (y=0).
+    float inside = step(vLocalPos.y, uFillProgress) * 0.45;
+
+    float a = border + max(inside, 0.0);
     a = min(a + uPulse * 0.35, 1.0);
     gl_FragColor = vec4(uColor, a * uOpacity);
   }
@@ -210,7 +297,7 @@ export class TelegraphRenderer {
   /** Per-viewer classification — turns a zone-wide telegraph payload into
    *  "what does this mean to me?". Cuts the visual noise of e.g. an ally's
    *  Storm on a far-off enemy pack the local player will never engage. */
-  private _classify(p: TelegraphRegisterPayload): TelegraphRole {
+  private _classify(p: TelegraphRegisterPayload): ClassifyResult {
     const myId = this.player.id;
 
     // I cast it. Hostile self-casts get blue (ring shows where the damage
@@ -265,63 +352,163 @@ export class TelegraphRenderer {
       role === 'beneficial'  ? COLOR_BENEFICIAL  :
                                COLOR_OWN_OFFENSE;
 
-    // Circle (only shape currently used by abilities). Cone/line are wire-
-    // format-supported but not rendered yet — they'll fall through to
-    // null until the first ability needs them.
-    const geometry = this._makeGeometry(p.shape);
-    if (!geometry) return null;
+    switch (p.shape.shape) {
+      case 'circle': return this._makeCircleMesh(p, p.shape, color);
+      case 'cone':   return this._makeConeMesh  (p, p.shape, color);
+      case 'line':   return this._makeLineMesh  (p, p.shape, color);
+    }
+  }
 
+  /** Build a one-off shape mesh outside the register/active-map flow.
+   *  Caller owns the lifecycle (scene add/remove, per-frame positioning,
+   *  geometry/material dispose). Returns null for unsupported shapes.
+   *  Used by AoEPreviewIndicator to share cone/line/circle rendering. */
+  buildExternalMesh(
+    shape:    AoeShape,
+    role:     TelegraphRole,
+    heading:  number | undefined,
+  ): { mesh: THREE.Mesh; material: THREE.ShaderMaterial } | null {
+    const color =
+      role === 'danger'      ? COLOR_DANGER      :
+      role === 'beneficial'  ? COLOR_BENEFICIAL  :
+                               COLOR_OWN_OFFENSE;
+    // Synthesize a minimal payload — only `phase` and `heading` are read
+    // by the make-mesh helpers (and only `heading` for cone/line). 'cast'
+    // phase means fill starts at 0, which is what we want for a static
+    // outline preview that doesn't animate.
+    const fauxPayload = { phase: 'cast' as const, heading } as TelegraphRegisterPayload;
+    switch (shape.shape) {
+      case 'circle': return this._makeCircleMesh(fauxPayload, shape, color);
+      case 'cone':   return this._makeConeMesh  (fauxPayload, shape, color);
+      case 'line':   return this._makeLineMesh  (fauxPayload, shape, color);
+    }
+  }
+
+  /** Shared shader-material options applied to every telegraph shape so
+   *  blend/depth behaviour stays consistent. Overlay-style: never occluded
+   *  by terrain or entity meshes (mirrors AutoAttackRing). */
+  private _commonMaterialOpts(): Partial<THREE.ShaderMaterialParameters> {
+    return {
+      transparent: true,
+      depthWrite:  false,
+      depthTest:   false,
+      side:        THREE.DoubleSide,
+    };
+  }
+
+  private _baseUniforms(color: THREE.Color, phase: TelegraphRegisterPayload['phase']): Record<string, { value: unknown }> {
+    return {
+      uColor:        { value: color.clone() },
+      uFillProgress: { value: phase === 'channel' ? 1.0 : 0.0 },
+      uPulse:        { value: 0.0 },
+      uOpacity:      { value: this.opacityMaster },
+    };
+  }
+
+  private _makeCircleMesh(
+    _p: TelegraphRegisterPayload,
+    shape: Extract<AoeShape, { shape: 'circle' }>,
+    color: THREE.Color,
+  ): { mesh: THREE.Mesh; material: THREE.ShaderMaterial } {
+    const geometry = new THREE.PlaneGeometry(2, 2, 1, 1);
     const material = new THREE.ShaderMaterial({
-      uniforms: {
-        uColor:        { value: color.clone() },
-        uFillProgress: { value: p.phase === 'channel' ? 1.0 : 0.0 },
-        uPulse:        { value: 0.0 },
-        uOpacity:      { value: this.opacityMaster },
-      },
-      vertexShader:   VERTEX_SHADER,
+      uniforms:       this._baseUniforms(color, _p.phase),
+      vertexShader:   VERTEX_XY,
       fragmentShader: FRAGMENT_CIRCLE,
-      transparent:    true,
-      depthWrite:     false,
-      // Overlay-style: never occluded by terrain or entity meshes. Mirrors
-      // AutoAttackRing — telegraphs need to be readable from any camera
-      // angle, including looking up at a slope where ground would otherwise
-      // depth-cull a flat decal sitting on it.
-      depthTest:      false,
-      side:           THREE.DoubleSide,
+      ...this._commonMaterialOpts(),
     });
-
     const mesh = new THREE.Mesh(geometry, material);
-    mesh.rotation.x = -Math.PI / 2;     // lay flat on XZ
-    mesh.renderOrder = 998;             // under the auto-attack ring (999)
-    mesh.visible = false;               // first frame's update() will position it
-
-    // Geometry is unit-sized (vLocalPos in [-1, 1] for the shader's clip).
-    // World size comes from the transform — circle scales uniformly to
-    // shape.radius; cone/line will set per-axis scale when implemented.
-    if (p.shape.shape === 'circle') {
-      mesh.scale.setScalar(p.shape.radius);
-    }
-
-    // Heading-driven yaw for cone/line shapes — irrelevant for circle but
-    // costs nothing to set.
-    if (p.heading !== undefined && p.shape.shape !== 'circle') {
-      mesh.rotation.y = p.heading * Math.PI / 180;
-    }
-
+    mesh.rotation.x = -Math.PI / 2;        // lay flat on XZ
+    mesh.scale.setScalar(shape.radius);
+    mesh.renderOrder = 998;
+    mesh.visible = false;
     return { mesh, material };
   }
 
-  /** Geometry sized so the shader's local XY range maps to ±1 across the
-   *  unit-circle (or aligned-rectangle for line). The mesh transform scales
-   *  to the AoE's actual world size — keeps the shader trivial. */
-  private _makeGeometry(shape: AoeShape): THREE.BufferGeometry | null {
-    if (shape.shape === 'circle') {
-      // Unit-sized PlaneGeometry — positions in [-1, 1] on XY. Shader uses
-      // length(vLocalPos) > 1 to clip outside the unit disc.
-      return new THREE.PlaneGeometry(2, 2, 1, 1);
+  private _makeConeMesh(
+    p: TelegraphRegisterPayload,
+    shape: Extract<AoeShape, { shape: 'cone' }>,
+    color: THREE.Color,
+  ): { mesh: THREE.Mesh; material: THREE.ShaderMaterial } {
+    const geometry = TelegraphRenderer._makeConeGeometry();
+    const halfAngleRad = (shape.angle / 2) * Math.PI / 180;
+    const uniforms = this._baseUniforms(color, p.phase);
+    uniforms['uHalfAngleRad'] = { value: halfAngleRad };
+    const material = new THREE.ShaderMaterial({
+      uniforms,
+      vertexShader:   VERTEX_XZ,
+      fragmentShader: FRAGMENT_CONE,
+      ...this._commonMaterialOpts(),
+    });
+    const mesh = new THREE.Mesh(geometry, material);
+    // Geometry already flat on XZ — only yaw to align with server heading.
+    // Cone scales proportionally: x = z = length (radius and arc-width both
+    // grow with the same length parameter, since angle is encoded in the
+    // shader).
+    mesh.scale.set(shape.length, 1, shape.length);
+    if (p.heading !== undefined) mesh.rotation.y = p.heading * Math.PI / 180;
+    mesh.renderOrder = 998;
+    mesh.visible = false;
+    return { mesh, material };
+  }
+
+  private _makeLineMesh(
+    p: TelegraphRegisterPayload,
+    shape: Extract<AoeShape, { shape: 'line' }>,
+    color: THREE.Color,
+  ): { mesh: THREE.Mesh; material: THREE.ShaderMaterial } {
+    const geometry = TelegraphRenderer._makeLineGeometry();
+    const material = new THREE.ShaderMaterial({
+      uniforms:       this._baseUniforms(color, p.phase),
+      vertexShader:   VERTEX_XZ,
+      fragmentShader: FRAGMENT_LINE,
+      ...this._commonMaterialOpts(),
+    });
+    const mesh = new THREE.Mesh(geometry, material);
+    // Geometry already flat on XZ — only yaw to align with server heading.
+    // Width on X, length on Z (forward).
+    mesh.scale.set(shape.width, 1, shape.length);
+    if (p.heading !== undefined) mesh.rotation.y = p.heading * Math.PI / 180;
+    mesh.renderOrder = 998;
+    mesh.visible = false;
+    return { mesh, material };
+  }
+
+  /** Cone fan geometry — apex at (0,0,0), arc points at unit radius from
+   *  -90° to +90° relative to +Z (32 segments). Fragment shader narrows
+   *  the visible arc to the actual half-angle, so we don't rebuild this
+   *  per ability. */
+  private static _makeConeGeometry(): THREE.BufferGeometry {
+    const N = 32;
+    const halfFanRad = Math.PI / 2;
+    const positions: number[] = [0, 0, 0];
+    for (let i = 0; i <= N; i++) {
+      const t = i / N;
+      const a = -halfFanRad + t * 2 * halfFanRad;
+      positions.push(Math.sin(a), 0, Math.cos(a));
     }
-    // Cone / line: scaffolded but not rendered yet — first abilities to use
-    // these will land the geometry & shader path.
-    return null;
+    const indices: number[] = [];
+    for (let i = 0; i < N; i++) {
+      indices.push(0, i + 1, i + 2);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geo.setIndex(indices);
+    return geo;
+  }
+
+  /** Line rectangle — origin at one short edge, length toward +Z. */
+  private static _makeLineGeometry(): THREE.BufferGeometry {
+    const positions = [
+      -0.5, 0, 0,
+       0.5, 0, 0,
+       0.5, 0, 1,
+      -0.5, 0, 1,
+    ];
+    const indices = [0, 1, 2, 0, 2, 3];
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geo.setIndex(indices);
+    return geo;
   }
 }

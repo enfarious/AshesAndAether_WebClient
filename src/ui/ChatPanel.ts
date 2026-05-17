@@ -157,7 +157,15 @@ export class ChatPanel {
       .chat-line.party  { color: #70a0d0; }
       .chat-line.guild  { color: #60c890; }
       .chat-line.world  { color: #c090d0; }
+      /* Base event line — warm grey italic. Overridden by per-family
+         modifiers below so heal lines read green, hits red, etc. */
       .chat-line.event  { color: #a09070; font-style: italic; }
+      .chat-line.event-hit    { color: #e87060; }              /* damage dealt/taken */
+      .chat-line.event-miss   { color: #808080; }              /* whiff / dodge / parry */
+      .chat-line.event-heal   { color: #70d088; }              /* heals */
+      .chat-line.event-buff   { color: #f0c870; }              /* positive buff applied */
+      .chat-line.event-debuff { color: #c878d8; }              /* debuff applied */
+      .chat-line.event-death  { color: #c0c0c0; font-weight: 700; } /* "X has died" */
       .chat-line.cfh    { color: #e04040; }
       .chat-line.whisper { color: #d0a0d0; font-style: italic; }
       .chat-line.system    { color: #7090a8; font-style: italic; }
@@ -439,7 +447,20 @@ export class ChatPanel {
     const line = document.createElement('div');
     const tabs = this._tabsForChannel(entry.channel);
     const tabClasses = tabs.map(t => `tab-${t}`).join(' ');
-    line.className = `chat-line ${entry.channel} ${tabClasses}`;
+    // Event entries also get a modifier class for the event family so the
+    // chat renderer can color heals green, hits red, etc. instead of the
+    // single warm-grey treatment all events used to share. Modifier is
+    // additive — the base `.event` class still applies (font-style etc.).
+    //
+    // Damage and debuffs only colorize when INCOMING to the local player
+    // (target = me). Outgoing hits and debuffs stay default-coloured so
+    // the chat doesn't drown in red when you're the one swinging. Heals
+    // and buffs stay always-coloured since they only land on allies.
+    const isIncoming = entry.targetId !== undefined && entry.targetId === this.player.id;
+    const eventClass = entry.channel === 'event' && entry.eventType
+      ? ` ${eventTypeToCssClass(entry.eventType, isIncoming)}`
+      : '';
+    line.className = `chat-line ${entry.channel}${eventClass} ${tabClasses}`;
     // Bump unread on tabs that aren't currently active.
     this._bumpUnread(tabs);
 
@@ -463,5 +484,24 @@ export class ChatPanel {
 
     this.log.appendChild(line);
     this.log.scrollTop = this.log.scrollHeight;
+  }
+}
+
+/** Map a server-side `eventType` to a CSS modifier class on the chat line.
+ *  Damage and debuffs only colorize when the local player is the target —
+ *  outgoing damage stays default so the chat doesn't drown in red when
+ *  you're the aggressor. Heals and buffs colorize regardless (they only
+ *  land on allies anyway). Unknown types fall back to the base `.event`
+ *  style — new server event families don't break the renderer. */
+function eventTypeToCssClass(eventType: string, isIncoming: boolean): string {
+  switch (eventType) {
+    case 'combat_hit':       return isIncoming ? 'event-hit' : '';
+    case 'combat_debuff':    return isIncoming ? 'event-debuff' : '';
+    case 'combat_miss':      return 'event-miss';
+    case 'combat_heal':      return 'event-heal';
+    case 'combat_buff':      return 'event-buff';
+    case 'combat_death':
+    case 'entity_death':     return 'event-death';
+    default:                 return '';
   }
 }

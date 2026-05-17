@@ -80,6 +80,7 @@ export class WASDController {
   private inventoryToggle:      (() => void) | null = null;
   private abilityToggle:        (() => void) | null = null;
   private characterSheetToggle: (() => void) | null = null;
+  private activitiesToggle:     (() => void) | null = null;
   /** Returns true if a harvestable glint is within range of the player.
    *  Used by F-key as a fallback action when no interactable entity is
    *  nearby — keeps F as the universal "do the contextual thing" key. */
@@ -116,6 +117,7 @@ export class WASDController {
   setInventoryToggle(fn: () => void):      void { this.inventoryToggle      = fn; }
   setAbilityToggle(fn: () => void):        void { this.abilityToggle        = fn; }
   setCharacterSheetToggle(fn: () => void): void { this.characterSheetToggle = fn; }
+  setActivitiesToggle(fn: () => void):     void { this.activitiesToggle     = fn; }
 
   /** Wire the harvest-in-range probe so F-key can fall back to /harvest. */
   setHarvestableProbe(fn: () => boolean): void { this.getHarvestableInRange = fn; }
@@ -520,6 +522,15 @@ export class WASDController {
       return;
     }
 
+    // O — toggle activities / social panel (current activities + future
+    // social hub). 'J' is reserved for the future Journal panel
+    // (missions, jobs, lore). Settings has been demoted to menu-only
+    // access since it's not something players touch mid-session.
+    if (key === 'o') {
+      this.activitiesToggle?.();
+      return;
+    }
+
     // P — toggle party window
     if (key === 'p') {
       this.partyToggle?.();
@@ -592,11 +603,9 @@ export class WASDController {
       return;
     }
 
-    // O — toggle settings window
-    if (key === 'o') {
-      this.settingsToggle?.();
-      return;
-    }
+    // Settings has no global hotkey — accessible only via the SystemMenu
+    // (◇ Settings) since it's not something players touch mid-session.
+    // The setter remains wired for future use if we change our mind.
 
     // Z — toggle walk mode. Default WASD speed becomes 'walk' instead of
     // 'jog'; Shift-hold still overrides to 'sprint'. The slash command

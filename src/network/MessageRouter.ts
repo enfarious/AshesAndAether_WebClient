@@ -28,6 +28,7 @@ import type {
   TelegraphRegisterPayload,
   TelegraphCancelPayload,
   AIDebugTickPayload,
+  ActivitySnapshotPayload,
   CommunicationPayload,
   ProximityRosterPayload,
   ProximityRosterDeltaPayload,
@@ -122,6 +123,7 @@ export class MessageRouter {
   private telegraphRegisterListeners = new Set<(p: TelegraphRegisterPayload) => void>();
   private telegraphCancelListeners   = new Set<(p: TelegraphCancelPayload) => void>();
   private aiDebugTickListeners       = new Set<(p: AIDebugTickPayload) => void>();
+  private activitySnapshotListeners  = new Set<(p: ActivitySnapshotPayload) => void>();
   private vaultGateOpenedListeners  = new Set<(p: VaultGateOpenedPayload) => void>();
   private vaultCompleteListeners    = new Set<(p: VaultCompletePayload) => void>();
   private vaultRoomEnterListeners   = new Set<(p: VaultRoomEnterPayload) => void>();
@@ -322,6 +324,13 @@ export class MessageRouter {
   onPlayerDash(fn: (entityId: string, x: number, z: number) => void): () => void {
     this.playerDashListeners.add(fn);
     return () => this.playerDashListeners.delete(fn);
+  }
+
+  /** Activities snapshot — full state of every tracked activity in one
+   *  push. Fires on every boss state transition + a 30s heartbeat. */
+  onActivitySnapshot(fn: (p: ActivitySnapshotPayload) => void): () => void {
+    this.activitySnapshotListeners.add(fn);
+    return () => this.activitySnapshotListeners.delete(fn);
   }
 
   /** Cast lifecycle events. `cast_start` opens the cast bar; `cast_complete`
@@ -781,6 +790,10 @@ export class MessageRouter {
       const payload = p as CombatErrorPayload;
       this.world.pushMessage('system', payload.message);
       this.combatErrorListeners.forEach(fn => fn(payload));
+    });
+
+    s.on('activity_snapshot', (p) => {
+      this.activitySnapshotListeners.forEach(fn => fn(p as ActivitySnapshotPayload));
     });
 
     s.on('cast_start', (p) => {

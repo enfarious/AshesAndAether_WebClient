@@ -1441,3 +1441,41 @@ export interface VaultStagingBrokenPayload {
   scalingTier:        'solo' | 'small' | 'party';
   message?:           string;
 }
+
+// ─── Activities panel snapshot ────────────────────────────────────────────
+
+export type BossKind     = 'husk' | 'riftcaller';
+export type BossStatus   = 'idle' | 'prep' | 'fighting' | 'defeated';
+
+export interface ActivityBossRow {
+  regionId:     string;
+  country:      string;
+  bossKind:     BossKind;
+  status:       BossStatus;
+  /** Present when status === 'fighting'. Rage tier 1-3. */
+  tier?:        1 | 2 | 3;
+  /** Present when status === 'prep'. ms-epoch when lobby closes + boss spawns. */
+  lobbyEndsAt?: number;
+  /** Present when status !== 'idle'. Drives the Join button payload. */
+  instanceId?:  string;
+}
+
+export interface ActivityVaultTemplate {
+  templateId:  string;
+  name:        string;
+  description: string;
+  baseLevel:   number;
+}
+
+/** Server → Client: full snapshot of every tracked activity (regional
+ *  bosses + vault directory). Pushed on every boss state transition and
+ *  on a 30s heartbeat. Client replaces its local state on receipt — no
+ *  delta merging, the payload IS the truth. */
+export interface ActivitySnapshotPayload {
+  timestamp: number;
+  regions:   ActivityBossRow[];
+  vaults: {
+    activeCount: number;
+    templates:   ActivityVaultTemplate[];
+  };
+}

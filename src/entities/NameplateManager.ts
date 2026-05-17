@@ -132,6 +132,43 @@ export class NameplateManager {
       plate.setVisible(true);
       plate.setOpacity(alpha);
     }
+
+    // Advance any active cast bars. Cheap walk — most ticks no plate has
+    // an active cast. Tied into the same per-frame update so we don't add
+    // a second loop or RAF.
+    const castNow = performance.now();
+    for (const plate of this.plates.values()) plate.tickCast(castNow);
+  }
+
+  // ── Cast bar plumbing ─────────────────────────────────────────────────────
+  //
+  // Server pushes cast_start / cast_complete / cast_break (and channel
+  // variants) for ANY entity, but app.ts only routes self to the HUD. We
+  // expose entityId-keyed entry points here so app.ts can also forward
+  // non-self events into the right plate's overhead cast bar.
+  //
+  // No-op when the entity has no plate (out of range, wildlife untargeted,
+  // settings disabled the type). Cast bars don't render on the self plate
+  // either — the HUD's bottom-centre bar already covers it.
+
+  showCast(entityId: string, abilityName: string, durationMs: number): void {
+    if (entityId === this.registry.playerId) return;
+    const plate = this.plates.get(entityId);
+    if (!plate) return;
+    plate.showCast(abilityName, durationMs, /*drain*/ false);
+  }
+
+  showChannel(entityId: string, abilityName: string, durationMs: number): void {
+    if (entityId === this.registry.playerId) return;
+    const plate = this.plates.get(entityId);
+    if (!plate) return;
+    plate.showCast(abilityName, durationMs, /*drain*/ true);
+  }
+
+  endCast(entityId: string): void {
+    const plate = this.plates.get(entityId);
+    if (!plate) return;
+    plate.endCast();
   }
 
   dispose(): void {
@@ -244,13 +281,25 @@ interface RenderContext {
 
 class Nameplate {
   readonly css2d: CSS2DObject;
-  private readonly root:    HTMLDivElement;
-  private readonly nameEl:  HTMLSpanElement;
-  private readonly tagEl:   HTMLSpanElement;
-  private readonly conEl:   HTMLSpanElement;
-  private readonly hpWrap:  HTMLDivElement;
-  private readonly hpFill:  HTMLDivElement;
+  private readonly root:     HTMLDivElement;
+  private readonly nameEl:   HTMLSpanElement;
+  private readonly tagEl:    HTMLSpanElement;
+  private readonly conEl:    HTMLSpanElement;
+  private readonly hpWrap:   HTMLDivElement;
+  private readonly hpFill:   HTMLDivElement;
+  private readonly castWrap: HTMLDivElement;
+  private readonly castLabel: HTMLSpanElement;
+  private readonly castFill: HTMLDivElement;
   private _opacity = 1;
+
+  // Active cast state. Local timer is the source of truth — server sends
+  // start/end, we fill or drain locally so we don't pay tick-rate on the
+  // wire. Mirrors HUD cast bar pattern.
+  private _castActive    = false;
+  private _castStartedAt = 0;
+  private _castDurationMs = 0;
+  /** Drain mode = channel (1 → 0). false = cast (0 → 1). */
+  private _castDrain     = false;
 
   constructor() {
     this.root = document.createElement('div');
@@ -275,10 +324,60 @@ class Nameplate {
     this.hpWrap.appendChild(this.hpFill);
     this.root.appendChild(this.hpWrap);
 
+    // Row 3: cast bar (hidden until a cast/channel begins). Sits below the
+    // HP bar so the eye reads "what they are" → "how alive" → "what they're
+    // about to do." Hidden by default.
+    this.castWrap = document.createElement('div');
+    this.castWrap.className = 'aa-plate-castwrap';
+    this.castWrap.style.display = 'none';
+    this.castLabel = document.createElement('span');
+    this.castLabel.className = 'aa-plate-castlabel';
+    this.castFill  = document.createElement('div');
+    this.castFill.className = 'aa-plate-castfill';
+    this.castWrap.appendChild(this.castFill);
+    this.castWrap.appendChild(this.castLabel);
+    this.root.appendChild(this.castWrap);
+
     this.css2d = new CSS2DObject(this.root);
     // 2.2m above entity origin — clears most humanoid silhouettes; for
     // larger mobs the plate floats a bit, which reads correctly.
     this.css2d.position.set(0, 2.2, 0);
+  }
+
+  showCast(name: string, durationMs: number, drain: boolean): void {
+    this._castActive     = true;
+    this._castStartedAt  = performance.now();
+    this._castDurationMs = Math.max(1, durationMs);
+    this._castDrain      = drain;
+    this.castLabel.textContent = name;
+    this.castWrap.classList.toggle('drain', drain);
+    this.castWrap.style.display = 'block';
+    // Seed initial fill width so the bar doesn't pop from a stale value.
+    this.castFill.style.width = drain ? '100%' : '0%';
+  }
+
+  /** Hide the cast bar. Called on cast_complete / cast_break / entity death.
+   *  No-op when no cast is active. */
+  endCast(): void {
+    if (!this._castActive) return;
+    this._castActive = false;
+    this.castWrap.style.display = 'none';
+  }
+
+  /** Per-frame: advance the cast bar fill. Auto-hides on natural expiry —
+   *  server complete/break events still call endCast, this just handles the
+   *  late-message case (cast hits 100% before complete event arrives). */
+  tickCast(now: number): void {
+    if (!this._castActive) return;
+    const elapsed = now - this._castStartedAt;
+    const t       = Math.max(0, Math.min(1, elapsed / this._castDurationMs));
+    const pct     = this._castDrain ? (1 - t) : t;
+    this.castFill.style.width = `${(pct * 100).toFixed(1)}%`;
+    if (elapsed >= this._castDurationMs) {
+      // Hold visible at terminal value for a frame so the bar lands fully
+      // filled/drained before disappearing — looks intentional vs blinking
+      // off prematurely. endCast handles the actual hide on server signal.
+    }
   }
 
   render(entity: Entity, ctx: RenderContext): void {
@@ -443,5 +542,37 @@ const NAMEPLATE_CSS = `
 .aa-plate.targeted .aa-plate-hpwrap {
   border-color: rgba(255,216,107,0.8);
   box-shadow: 0 0 4px rgba(255,216,107,0.55);
+}
+/* Cast bar — sits below the HP bar. Fill colour signals cast vs channel:
+   amber/orange for casts (winding up), blue for channels (already firing). */
+.aa-plate-castwrap {
+  position: relative;
+  width:  calc(120px * var(--aa-plate-scale));
+  height: calc(15px * var(--aa-plate-scale));
+  background: rgba(0,0,0,0.7);
+  border: 1px solid rgba(0,0,0,0.9);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: calc(2px * var(--aa-plate-scale));
+}
+.aa-plate-castfill {
+  position: absolute;
+  inset: 0;
+  width: 0%;
+  background: linear-gradient(180deg, #f6c060 0%, #c87820 100%);
+  transition: width 80ms linear;
+}
+.aa-plate-castwrap.drain .aa-plate-castfill {
+  background: linear-gradient(180deg, #6cb8f0 0%, #2870c0 100%);
+}
+.aa-plate-castlabel {
+  position: relative;
+  display: block;
+  font-size: calc(11px * var(--aa-plate-scale));
+  font-weight: 700;
+  color: #fff;
+  line-height: calc(15px * var(--aa-plate-scale));
+  text-shadow: 0 1px 2px rgba(0,0,0,0.95), 0 0 2px rgba(0,0,0,1);
+  letter-spacing: 0.5px;
 }
 `;

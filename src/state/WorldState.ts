@@ -18,6 +18,14 @@ export interface ChatEntry {
   sender:    string;
   content:   string;
   distance?: number;
+  /** Carried for `channel === 'event'` entries so the chat renderer can
+   *  colorize by event family (combat_hit red, combat_heal green, etc.)
+   *  rather than dumping every combat line in the same warm grey. */
+  eventType?: string;
+  /** Resolved target id for combat events — lets the renderer decide
+   *  incoming-vs-outgoing colouring (incoming damage/debuffs go red, the
+   *  ones you deal stay default). Optional; absent for non-combat events. */
+  targetId?: string;
 }
 
 /**
@@ -242,12 +250,15 @@ export class WorldState {
 
   onGameEvent(payload: EventPayload): void {
     if (payload.narrative) {
+      const targetId = (payload.eventTypeData as { targetId?: string } | undefined)?.targetId;
       const entry: ChatEntry = {
         id:        `event-${++this._chatCounter}`,
         timestamp: payload.timestamp,
         channel:   'event',
         sender:    '',
         content:   payload.narrative,
+        eventType: payload.eventType,
+        ...(targetId ? { targetId } : {}),
       };
       this._chatLog.push(entry);
       if (this._chatLog.length > this.MAX_CHAT) this._chatLog.shift();

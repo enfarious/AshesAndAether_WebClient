@@ -18,6 +18,7 @@ export interface SystemMenuCallbacks {
   character:  () => void;
   inventory:  () => void;
   abilities:  () => void;
+  activities: () => void;
   companion:  () => void;
   guild:      () => void;
   party:      () => void;
@@ -39,6 +40,7 @@ const ENTRIES: MenuEntry[] = [
   { id: 'character',  icon: '♦', label: 'Character',  keybind: 'C' },
   { id: 'inventory',  icon: '◈', label: 'Inventory',  keybind: 'I' },
   { id: 'abilities',  icon: '✦', label: 'Abilities',  keybind: 'K' },
+  { id: 'activities', icon: '◆', label: 'Activities', keybind: 'O' },
   { id: 'companion',  icon: '❀', label: 'Companion',  keybind: 'N' },
   { id: 'guild',      icon: '⚜', label: 'Guild',      keybind: 'G' },
   { id: 'party',      icon: '☰', label: 'Party',      keybind: 'P' },
@@ -46,7 +48,7 @@ const ENTRIES: MenuEntry[] = [
   { id: 'travel',     icon: '✈', label: 'Travel',     keybind: 'R' },
   { id: 'market',     icon: '⚖', label: 'Market',     keybind: 'Ctrl+M' },
   { id: 'layout',     icon: '⬚', label: 'Layout',     keybind: 'F10' },
-  { id: 'settings',   icon: '⚙', label: 'Settings',   keybind: 'O' },
+  { id: 'settings',   icon: '⚙', label: 'Settings',   keybind: '' },
 ];
 
 export class SystemMenu {
@@ -131,12 +133,17 @@ export class SystemMenu {
   private _build(): void {
     let html = '';
     for (const entry of ENTRIES) {
+      // Empty keybind = no hotkey (e.g. Settings, menu-only access).
+      // Render the label without the parenthesised hint + suppress the
+      // key chip so the row doesn't show a stray empty box.
+      const title  = entry.keybind ? `${entry.label} (${entry.keybind})` : entry.label;
+      const keyEl  = entry.keybind ? `<span class="sm-key">${entry.keybind}</span>` : '';
       html += `
-        <button class="sm-btn" data-panel="${entry.id}" title="${entry.label} (${entry.keybind})">
+        <button class="sm-btn" data-panel="${entry.id}" title="${title}">
           <span class="sm-cursor">▸</span>
           <span class="sm-icon">${entry.icon}</span>
           <span class="sm-label">${entry.label}</span>
-          <span class="sm-key">${entry.keybind}</span>
+          ${keyEl}
         </button>
       `;
     }

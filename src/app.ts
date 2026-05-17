@@ -36,6 +36,7 @@ import { ExamineWindow }      from '@/ui/ExamineWindow';
 import { HarvestToast }       from '@/ui/HarvestToast';
 import { BeaconToast }        from '@/ui/BeaconToast';
 import { AbilityWindow }      from '@/ui/AbilityWindow';
+import { ActivitiesPanel }    from '@/ui/ActivitiesPanel';
 import { CharacterSheet }    from '@/ui/CharacterSheet';
 import { ScriptEditor }      from '@/ui/ScriptEditor';
 import { PartyWindow }       from '@/ui/PartyWindow';
@@ -71,6 +72,7 @@ import { CorpseSystem }       from '@/entities/CorpseSystem';
 import { CorruptionMiasma }  from '@/entities/CorruptionMiasma';
 import { MiasmaGroundFog }   from '@/world/MiasmaGroundFog';
 import { MiasmaBoundaryWall } from '@/world/MiasmaBoundaryWall';
+import { setMiasmaAnchors }   from '@/world/HeightmapShader';
 import { CaravanRide }        from '@/world/CaravanRide';
 import { WardBeaconManager } from '@/entities/WardBeacon';
 import { GuildBeaconManager, type GuildBeaconData } from '@/entities/GuildBeacon';
@@ -178,6 +180,7 @@ export class App {
   private vaultCompleteToast: VaultCompleteToast | null = null;
   private skyHint:         SkyHint         | null = null;
   private abilityWindow:   AbilityWindow   | null = null;
+  private activitiesPanel: ActivitiesPanel | null = null;
   private characterSheet:  CharacterSheet  | null = null;
   private partyWindow:     PartyWindow     | null = null;
   private actionBar:       ActionBar       | null = null;
@@ -784,6 +787,7 @@ export class App {
     this.scriptEditor?.dispose();
     this.harvestToast?.dispose();
     this.abilityWindow?.dispose();
+    this.activitiesPanel?.dispose();
     this.characterSheet?.dispose();
     this.partyWindow?.dispose();
     this.actionBar?.dispose();
@@ -1093,6 +1097,11 @@ export class App {
       const guild = this.guildBeacons?.beaconList() ?? [];
       this.miasmaFog.setCivicAnchors(civic);
       this.miasmaFog.setGuildBeacons(guild);
+      // Same anchor list also drives the miasma-aware uplift on every
+      // conforming indicator (heading arrows, AA ring, telegraphs, target
+      // highlight) so they smoothly rise above the fog when the player or
+      // the indicator's vertex enters a corruption patch.
+      setMiasmaAnchors(civic, guild);
       this.miasmaFog.update(dt, this.player.position.x, this.player.position.z);
     }
     this.miasmaWall?.update(dt);
@@ -1742,6 +1751,12 @@ export class App {
       );
       this.wasd.setCharacterSheetToggle(() => this.characterSheet!.toggle());
     }
+    if (!this.activitiesPanel) {
+      this.activitiesPanel = new ActivitiesPanel(this.uiRoot, this.socket, this.router);
+      this.modalStack.register(this.activitiesPanel);
+      // O — toggle activities (Objectives — region bosses + vault directory)
+      this.wasd.setActivitiesToggle(() => this.activitiesPanel!.toggle());
+    }
     // Wire the F-key harvest probe to the same cached value the HUD prompt
     // reads — both reflect "is there a glint within range right now?".
     this.wasd.setHarvestableProbe(() => this._harvestableInRange);
@@ -1870,6 +1885,7 @@ export class App {
         character:  () => this.characterSheet?.toggle(),
         inventory:  () => this.inventoryWindow?.toggle(),
         abilities:  () => this.abilityWindow?.toggle(),
+        activities: () => this.activitiesPanel?.toggle(),
         companion:  () => this.companionPanel?.toggle(),
         guild:      () => this.guildPanel?.toggle(),
         party:      () => this.partyWindow?.toggle(),
@@ -2122,33 +2138,43 @@ export class App {
       // if it ever feels like a slide.)
     });
 
-    // Cast lifecycle — open / close the HUD cast bar for self only.
-    // Remote cast bars (above nameplates) are deferred until nameplates exist.
+    // Cast lifecycle — HUD cast bar for self, nameplate cast bar for
+    // everyone else. Both drive off the same server cast_start /
+    // cast_complete / cast_break events (and channel variants) — the
+    // entityId routes to the right widget.
     this.router.onCastStart((p) => {
       if (p.entityId === this.player.id) {
         this.hud?.showCast(p.abilityName, p.durationMs);
+      } else {
+        this.nameplates?.showCast(p.entityId, p.abilityName, p.durationMs);
       }
     });
     this.router.onCastComplete((p) => {
       if (p.entityId === this.player.id) this.hud?.completeCast();
+      else this.nameplates?.endCast(p.entityId);
     });
     this.router.onCastBreak((p) => {
       if (p.entityId === this.player.id) this.hud?.breakCast();
+      else this.nameplates?.endCast(p.entityId);
     });
 
-    // Channel lifecycle — same HUD widget but drain mode (1 → 0). Server's
+    // Channel lifecycle — same widgets but drain mode (1 → 0). Server's
     // channel_start arrives right after cast_complete for channeled
     // abilities, so the bar transitions cleanly cast → channel.
     this.router.onChannelStart((p) => {
       if (p.entityId === this.player.id) {
         this.hud?.showChannel(p.abilityName, p.durationMs);
+      } else {
+        this.nameplates?.showChannel(p.entityId, p.abilityName, p.durationMs);
       }
     });
     this.router.onChannelComplete((p) => {
       if (p.entityId === this.player.id) this.hud?.completeCast();
+      else this.nameplates?.endCast(p.entityId);
     });
     this.router.onChannelBreak((p) => {
       if (p.entityId === this.player.id) this.hud?.breakCast();
+      else this.nameplates?.endCast(p.entityId);
     });
 
     this.hud.show();

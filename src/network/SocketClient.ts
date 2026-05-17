@@ -122,6 +122,8 @@ export class SocketClient {
       'command_help_list',
       // Strategic map live deltas (only while M-map is open + subscribed)
       'map_beacon_update', 'map_ad_patch',
+      // Activities panel — single push event carries the full snapshot.
+      'activity_snapshot',
     ] as const;
 
     for (const name of serverEvents) {

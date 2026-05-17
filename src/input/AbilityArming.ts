@@ -5,8 +5,10 @@ import type { AoeShape }    from '@/network/Protocol';
 export interface AbilityProbe {
   name:       string;
   targetType: string | undefined;  // 'self' | 'enemy' | 'ally' | 'aoe' | undefined
-  /** AoE footprint when the ability has one — used by AoEPreviewIndicator. */
-  aoe?:       AoeShape;
+  /** AoE footprint when the ability has one — used by AoEPreviewIndicator.
+   *  Explicit `| undefined` (not `?`) so it matches the shape returned by
+   *  ActionBar.probeSlot under `exactOptionalPropertyTypes`. */
+  aoe:        AoeShape | undefined;
 }
 
 /** Callbacks the arming flow needs to drive enemy/ally sub-target picking.

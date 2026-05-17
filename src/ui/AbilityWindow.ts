@@ -48,42 +48,92 @@ const AP_CAP = 10;
 
 // ── Radial layout constants ──────────────────────────────────────────────────
 
-const SVG_SIZE = 560;
+const SVG_SIZE = 800;
 const CX = SVG_SIZE / 2;
 const CY = SVG_SIZE / 2;
 
-/** Tier radii (pixels from centre). */
-const TIER_RADIUS: Record<number, number> = { 1: 80, 2: 140, 3: 200, 4: 260 };
+/** Tier radii (pixels from centre). Bumped ~40% from the original 80/140/
+ *  200/260 to widen angular gaps at every ring. With lineage nodes added,
+ *  the old radii left only ~37px between T2 lineage and T2b — exactly at
+ *  the touch threshold for two 18px nodes. Bigger rings give 50-75px gaps
+ *  with the same angular layout, leaving room for the axis spider chart
+ *  in the centre (inside T1, r=110) without crowding. */
+const TIER_RADIUS: Record<number, number> = { 1: 110, 2: 200, 3: 290, 4: 380 };
+
+/** Default zoom on open / tab-switch. >1 zooms in, freeing whitespace at
+ *  the SVG edges; the user can wheel-zoom out + drag-pan to reach edge
+ *  nodes. ~1.3 keeps every tier visible at default size on a 720p panel
+ *  without forcing scroll. */
+const DEFAULT_ZOOM = 1.3;
+
+/** Outer extent of the central sector-fill chart in SVG px. Used both
+ *  for the chart's spoke length and for trimming the sector divider lines
+ *  so they start outside the chart instead of cutting through it. Inside
+ *  the T1 ring (r=110, node radius 22 → inner edge r=88) with ~8px margin. */
+const CENTER_WEB_OUTER_R = 80;
+
+/** Pixel distance the pointer must travel after pointerdown before we
+ *  promote a press to a drag. Below this, the press is treated as a click
+ *  and bubbles normally to whatever child element (node, button) handled
+ *  it. Matches the typical browser drag-start threshold. */
+const DRAG_START_THRESHOLD_PX = 5;
 
 /** Sector base angles (0 deg = top, clockwise). */
 const SECTOR_ANGLE: Record<string, number> = {
   tank: 0, phys: 60, control: 120, magic: 180, healer: 240, support: 300,
 };
 
-/** Variant offsets within a sector wedge. */
+/** Variant offsets within a sector wedge. Standard nodes use a/b; linear
+ *  chains (e.g. `passive_magic_resonance_t1/t2/t3`) sit on a dedicated
+ *  spoke at the sector boundary (+30°) so they don't overlap the a/b
+ *  columns. The +30° boundary places the lineage right on the divider
+ *  line — node circles render on top of dividers (drawn earlier in the
+ *  SVG layer order), so it reads as architecture rather than crowding.
+ *  Earlier +25° caused ~12px overlap at T2 that intercepted clicks meant
+ *  for the standard T2b node. If we ever pack multiple lineages into one
+ *  sector we'll need a smarter spoke-angle hash; today one per sector. */
 const VARIANT_OFFSET: Record<string, number> = { '': 0, 'a': -15, 'b': 15 };
-
-/** Active-web row suffixes. */
-const ACTIVE_SUFFIXES = ['t1', 't2a', 't2b', 't3a', 't3b', 't4'];
-/** Passive-web row suffixes. */
-const PASSIVE_SUFFIXES = ['t1', 't2a', 't2b', 't3a', 't3b'];
+const LINEAGE_SPOKE_OFFSET_DEG = 30;
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function parseNodeId(id: string): { web: string; sector: string; tier: number; suffix: string } {
+interface ParsedNodeId {
+  web:      string;
+  sector:   string;
+  tier:     number;
+  suffix:   string;
+  /** Set for 4-part linear-chain ids (`passive_magic_resonance_t1`);
+   *  empty string for standard 3-part ids (`passive_magic_t2a`). Drives
+   *  the lineage-spoke positioning so resonance/quickened/aether-tap
+   *  etc. don't collide with the standard a/b nodes. */
+  lineage:  string;
+}
+
+function parseNodeId(id: string): ParsedNodeId {
   const parts  = id.split('_');
   const web    = parts[0] ?? '';
   const sector = parts[1] ?? '';
-  const suffix = parts[2] ?? 't1'; // "t1", "t2a", "t2b", "t3a", "t3b", "t4"
+  // Last part is always the tier marker (`t1`, `t2a`, `t2b`, `t3a`, `t3b`, `t4`).
+  // For 4+ part ids everything between sector and tier is the lineage name.
+  const suffix = parts[parts.length - 1] ?? 't1';
+  const lineage = parts.length >= 4 ? parts.slice(2, -1).join('_') : '';
   const tier   = parseInt(suffix.charAt(1), 10);
-  return { web, sector, tier, suffix };
+  return { web, sector, tier, suffix, lineage };
 }
 
-function nodePosition(sector: string, tier: number, suffix: string): { x: number; y: number } {
-  const variant  = suffix.replace(/^t\d/, ''); // extract 'a', 'b', or ''
-  const angleDeg = (SECTOR_ANGLE[sector] ?? 0) + (VARIANT_OFFSET[variant] ?? 0) - 90; // -90 so 0 deg = top
+function nodePosition(sector: string, tier: number, suffix: string, lineage: string): { x: number; y: number } {
+  // Lineage nodes get the dedicated spoke; standard nodes use the a/b
+  // variant offset on the sector's primary axis.
+  let offsetDeg: number;
+  if (lineage) {
+    offsetDeg = LINEAGE_SPOKE_OFFSET_DEG;
+  } else {
+    const variant = suffix.replace(/^t\d/, ''); // 'a', 'b', or ''
+    offsetDeg = VARIANT_OFFSET[variant] ?? 0;
+  }
+  const angleDeg = (SECTOR_ANGLE[sector] ?? 0) + offsetDeg - 90; // -90 so 0 deg = top
   const angleRad = (angleDeg * Math.PI) / 180;
   const r        = TIER_RADIUS[tier] ?? 140;
   return { x: CX + r * Math.cos(angleRad), y: CY + r * Math.sin(angleRad) };
@@ -108,14 +158,22 @@ export class AbilityWindow {
     active: [], passive: [],
   };
 
-  // Zoom / pan state for the radial web
+  // Zoom / pan state for the radial web. Default zoom starts above 1 so
+  // the tree opens closer-in (more readable on a 720p panel); the user can
+  // wheel-zoom out + drag to reach edge nodes.
   private _svgEl: SVGSVGElement | null = null;
-  private _zoomLevel = 1;
-  private _viewBoxX = 0;
-  private _viewBoxY = 0;
-  private _viewBoxW = SVG_SIZE;
-  private _viewBoxH = SVG_SIZE;
-  private _dragState: { startX: number; startY: number; vbX: number; vbY: number } | null = null;
+  private _zoomLevel = DEFAULT_ZOOM;
+  private _viewBoxX = (SVG_SIZE - SVG_SIZE / DEFAULT_ZOOM) / 2;
+  private _viewBoxY = (SVG_SIZE - SVG_SIZE / DEFAULT_ZOOM) / 2;
+  private _viewBoxW = SVG_SIZE / DEFAULT_ZOOM;
+  private _viewBoxH = SVG_SIZE / DEFAULT_ZOOM;
+  /** Drag-pan state. `active=false` is the "armed but not yet dragging"
+   *  phase: pointerdown sets it up, but we don't setPointerCapture or
+   *  start panning until the cursor moves past DRAG_START_THRESHOLD_PX.
+   *  Without this gate the drag handler captures the pointer the instant
+   *  any zoomed click lands and the node click handlers never see the
+   *  click event. */
+  private _dragState: { startX: number; startY: number; vbX: number; vbY: number; pointerId: number; active: boolean } | null = null;
 
   /** Beacon-range check, supplied by app.ts. Drives the respec button's
    *  enabled state — polled while the window is visible. */
@@ -588,12 +646,14 @@ export class AbilityWindow {
     this.activeTab    = tab;
     this.selectedSlot = null;
     this.pendingUnlock = null;
-    // Reset zoom when switching tabs
-    this._zoomLevel = 1;
-    this._viewBoxX = 0;
-    this._viewBoxY = 0;
-    this._viewBoxW = SVG_SIZE;
-    this._viewBoxH = SVG_SIZE;
+    // Reset zoom when switching tabs — back to default zoom (closer-in)
+    // centred on the SVG midpoint, so the user lands looking at the
+    // central axis chart + T1 ring instead of the whole canvas.
+    this._zoomLevel = DEFAULT_ZOOM;
+    this._viewBoxW = SVG_SIZE / DEFAULT_ZOOM;
+    this._viewBoxH = SVG_SIZE / DEFAULT_ZOOM;
+    this._viewBoxX = (SVG_SIZE - this._viewBoxW) / 2;
+    this._viewBoxY = (SVG_SIZE - this._viewBoxH) / 2;
     tabA.className = tab === 'active'  ? 'aw-tab active' : 'aw-tab';
     tabP.className = tab === 'passive' ? 'aw-tab active' : 'aw-tab';
     this._refresh();
@@ -672,21 +732,37 @@ export class AbilityWindow {
       svgWrap.style.cursor = this._zoomLevel > 1.05 ? 'grab' : '';
     }, { passive: false });
 
-    // Drag to pan (pointer capture keeps events on svgWrap even if cursor leaves)
+    // Drag to pan. Two-phase: pointerdown ARMS the drag (records start
+    // position, no capture); pointermove PROMOTES to active drag once
+    // the pointer has traveled DRAG_START_THRESHOLD_PX. Crucially, a
+    // press-without-movement never captures the pointer, so the original
+    // click event reaches the node's <g> handler — without this gate,
+    // every click at zoom > 1 was being intercepted as a drag-start.
     svgWrap.addEventListener('pointerdown', (e) => {
       if (this._zoomLevel <= 1.05) return;
-      svgWrap.setPointerCapture(e.pointerId);
       this._dragState = {
         startX: e.clientX, startY: e.clientY,
         vbX: this._viewBoxX, vbY: this._viewBoxY,
+        pointerId: e.pointerId,
+        active: false,
       };
-      svgWrap.style.cursor = 'grabbing';
     });
     svgWrap.addEventListener('pointermove', (e) => {
       if (!this._dragState) return;
+      const dxRaw = e.clientX - this._dragState.startX;
+      const dyRaw = e.clientY - this._dragState.startY;
+      if (!this._dragState.active) {
+        // Still armed — wait for the pointer to clear the threshold
+        // before we lock in as a drag. Under threshold, the eventual
+        // pointerup leaves the press as a normal click.
+        if (Math.hypot(dxRaw, dyRaw) < DRAG_START_THRESHOLD_PX) return;
+        this._dragState.active = true;
+        svgWrap.setPointerCapture(this._dragState.pointerId);
+        svgWrap.style.cursor = 'grabbing';
+      }
       const rect = svgWrap.getBoundingClientRect();
-      const dx = (e.clientX - this._dragState.startX) / rect.width  * this._viewBoxW;
-      const dy = (e.clientY - this._dragState.startY) / rect.height * this._viewBoxH;
+      const dx = dxRaw / rect.width  * this._viewBoxW;
+      const dy = dyRaw / rect.height * this._viewBoxH;
       this._viewBoxX = this._dragState.vbX - dx;
       this._viewBoxY = this._dragState.vbY - dy;
       this._svgEl?.setAttribute('viewBox',
@@ -780,22 +856,24 @@ export class AbilityWindow {
     svg.setAttribute('width', String(SVG_SIZE));
     svg.setAttribute('height', String(SVG_SIZE));
 
-    const suffixes = web === 'active' ? ACTIVE_SUFFIXES : PASSIVE_SUFFIXES;
     const maxTier  = web === 'active' ? 4 : 3;
 
-    // Collect all node IDs for this web
+    // Collect all node IDs for this web, straight from the server-provided
+    // manifest. This used to construct ids from a hardcoded suffix list
+    // (t1/t2a/t2b/t3a/t3b), which silently dropped every linear-chain
+    // node (`passive_<sector>_<lineage>_t<n>` — Resonant Force, Aether
+    // Tap, Physical Power, etc.) — those exist in the manifest but don't
+    // match the pattern. Iterating the manifest picks them all up.
     const nodeIds: string[] = [];
-    for (const sector of SECTORS) {
-      for (const suf of suffixes) {
-        nodeIds.push(`${web}_${sector}_${suf}`);
-      }
+    for (const [id, node] of manifest) {
+      if (node.web === web) nodeIds.push(id);
     }
 
     // Pre-compute positions
     const positions = new Map<string, { x: number; y: number }>();
     for (const id of nodeIds) {
-      const { sector, tier, suffix } = parseNodeId(id);
-      positions.set(id, nodePosition(sector, tier, suffix));
+      const { sector, tier, suffix, lineage } = parseNodeId(id);
+      positions.set(id, nodePosition(sector, tier, suffix, lineage));
     }
 
     // ── 1. Background tier rings ──────────────────────────────────────────────
@@ -810,15 +888,26 @@ export class AbilityWindow {
       svg.appendChild(ring);
     }
 
+    // ── 1.5. Central axis spider chart ────────────────────────────────────────
+    // Fills the dead space inside the T1 ring with a live readout of the
+    // player's axis counts (phys/magical/melee/ranged/offense/defense).
+    // Mirrors the character sheet's wheel so the same mental model carries
+    // across screens. Drawn BEFORE dividers so the divider lines visually
+    // start from the chart's outer edge instead of cutting through it.
+    this._buildCentralAxisWeb(svg);
+
     // ── 2. Sector divider lines ───────────────────────────────────────────────
-    // Dividers sit at the midpoints between sector centres: 30, 90, 150, 210, 270, 330 deg
+    // Dividers sit at the midpoints between sector centres: 30, 90, 150, 210, 270, 330 deg.
+    // Start at the OUTER edge of the central axis chart so the spider
+    // chart in the centre isn't sliced apart by 6 lines through it.
+    const dividerStartR = CENTER_WEB_OUTER_R;
     const outerR = (TIER_RADIUS[maxTier] ?? 200) + 30;
     for (let i = 0; i < 6; i++) {
       const angleDeg = 30 + i * 60 - 90; // -90 to rotate so 0=top
       const angleRad = (angleDeg * Math.PI) / 180;
       const line = document.createElementNS(SVG_NS, 'line');
-      line.setAttribute('x1', String(CX));
-      line.setAttribute('y1', String(CY));
+      line.setAttribute('x1', String(CX + dividerStartR * Math.cos(angleRad)));
+      line.setAttribute('y1', String(CY + dividerStartR * Math.sin(angleRad)));
       line.setAttribute('x2', String(CX + outerR * Math.cos(angleRad)));
       line.setAttribute('y2', String(CY + outerR * Math.sin(angleRad)));
       line.setAttribute('stroke', 'rgba(200,145,60,0.09)');
@@ -1002,6 +1091,92 @@ export class AbilityWindow {
     }
 
     return svg;
+  }
+
+  // ── Central sector-fill chart ─────────────────────────────────────────────
+  //
+  // Six-spoke radial chart, one spoke per sector, pointed in the same
+  // direction as the tree's sector wedge (tank=top, phys=upper-right,
+  // etc.). The polygon fills based on the number of *slotted* passives
+  // the player has in each sector — so the centre visually mirrors the
+  // build distribution out in the tree. No text labels (which clutter
+  // the centre); the spoke directions match the tree layout, so it's
+  // self-evident which spoke maps to which sector.
+
+  private _buildCentralAxisWeb(svg: SVGSVGElement): void {
+    // Slotted passive node ids → counts grouped by sector. Slotted (not
+    // unlocked) so the chart reflects the *active* build — slotting an
+    // unused passive shouldn't bloat the silhouette.
+    const counts: Record<string, number> = { tank: 0, phys: 0, control: 0, magic: 0, healer: 0, support: 0 };
+    for (const nodeId of this.player.passiveLoadout) {
+      if (!nodeId) continue;
+      const { sector } = parseNodeId(nodeId);
+      if (sector in counts) counts[sector]! += 1;
+    }
+
+    const maxRadius = CENTER_WEB_OUTER_R - 8;
+    // Each sector has 1 T1 + 2 T2 + 2 T3 + 3 lineage = 8 passives total.
+    const maxNodes  = 8;
+
+    // Spokes align with sector wedge angles in the tree. SECTOR_ANGLE is
+    // deg-clockwise-from-top, so subtract 90° to convert to standard math
+    // angle (0° = +X). Order matters for the polygon — must go around the
+    // chart consistently so the shape closes correctly.
+    const spokes = SECTORS.map((sector) => {
+      const angleDeg = (SECTOR_ANGLE[sector] ?? 0) - 90;
+      const angleRad = (angleDeg * Math.PI) / 180;
+      return { sector, angleRad };
+    });
+
+    const at = (radius: number, angle: number): [number, number] =>
+      [CX + radius * Math.cos(angle), CY + radius * Math.sin(angle)];
+
+    // Threshold rings at 3 / 5 / 7 slots — quick at-a-glance "how
+    // committed is this build to any one sector" markers.
+    [3, 5, 7].forEach((threshold, idx) => {
+      const r = (threshold / maxNodes) * maxRadius;
+      const points = spokes
+        .map((s) => at(r, s.angleRad))
+        .map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`)
+        .join(' ');
+      const poly = document.createElementNS(SVG_NS, 'polygon');
+      poly.setAttribute('points', points);
+      poly.setAttribute('fill', 'none');
+      poly.setAttribute('stroke', idx === 0 ? 'rgba(150,120,80,0.30)' : 'rgba(200,98,42,0.18)');
+      poly.setAttribute('stroke-width', '1');
+      svg.appendChild(poly);
+    });
+
+    // Spokes themselves
+    spokes.forEach((s) => {
+      const [x, y] = at(maxRadius, s.angleRad);
+      const line = document.createElementNS(SVG_NS, 'line');
+      line.setAttribute('x1', String(CX));
+      line.setAttribute('y1', String(CY));
+      line.setAttribute('x2', x.toFixed(1));
+      line.setAttribute('y2', y.toFixed(1));
+      line.setAttribute('stroke', 'rgba(120,100,80,0.45)');
+      line.setAttribute('stroke-width', '1');
+      svg.appendChild(line);
+    });
+
+    // Filled silhouette — current per-sector slotted counts. Zero
+    // collapses to centre.
+    const shapePoints = spokes
+      .map((s) => {
+        const c = counts[s.sector] ?? 0;
+        const r = Math.min(c, maxNodes) / maxNodes * maxRadius;
+        const [x, y] = at(r, s.angleRad);
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      })
+      .join(' ');
+    const shape = document.createElementNS(SVG_NS, 'polygon');
+    shape.setAttribute('points', shapePoints);
+    shape.setAttribute('fill', 'rgba(200,145,60,0.22)');
+    shape.setAttribute('stroke', 'rgba(230,170,80,0.85)');
+    shape.setAttribute('stroke-width', '1.5');
+    shape.setAttribute('stroke-linejoin', 'round');
+    svg.appendChild(shape);
   }
 
   // ── Adjacency check ───────────────────────────────────────────────────────

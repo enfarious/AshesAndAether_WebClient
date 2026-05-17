@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { EntityObject } from './EntityObject';
+import { HeadingIndicator } from './HeadingIndicator';
 import type { CharacterState } from '@/network/Protocol';
 import type { HeightmapService } from '@/world/HeightmapService';
 
@@ -112,6 +113,11 @@ export class PlayerEntity extends EntityObject {
   private _heightmap:  HeightmapService | null   = null;
   private _worldRoot:  THREE.Object3D  | null    = null;
 
+  /** Heading chevron — top-level scene mesh, NOT parented to the player
+   *  root. Its tangent-plane fit re-positions and re-rotates the mesh each
+   *  frame in update() based on this entity's world XZ + rotation.y. */
+  private _heading: HeadingIndicator | null = null;
+
   /**
    * Pre-computed bounding spheres for worldRoot's top-level children.
    * Terrain-scale meshes (radius > COLLISION_CANDIDATE_MAX_RADIUS) are
@@ -218,40 +224,9 @@ export class PlayerEntity extends EntityObject {
     ring.position.y = 0.05;
     root.add(ring);
 
-    // Forward indicator — long flat arrow on the ground extending out from
-    // the capsule's feet, points along local +Z (model forward). The capsule
-    // is otherwise visually symmetric so without this you can't tell which
-    // way you're facing during ASD strafing or after a cast auto-rotates.
-    // Made deliberately long (~1.5m) so even small heading changes are
-    // immediately visible.
-    const fwdGeo = new THREE.BufferGeometry();
-    const fwdVerts = new Float32Array([
-      -0.28, 0,  0.0,    // back-left
-       0.28, 0,  0.0,    // back-right
-      -0.10, 0,  0.7,    // mid-left  (haft notch)
-       0.10, 0,  0.7,    // mid-right (haft notch)
-      -0.25, 0,  0.7,    // shoulder-left
-       0.25, 0,  0.7,    // shoulder-right
-       0.0,  0,  1.5,    // tip (forward, +Z = local model forward)
-    ]);
-    fwdGeo.setAttribute('position', new THREE.BufferAttribute(fwdVerts, 3));
-    // Haft (rectangle) + arrowhead (triangle from shoulders to tip).
-    fwdGeo.setIndex([
-      0, 1, 3,  0, 3, 2,    // haft body
-      4, 5, 6,              // arrowhead
-    ]);
-    fwdGeo.computeVertexNormals();
-    const fwdMat = new THREE.MeshBasicMaterial({
-      color:        0x88e0ff,
-      transparent:  true,
-      opacity:      0.75,
-      side:         THREE.DoubleSide,
-      depthWrite:   false,
-    });
-    const fwdMesh = new THREE.Mesh(fwdGeo, fwdMat);
-    fwdMesh.position.y = 0.06;
-    fwdMesh.renderOrder = 5;
-    root.add(fwdMesh);
+    // Forward heading chevron is created post-super() so it can be stored
+    // as an instance field; we just stash the scene ref for now.
+    root.userData['_pendingHeadingScene'] = scene;
 
     if (character.position) {
       root.position.set(character.position.x, character.position.y, character.position.z);
@@ -267,6 +242,11 @@ export class PlayerEntity extends EntityObject {
     // Body mesh ref for the jump arc animation. Children[0] is the capsule
     // we just added above; capturing it here avoids re-querying the scene.
     this._bodyMesh = mesh;
+    // Build the heading chevron as a top-level scene mesh — its tangent-
+    // plane fit drives position + rotation each frame from this entity's
+    // world XZ + rotation.y.
+    this._heading = new HeadingIndicator(scene, new THREE.Color(0x88e0ff), 'prominent');
+    delete root.userData['_pendingHeadingScene'];
   }
 
   // ── Public API ──────────────────────────────────────────────────────────────
@@ -274,8 +254,21 @@ export class PlayerEntity extends EntityObject {
   /** Current movement mode — read by ClickMoveController for WASD priority check. */
   get mode(): PlayerMoveMode { return this._mode; }
 
-  /** Provide the heightmap for terrain-following during prediction. */
-  setHeightmap(hm: HeightmapService | null): void { this._heightmap = hm; }
+  /** Provide the heightmap for terrain-following during prediction. Also
+   *  feeds the heading chevron so its tangent-plane fit can sample the
+   *  new zone's DEM. */
+  setHeightmap(hm: HeightmapService | null): void {
+    this._heightmap = hm;
+    this._heading?.setHeightmap(hm);
+  }
+
+  /** Override base dispose so the heading chevron (a top-level scene mesh,
+   *  NOT a child of the entity root) gets cleaned up alongside the body. */
+  override dispose(): void {
+    this._heading?.dispose();
+    this._heading = null;
+    super.dispose();
+  }
 
   /** Wire up the tree position query from ForestRenderer. */
   setTreeQuery(fn: (x: number, z: number, rSq: number) => Array<{ x: number; z: number }>): void {
@@ -638,6 +631,13 @@ export class PlayerEntity extends EntityObject {
     // Jump arc runs alongside whatever movement mode applies — purely
     // local-mesh Y, doesn't interact with the position/snapshot systems.
     this._tickJumpArc();
+    // Drive the heading chevron from this entity's current world transform.
+    // The chevron is a top-level scene mesh, NOT a child of root, so it
+    // needs an explicit per-frame fit to the local terrain tangent plane.
+    if (this._heading) {
+      const p = this.object3d.position;
+      this._heading.update(p.x, p.y, p.z, this.object3d.rotation.y);
+    }
 
 
     switch (this._mode) {

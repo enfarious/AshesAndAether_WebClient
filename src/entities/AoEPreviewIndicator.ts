@@ -23,7 +23,9 @@ import type { AoeShape }       from '@/network/Protocol';
  */
 
 const PREVIEW_OPACITY = 0.55;
-const Y_LIFT = 0.06;
+// Y lift is baked into the telegraph shaders' uYLift uniform now — the
+// preview mesh just needs to sit at the anchor's reported Y, the shader
+// handles terrain conform + the small lift above the surface.
 const TWO_PI_DEG = 360;
 
 export class AoEPreviewIndicator {
@@ -72,7 +74,7 @@ export class AoEPreviewIndicator {
     // forward-along-+Z; heading=0 already points the shape +Z (south, per
     // server convention), so the same rotation that real telegraphs use
     // applies here too.
-    this.mesh.position.set(anchor.x, anchor.y + Y_LIFT, anchor.z);
+    this.mesh.position.set(anchor.x, anchor.y, anchor.z);
     this.mesh.rotation.y = (this.playerState.heading % TWO_PI_DEG) * Math.PI / 180;
     this.mesh.visible = true;
   }

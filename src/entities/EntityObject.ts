@@ -464,4 +464,12 @@ export abstract class EntityObject {
    * (e.g. RemoteEntity updates plant scale when growth stage changes).
    */
   applyUpdate(_partial: Partial<Entity>): void { /* no-op */ }
+
+  /**
+   * Set visibility of any scene-level meshes the entity owns that aren't
+   * children of `object3d` — heading chevron, etc. Called by EntityFactory's
+   * distance-culling pass alongside `object3d.visible`. Default no-op;
+   * subclasses with detached meshes override.
+   */
+  setSceneOwnedVisible(_visible: boolean): void { /* no-op */ }
 }

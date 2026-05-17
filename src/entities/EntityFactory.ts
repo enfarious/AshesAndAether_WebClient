@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import type { EntityRegistry } from '@/state/EntityRegistry';
 import type { PlayerState } from '@/state/PlayerState';
 import type { HeightmapService } from '@/world/HeightmapService';
+import { fitToTerrain } from '@/world/TangentPlaneFit';
 import { PlayerEntity, PlayerMoveMode } from './PlayerEntity';
 import { RemoteEntity } from './RemoteEntity';
 import type { EntityObject } from './EntityObject';
@@ -30,7 +31,7 @@ export class EntityFactory {
 
   // ── Target highlight ring ─────────────────────────────────────────────────
   private highlightRing: THREE.Mesh | null = null;
-  private highlightMat:  THREE.MeshBasicMaterial | null = null;
+  private highlightMat:  THREE.ShaderMaterial | null = null;
   private highlightAge   = 0;
   private unsubTarget:   (() => void) | null = null;
   private _playerHeadingUnsub: (() => void) | null = null;
@@ -63,15 +64,21 @@ export class EntityFactory {
   /**
    * Provide the heightmap so non-player entities can be snapped to the
    * client-side terrain elevation (server heights may differ from the
-   * rendered terrain mesh).
-   * Retroactively fixes all existing non-player entities.
+   * rendered terrain mesh). Also feeds the heightmap into every entity's
+   * heading-chevron tangent-plane fit + retro-snaps existing non-player
+   * entities.
    */
   setHeightmap(hm: HeightmapService | null): void {
     this.heightmap = hm;
-    if (!hm) return;
 
     for (const [id, obj] of this.objects) {
+      // Heading-indicator wiring runs for every entity, including the local
+      // player — both PlayerEntity and RemoteEntity expose setHeightmap.
+      if (obj instanceof RemoteEntity || obj === this.player) {
+        (obj as { setHeightmap?: (hm: HeightmapService | null) => void }).setHeightmap?.(hm);
+      }
       if (id === this.registry.playerId) continue;
+      if (!hm) continue;
       const regEntity = this.registry.get(id);
       if (!regEntity?.position) continue;
 
@@ -112,11 +119,14 @@ export class EntityFactory {
       const limitSq = this.plantIds.has(id) ? treeLimitSq : drawLimitSq;
 
       if (distSq > limitSq) {
-        if (obj.object3d.visible) obj.object3d.visible = false;
+        if (obj.object3d.visible) {
+          obj.object3d.visible = false;
+          obj.setSceneOwnedVisible(false);   // hide chevron + any other detached meshes
+        }
         continue;
       }
       if (!obj.object3d.visible) obj.object3d.visible = true;
-      obj.update(dt);
+      obj.update(dt);     // each entity's update() re-shows its detached meshes
     }
     this._updateHighlight(dt);
   }
@@ -272,24 +282,93 @@ export class EntityFactory {
 
   // ── Target highlight ring ─────────────────────────────────────────────────
 
-  /**
-   * Build the torus mesh once at startup. It stays hidden until a target is
-   * selected, then tracks that target's rendered position each frame.
-   *
-   * TorusGeometry lies in the XY plane by default; rotating X by 90° flattens
-   * it onto the XZ ground plane so it rings the entity's feet.
-   */
+  /** Build the highlight ring once at startup. Flat low-poly annulus —
+   *  positioned + rotated each frame onto the local terrain tangent plane
+   *  via DEM sampling (no per-vertex shader conform, no jitter). Stays
+   *  hidden until a target is selected. */
   private _buildHighlight(): void {
-    const geo = new THREE.TorusGeometry(0.68, 0.038, 8, 40);
-    this.highlightMat = new THREE.MeshBasicMaterial({
-      color:       0xddaa22,   // amber/gold — visible on all terrain types
-      transparent: true,
-      opacity:     0,
-      depthWrite:  false,
+    const innerR = 0.62;
+    const outerR = 0.74;
+    const radial = 40;
+    // 4 segments → 5 rings: inner-edge (bevel 0), inner-flat (1), middle (1),
+    // outer-flat (1), outer-edge (bevel 0). One ring-segment slope on each rim.
+    const rings  = 4;
+    const vertCount = (rings + 1) * radial;
+    const positions = new Float32Array(vertCount * 3);
+    const bevelMask = new Float32Array(vertCount);
+    for (let r = 0; r <= rings; r++) {
+      const radius = innerR + (outerR - innerR) * (r / rings);
+      const mask   = (r === 0 || r === rings) ? 0 : 1;
+      for (let s = 0; s < radial; s++) {
+        const a = (s / radial) * Math.PI * 2;
+        const idx = r * radial + s;
+        positions[idx * 3]     = Math.cos(a) * radius;
+        positions[idx * 3 + 1] = 0;
+        positions[idx * 3 + 2] = Math.sin(a) * radius;
+        bevelMask[idx]         = mask;
+      }
+    }
+    const indices: number[] = [];
+    for (let r = 0; r < rings; r++) {
+      const baseInner = r * radial;
+      const baseOuter = (r + 1) * radial;
+      for (let s = 0; s < radial; s++) {
+        const sNext = (s + 1) % radial;
+        indices.push(
+          baseInner + s, baseOuter + s, baseInner + sNext,
+          baseInner + sNext, baseOuter + s, baseOuter + sNext,
+        );
+      }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position',   new THREE.BufferAttribute(positions, 3));
+    geo.setAttribute('aBevelMask', new THREE.BufferAttribute(bevelMask, 1));
+    geo.setIndex(indices);
+    geo.computeBoundingSphere();
+
+    this.highlightMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uColor:       { value: new THREE.Color(0xddaa22) },
+        uOpacity:     { value: 0.0 },
+        // Thin ring — bevel height 0.04 sits low so it doesn't compete
+        // with the prominent entity heading chevron at the same target.
+        uBevelHeight: { value: 0.04 },
+      },
+      vertexShader: /* glsl */`
+        #include <common>
+        #include <logdepthbuf_pars_vertex>
+        attribute float aBevelMask;
+        uniform float uBevelHeight;
+        void main() {
+          vec3 pos = position;
+          pos.y += aBevelMask * uBevelHeight;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+          #include <logdepthbuf_vertex>
+        }
+      `,
+      fragmentShader: /* glsl */`
+        #include <common>
+        #include <logdepthbuf_pars_fragment>
+        uniform vec3  uColor;
+        uniform float uOpacity;
+        void main() {
+          #include <logdepthbuf_fragment>
+          gl_FragColor = vec4(uColor, uOpacity);
+        }
+      `,
+      transparent:         true,
+      depthWrite:          false,
+      depthTest:           true,
+      polygonOffset:       true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits:  -2,
+      side:                THREE.DoubleSide,
     });
+
     this.highlightRing = new THREE.Mesh(geo, this.highlightMat);
-    this.highlightRing.rotation.x = Math.PI / 2; // lay flat on XZ plane
-    this.highlightRing.visible = false;
+    this.highlightRing.renderOrder   = 996;
+    this.highlightRing.frustumCulled = false;   // tangent-plane fit moves the mesh
+    this.highlightRing.visible       = false;
     this.scene.add(this.highlightRing);
   }
 
@@ -321,9 +400,28 @@ export class EntityFactory {
     if (!hasTarget) this.highlightAge = 0;
   }
 
+  /** Pick a target-highlight ring colour from the registry entry. Visually
+   *  separates the ring from the always-orange AA ring AND tells the player
+   *  what kind of thing they have selected without reading nameplates. */
+  private _targetHighlightColorHex(entityId: string): number {
+    const e = this.registry.get(entityId);
+    if (!e) return 0xddaa22;          // amber fallback (entity not yet known)
+    if (e.hostile) return 0xff4040;   // red — anything I'd attack
+    const type = e.type?.toLowerCase();
+    switch (type) {
+      case 'companion':
+      case 'hireling':
+      case 'npc':       return 0x4dee88;   // friendly green
+      case 'player':    return 0x6699ff;   // blue — other players
+      case 'mob':       return 0xddcc66;   // yellow — neutral mob
+      case 'wildlife':  return 0xc8a870;   // tan — ambient wildlife
+      default:          return 0xddaa22;   // amber fallback
+    }
+  }
+
   /**
-   * Each frame: snap ring to target's rendered position, spin slowly,
-   * and pulse opacity between 0.45 and 0.85 for a "selected" feel.
+   * Each frame: snap ring to target's rendered position, refresh its colour
+   * (so hostility flips re-tint live), and pulse opacity for a "selected" feel.
    */
   private _updateHighlight(dt: number): void {
     if (!this.highlightRing || !this.highlightMat) return;
@@ -340,17 +438,21 @@ export class EntityFactory {
       return;
     }
 
-    // Track the entity's interpolated (rendered) position, not server position.
-    // Lift slightly so the ring sits just above the ground plane.
+    // Tangent-plane fit so the ring sits flat on the local terrain slope
+    // under the target. Symmetric ring → no yaw, only tilt.
     const p = obj.object3d.position;
-    this.highlightRing.position.set(p.x, p.y + 0.05, p.z);
+    fitToTerrain(this.highlightRing, this.heightmap, p.x, p.z, null, 0.7, 0.02, p.y);
     this.highlightRing.visible = true;
 
-    // Slow spin around Y axis
-    this.highlightRing.rotation.y -= dt * 0.9;
+    // Refresh colour per-frame so an enrage / hostility-flip re-tints the
+    // ring without needing a special event hook. setHex mutates in place,
+    // no per-frame allocation.
+    const colorHex = this._targetHighlightColorHex(targetId);
+    (this.highlightMat.uniforms['uColor']!.value as THREE.Color).setHex(colorHex);
 
-    // Soft opacity pulse: 0.45 ↔ 0.85
+    // Soft opacity pulse — drove a brass-feel "selected" beat. Spin was
+    // a no-op on the previous symmetric torus; not restoring it.
     this.highlightAge += dt;
-    this.highlightMat.opacity = 0.65 + 0.20 * Math.sin(this.highlightAge * 3.5);
+    this.highlightMat.uniforms['uOpacity']!.value = 0.65 + 0.20 * Math.sin(this.highlightAge * 3.5);
   }
 }

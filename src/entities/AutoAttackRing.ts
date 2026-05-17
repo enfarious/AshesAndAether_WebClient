@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import type { PlayerState } from '@/state/PlayerState';
 import type { EntityFactory } from './EntityFactory';
 import type { HeightmapService } from '@/world/HeightmapService';
+import { fitToTerrain } from '@/world/TangentPlaneFit';
 
 /**
  * AutoAttackRing — a thin warm ring at the auto-attack target's feet that
@@ -13,33 +14,107 @@ import type { HeightmapService } from '@/world/HeightmapService';
  *   - Inner gold ring (highlight) = "what I have selected"
  *   - Outer warm ring (this)      = "what I am swinging at + when next swing"
  *
- * Driven by `player.combat.autoAttack { current, max }`. The server only
- * pushes this on combat events / state ticks, so we lerp locally between
- * pushes (anchor on each new value, advance by dt/weaponSpeed, snap when
- * the server's value differs from our last seen value).
+ * Geometry is a flat low-poly annulus. Each frame the ring is positioned
+ * + rotated to sit on the local tangent plane of the terrain via DEM
+ * sampling at the target's XZ + four cardinal offsets. Rigid mesh => no
+ * per-vertex Y jitter, much cheaper than the tessellated shader-conform
+ * approach.
  */
 
-const INNER_RADIUS = 0.82;
-const OUTER_RADIUS = 0.96;
-const Y_LIFT       = 0.12;       // sit just above the highlight ring + clear of GROUND_CLEARANCE jitter
-const RING_COLOR   = new THREE.Color(0xffa050);  // warm orange — distinct from amber highlight
+const INNER_RADIUS    = 0.82;
+const OUTER_RADIUS    = 0.96;
+const Y_LIFT          = 0.02;        // tiny clearance above terrain
+const BEVEL_HEIGHT    = 0.05;        // height of the lifted top of the ring
+const SAMPLE_DIST     = 0.9;         // ~ outer radius; tangent plane covers the ring
+const RADIAL_SEGMENTS = 48;          // around the ring (smooth circle)
+const RING_SEGMENTS   = 4;           // 5 rings across width: edge / flat / mid / flat / edge
+const RING_COLOR      = new THREE.Color(0xffa050);  // warm orange
 
-/** Fragment shader colors any pixel whose angle (CW from 12 o'clock) falls
- *  below uFillProgress. Anti-aliased on the trailing edge with smoothstep
- *  so the sweep tip looks soft, not hard-cut. */
-const FRAGMENT_SHADER = /* glsl */ `
-  uniform vec3  uColor;
-  uniform float uFillProgress;   // 0..1
-  uniform float uOpacity;
-  varying vec2  vLocalPos;       // pre-rotation XY in object space
+/** Build a flat tessellated annulus in the XZ plane (Y=0). Each vertex
+ *  carries an `aLocalDir` attribute (for fragment fill-progress angle)
+ *  and an `aBevelMask` (0 at inner/outer rim, 1 on the flat top). */
+function buildAnnulusGeometry(): THREE.BufferGeometry {
+  const vertCount = (RING_SEGMENTS + 1) * RADIAL_SEGMENTS;
+  const positions = new Float32Array(vertCount * 3);
+  const localDir  = new Float32Array(vertCount * 2);
+  const bevelMask = new Float32Array(vertCount);
+
+  for (let r = 0; r <= RING_SEGMENTS; r++) {
+    const t      = r / RING_SEGMENTS;
+    const radius = INNER_RADIUS + (OUTER_RADIUS - INNER_RADIUS) * t;
+    const mask   = (r === 0 || r === RING_SEGMENTS) ? 0 : 1;
+    for (let s = 0; s < RADIAL_SEGMENTS; s++) {
+      const a = (s / RADIAL_SEGMENTS) * Math.PI * 2;
+      const x = Math.cos(a) * radius;
+      const z = Math.sin(a) * radius;
+      const idx = r * RADIAL_SEGMENTS + s;
+      positions[idx * 3]     = x;
+      positions[idx * 3 + 1] = 0;
+      positions[idx * 3 + 2] = z;
+      // 12 o'clock = -Z in mesh space.
+      localDir[idx * 2]      = x;
+      localDir[idx * 2 + 1]  = -z;
+      bevelMask[idx]         = mask;
+    }
+  }
+
+  const indices: number[] = [];
+  for (let r = 0; r < RING_SEGMENTS; r++) {
+    const baseInner = r * RADIAL_SEGMENTS;
+    const baseOuter = (r + 1) * RADIAL_SEGMENTS;
+    for (let s = 0; s < RADIAL_SEGMENTS; s++) {
+      const sNext = (s + 1) % RADIAL_SEGMENTS;
+      const a = baseInner + s;
+      const b = baseInner + sNext;
+      const c = baseOuter + s;
+      const d = baseOuter + sNext;
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position',   new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('aLocalDir',  new THREE.BufferAttribute(localDir, 2));
+  geo.setAttribute('aBevelMask', new THREE.BufferAttribute(bevelMask, 1));
+  geo.setIndex(indices);
+  geo.computeBoundingSphere();
+  return geo;
+}
+
+const VERTEX_SHADER = /* glsl */`
+  #include <common>
+  #include <logdepthbuf_pars_vertex>
+
+  attribute vec2  aLocalDir;
+  attribute float aBevelMask;
+  uniform float   uBevelHeight;
+  varying vec2    vLocalDir;
 
   void main() {
-    // atan2(x, y) puts 0 at +Y (12 o'clock) and increases clockwise — exactly
-    // the sweep direction a player expects for a charging timer.
-    float a = atan(vLocalPos.x, vLocalPos.y);
-    float t = (a < 0.0 ? a + 6.2831853 : a) / 6.2831853;   // 0..1 CW from 12
+    vec3 pos = position;
+    pos.y += aBevelMask * uBevelHeight;
+    vLocalDir = aLocalDir;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+    #include <logdepthbuf_vertex>
+  }
+`;
 
-    // Soft trailing edge: fade out the leading 1.5% of the swept arc.
+const FRAGMENT_SHADER = /* glsl */`
+  #include <common>
+  #include <logdepthbuf_pars_fragment>
+
+  uniform vec3  uColor;
+  uniform float uFillProgress;
+  uniform float uOpacity;
+  varying vec2  vLocalDir;
+
+  void main() {
+    #include <logdepthbuf_fragment>
+    // atan2(x, y) with y = -z (north) puts 0 at the player's 12 o'clock and
+    // sweeps clockwise — exactly the direction a charging timer reads.
+    float a = atan(vLocalDir.x, vLocalDir.y);
+    float t = (a < 0.0 ? a + 6.2831853 : a) / 6.2831853;
+
     float lead   = 0.015;
     float alpha  = 1.0 - smoothstep(uFillProgress - lead, uFillProgress, t);
     if (t > uFillProgress) discard;
@@ -48,27 +123,16 @@ const FRAGMENT_SHADER = /* glsl */ `
   }
 `;
 
-const VERTEX_SHADER = /* glsl */ `
-  varying vec2 vLocalPos;
-  void main() {
-    vLocalPos   = position.xy;
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-  }
-`;
-
 export class AutoAttackRing {
   private mesh:     THREE.Mesh;
   private material: THREE.ShaderMaterial;
 
   // Local lerp state — see file header for rationale.
-  private _localProgress    = 0;     // 0..1 we render this frame
-  private _lastSeenVersion  = -1;    // PlayerState.combatVersion at last snap
-  private _weaponSpeed      = 3;     // seconds per swing — refreshed from server each push
+  private _localProgress    = 0;
+  private _lastSeenVersion  = -1;
+  private _weaponSpeed      = 3;
 
-  // Optional heightmap for ground-conform Y. If unset, ring sits at the
-  // target entity's reported Y (which is already terrain-snapped server-side).
   private _heightmap: HeightmapService | null = null;
-
   private unsubPlayer: (() => void) | null = null;
 
   constructor(
@@ -76,37 +140,35 @@ export class AutoAttackRing {
     private readonly entityFactory: EntityFactory,
     private readonly playerState:   PlayerState,
   ) {
-    const geo = new THREE.RingGeometry(INNER_RADIUS, OUTER_RADIUS, 64, 1);
+    const geo = buildAnnulusGeometry();
 
     this.material = new THREE.ShaderMaterial({
       uniforms: {
         uColor:        { value: RING_COLOR },
         uFillProgress: { value: 0 },
         uOpacity:      { value: 0.85 },
+        uBevelHeight:  { value: BEVEL_HEIGHT },
       },
-      vertexShader:   VERTEX_SHADER,
-      fragmentShader: FRAGMENT_SHADER,
-      transparent:    true,
-      depthWrite:     false,
-      depthTest:      false,         // overlay-style: never occluded by entity meshes
-      side:           THREE.DoubleSide,
+      vertexShader:        VERTEX_SHADER,
+      fragmentShader:      FRAGMENT_SHADER,
+      transparent:         true,
+      depthWrite:          false,
+      depthTest:           true,
+      polygonOffset:       true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits:  -2,
+      side:                THREE.DoubleSide,
     });
 
     this.mesh = new THREE.Mesh(geo, this.material);
-    this.mesh.rotation.x = Math.PI / 2;   // lay flat on XZ ground plane
-    this.mesh.renderOrder = 999;          // draw last so depthTest:false reads correctly
-    this.mesh.visible = false;
+    this.mesh.renderOrder   = 999;
+    this.mesh.frustumCulled = false;
+    this.mesh.visible       = false;
     this.scene.add(this.mesh);
 
-    // We don't need to react to PlayerState changes immediately — update(dt)
-    // reads the current state every frame. But subscribe anyway so a future
-    // need (e.g., snap on target switch) has a hook.
     this.unsubPlayer = playerState.onChange(() => { /* deferred to update() */ });
   }
 
-  /** Wire the heightmap so the ring snaps to actual terrain elevation rather
-   *  than relying on the entity's reported Y. Optional — call after the
-   *  HeightmapService is ready. */
   setHeightmap(hm: HeightmapService | null): void {
     this._heightmap = hm;
   }
@@ -118,7 +180,6 @@ export class AutoAttackRing {
     this.material.dispose();
   }
 
-  /** Call every frame. Reads server combat state, lerps locally, repositions. */
   update(dt: number): void {
     const combat   = this.playerState.combat;
     const aa       = combat.autoAttack;
@@ -131,37 +192,26 @@ export class AutoAttackRing {
       return;
     }
 
-    // Anchor target entity in the scene — if it's not rendered (out of draw
-    // distance, just spawned, just despawned), skip cleanly.
     const targetObj = this.entityFactory.getObject(targetId);
     if (!targetObj) {
       this.mesh.visible = false;
       return;
     }
 
-    // Snap local progress on every fresh server push, regardless of value.
-    // Comparing the raw current value alone misses the common case where
-    // consecutive swing-fire resets both arrive as { current: 0 }.
     const version = this.playerState.combatVersion;
     if (version !== this._lastSeenVersion) {
       this._localProgress    = Math.max(0, Math.min(1, aa.current / aa.max));
       this._lastSeenVersion  = version;
       this._weaponSpeed      = aa.max;
     } else {
-      // Advance locally between server pushes for a smooth fill.
       this._localProgress = Math.min(1, this._localProgress + dt / this._weaponSpeed);
     }
 
-    // Position at target's rendered (interpolated) position. Prefer the
-    // client-side heightmap if available so the ring snaps to actual
-    // rendered terrain (avoids ring-buried-in-slope on uneven ground).
+    // Tangent-plane fit to the local terrain at the target's feet. The ring
+    // is rotationally symmetric, so we pass null for headingRad — only the
+    // terrain tilt matters.
     const p = targetObj.object3d.position;
-    let groundY = p.y;
-    if (this._heightmap) {
-      const hmY = this._heightmap.getElevation(p.x, p.z);
-      if (hmY !== null) groundY = hmY;
-    }
-    this.mesh.position.set(p.x, groundY + Y_LIFT, p.z);
+    fitToTerrain(this.mesh, this._heightmap, p.x, p.z, null, SAMPLE_DIST, Y_LIFT, p.y);
 
     this.material.uniforms['uFillProgress']!.value = this._localProgress;
     this.mesh.visible = true;

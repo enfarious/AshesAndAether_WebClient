@@ -99,7 +99,13 @@
       "Bash(npx prisma db push)",
       "Bash(xargs grep -l \"combat_action\\\\|executeAction\\\\|performAction\")",
       "Bash(xargs grep -l \"setTarget\\\\|targetId\\\\s*=\")",
-      "Bash(xargs grep -l \"focusTarget\\\\|subtarget\\\\|<t>\\\\|<st>\\\\|<ft>\")"
+      "Bash(xargs grep -l \"focusTarget\\\\|subtarget\\\\|<t>\\\\|<st>\\\\|<ft>\")",
+      "Bash(Get-ChildItem -Path \"src\" -Recurse -Include \"*.ts\", \"*.tsx\", \"*.js\", \"*.jsx\")",
+      "Bash(Select-Object -ExpandProperty FullName)",
+      "Bash(xargs grep -l \"EntityFactory\\\\|getObject\")",
+      "Bash(xargs grep -l \"cone\\\\|arrow\\\\|wedge.*heading\\\\|heading.*arrow\")",
+      "Bash(npm run *)",
+      "Bash(git stash *)"
     ]
   }
 }

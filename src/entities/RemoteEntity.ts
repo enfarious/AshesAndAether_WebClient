@@ -1,8 +1,10 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { EntityObject } from './EntityObject';
+import { HeadingIndicator, type HeadingIndicatorProminence } from './HeadingIndicator';
 import { ClientConfig } from '@/config/ClientConfig';
 import type { Entity } from '@/network/Protocol';
+import type { HeightmapService } from '@/world/HeightmapService';
 
 /**
  * MovementInterpolator — handles smooth server-authoritative movement.
@@ -62,6 +64,44 @@ function easeOut(t: number): number {
   return 1 - Math.pow(1 - t, 2);
 }
 
+/** Tags whose mesh is a static structure — no heading, no indicator. */
+const _NO_HEADING_TAGS = new Set([
+  'vault_portal',
+  'vault_exit_portal',
+  'hireling_console',
+  'caravan_terminal',
+]);
+
+/** Returns null when the entity should not display a heading arrow at all
+ *  (plants, structures). Otherwise picks colour + prominence per the
+ *  playtest readability spec:
+ *    - Party (companion, hireling), other players, and hostile-of-any-type
+ *      get the prominent arrow.
+ *    - NPCs, non-hostile mobs, and wildlife get the subtle arrow so the
+ *      world isn't a sea of bright indicators when you're not in combat. */
+function _decideHeadingIndicator(entity: Entity): { color: number; prominence: HeadingIndicatorProminence } | null {
+  const type = entity.type?.toLowerCase() ?? '';
+  if (type === 'plant') return null;
+  if (entity.tag && _NO_HEADING_TAGS.has(entity.tag)) return null;
+  // Trees in case a tree slips through here without being intercepted by
+  // ForestRenderer's species path. Belt and suspenders.
+  if (type === 'plant' || EntityObject.TREE_TAGS.has(entity.tag ?? '')) return null;
+
+  // Hostiles of any type read as the same threat colour — players need to
+  // ID "things that will hit me" at a glance, regardless of mob species.
+  if (entity.hostile) return { color: 0xff3333, prominence: 'prominent' };
+
+  switch (type) {
+    case 'companion': return { color: 0x44ddee, prominence: 'prominent' };
+    case 'hireling':  return { color: 0xffaa44, prominence: 'prominent' };
+    case 'player':    return { color: 0xffdd44, prominence: 'prominent' };
+    case 'npc':       return { color: 0x44ddee, prominence: 'subtle' };
+    case 'mob':       return { color: 0xffa500, prominence: 'subtle' };
+    case 'wildlife':  return { color: 0xc8a870, prominence: 'subtle' };
+    default:          return null;
+  }
+}
+
 /**
  * RemoteEntity — a non-player entity (NPC, mob, other player, companion, wildlife, plant) in the scene.
  *
@@ -82,6 +122,16 @@ export class RemoteEntity extends EntityObject {
   /** Smooth heading interpolation — prevents jarring rotation snaps. */
   private _targetHeading: number | null = null;
   private static readonly HEADING_LERP_SPEED = 10; // radians per second (fast but smooth)
+
+  /** Heading chevron — top-level scene mesh (NOT parented to entity root).
+   *  Its tangent-plane fit is driven each frame in update() from this
+   *  entity's world XZ + rotation.y. _headingMode caches the prominence +
+   *  colour signature so applyUpdate can rebuild on a hostility flip
+   *  (non-hostile mob aggros etc) without spurious re-creation. */
+  private _heading:        HeadingIndicator     | null = null;
+  private _headingMode:    string                      = '';   // cached "prom|color" key
+  private _headingHm:      HeightmapService     | null = null;
+  private _headingScene:   THREE.Scene          | null = null;
 
   /** Dead-reckoning velocity (m/s in world space). Set from heading + speed
    *  on each authoritative position update. Cleared when speed=0. update()
@@ -180,6 +230,14 @@ export class RemoteEntity extends EntityObject {
 
     if (mesh) root.add(mesh);
 
+    // Apply modelScale to the render root for placeholder meshes (boss
+    // arena bosses scale 3× this way without a custom GLB). The GLB
+    // load path applies scale to the loaded model directly, so skip
+    // here when modelAsset is set to avoid double-scaling.
+    if (!entity.modelAsset && entity.modelScale && entity.modelScale !== 1) {
+      root.scale.setScalar(entity.modelScale);
+    }
+
     if (entity.position) {
       root.position.set(entity.position.x, entity.position.y, entity.position.z);
     }
@@ -194,7 +252,12 @@ export class RemoteEntity extends EntityObject {
     super(entity.id, root);
 
     // Store for later updates
-    this._entityType = type;
+    this._entityType   = type;
+    this._headingScene = scene;
+
+    // Heading indicator — skipped for structures (portals, consoles, kiosks)
+    // and plants. Everything that can face a direction gets a chevron.
+    this._ensureHeadingIndicator(entity);
     if (!placeholderForModel && type === 'plant' && mesh && !EntityObject.TREE_TAGS.has(entity.tag ?? '')) {
       this._plantMeshRef = mesh;
       this._plantStage   = (entity.currentAction as string | undefined) ?? 'mature';
@@ -259,6 +322,44 @@ export class RemoteEntity extends EntityObject {
     );
   }
 
+  /** Feed the heightmap to this entity's heading chevron so its
+   *  tangent-plane fit samples real terrain. Called by EntityFactory.setHeightmap
+   *  on zone change. Safe with null (vault). */
+  setHeightmap(hm: HeightmapService | null): void {
+    this._headingHm = hm;
+    this._heading?.setHeightmap(hm);
+  }
+
+  /** Decide whether this entity should display a heading chevron and, if
+   *  so, what colour + prominence. Re-buildable so applyUpdate can flip
+   *  prominence when a non-hostile mob aggros. */
+  private _ensureHeadingIndicator(entity: Entity): void {
+    const decision = _decideHeadingIndicator(entity);
+    if (!decision) {
+      this._teardownHeadingIndicator();
+      return;
+    }
+    const modeKey = `${decision.prominence}|${decision.color.toString(16)}`;
+    if (modeKey === this._headingMode && this._heading) return;     // unchanged
+    this._teardownHeadingIndicator();
+    if (!this._headingScene) return;
+    this._heading = new HeadingIndicator(
+      this._headingScene,
+      new THREE.Color(decision.color),
+      decision.prominence,
+    );
+    if (this._headingHm) this._heading.setHeightmap(this._headingHm);
+    this._headingMode = modeKey;
+  }
+
+  private _teardownHeadingIndicator(): void {
+    if (this._heading) {
+      this._heading.dispose();
+      this._heading = null;
+    }
+    this._headingMode = '';
+  }
+
   override update(dt: number): void {
     // Caravan ride: CaravanRide manager drives this entity's position +
     // rotation locally each frame. Yield to it — any interp / extrap
@@ -312,6 +413,26 @@ export class RemoteEntity extends EntityObject {
         this.object3d.rotation.y += delta * Math.min(1, RemoteEntity.HEADING_LERP_SPEED * dt);
       }
     }
+
+    // Drive the heading chevron from this entity's current world transform.
+    // The chevron is a top-level scene mesh, NOT a child of root — needs
+    // an explicit per-frame fit to the local terrain tangent plane.
+    if (this._heading) {
+      const p = this.object3d.position;
+      this._heading.update(p.x, p.y, p.z, this.object3d.rotation.y);
+    }
+  }
+
+  /** Override base dispose so the heading chevron (top-level scene mesh,
+   *  NOT in this.object3d's hierarchy) gets cleaned up alongside the body. */
+  override dispose(): void {
+    this._teardownHeadingIndicator();
+    super.dispose();
+  }
+
+  /** Sync chevron visibility with the body's distance-culled state. */
+  override setSceneOwnedVisible(visible: boolean): void {
+    this._heading?.setVisible(visible);
   }
 
   override setTargetPosition(
@@ -378,13 +499,25 @@ export class RemoteEntity extends EntityObject {
    * React to entity attribute changes beyond position/heading.
    * Plants update their scale and colour when the growth stage changes;
    * players + companions toggle a placeholder cart mesh when riding a
-   * caravan.
+   * caravan; a non-hostile mob that aggros has its heading indicator
+   * rebuilt with the threat colour + prominence.
    */
   override applyUpdate(partial: Partial<Entity>): void {
     // Caravan cart toggle — applies to player + companion entities.
     if (partial.caravanActive !== undefined) {
       this._caravanRiding = partial.caravanActive === true;
       this._setCaravanCartVisible(this._caravanRiding);
+    }
+
+    // Hostility flip — rebuild the heading arrow into the threat colour.
+    // EntityFactory passes the full entity object here in practice; we
+    // synthesize the minimal shape _decideHeadingIndicator needs.
+    if (partial.hostile !== undefined) {
+      this._ensureHeadingIndicator({
+        type:    this._entityType,
+        tag:     partial.tag,
+        hostile: partial.hostile,
+      } as unknown as Entity);
     }
 
     if (this._entityType !== 'plant') return;

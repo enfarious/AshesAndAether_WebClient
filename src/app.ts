@@ -966,6 +966,7 @@ export class App {
     }
     if (pe && this._heightmap !== this._wiredHeightmap) {
       pe.setHeightmap(this._heightmap);
+      this.camera.setHeightmap(this._heightmap);
       this._wiredHeightmap = this._heightmap;
     }
     if (pe && this.worldRoot !== this._wiredWorldRoot) {

@@ -133,6 +133,14 @@ export class PlayerEntity extends EntityObject {
   private _terrainObjects: THREE.Object3D[] = [];
 
   /**
+   * Road meshes — sampled via downward raycast in `_getGroundHeight` so
+   * the player's feet rest on top of the road slab instead of sinking
+   * into it. Visual-only: server position is still DEM-derived; the
+   * client lifts Y when standing on a road.
+   */
+  private _roadObjects: THREE.Object3D[] = [];
+
+  /**
    * Returns XZ positions of in-range trees within the given squared radius.
    * Injected by app.ts from ForestRenderer — null until wired.
    */
@@ -318,6 +326,7 @@ export class PlayerEntity extends EntityObject {
     this._worldRoot            = root;
     this._collisionCandidates  = [];
     this._terrainObjects       = [];
+    this._roadObjects          = [];
     if (!root) return;
 
     const box    = new THREE.Box3();
@@ -341,6 +350,12 @@ export class PlayerEntity extends EntityObject {
 
       // Water surfaces are never obstacles.
       if (name.includes('water')) continue;
+
+      // Roads are stashed for the ground-height raycast so the player
+      // stands on top of the slab. They still pass through the regular
+      // collision pipeline below (the slab walls are tall enough for the
+      // chest-level ray when the player tries to walk into one head-on).
+      if (name.includes('road')) this._roadObjects.push(child);
 
       box.setFromObject(child);
       if (box.isEmpty()) continue;
@@ -968,13 +983,27 @@ export class PlayerEntity extends EntityObject {
    * Sample ground elevation (metres) at world XZ.
    * Primary source: DEM heightmap.  Falls back to a downward raycast against
    * the terrain mesh when the heightmap returns null (zone edges / no DEM).
+   * Also factors in road slabs: when the player is on top of a road,
+   * returns max(terrainY, roadTopY) so the feet sit on the slab rather
+   * than the dirt beneath. Visual-only — the server's authoritative Y
+   * is still DEM-derived; this is the client lifting itself onto roads.
    */
   private _getGroundHeight(x: number, z: number): number | null {
-    if (this._heightmap) {
-      const h = this._heightmap.getElevation(x, z);
-      if (h !== null) return h;
+    let h: number | null = null;
+    if (this._heightmap) h = this._heightmap.getElevation(x, z);
+    if (h === null) h = this._sampleTerrainHeight(x, z);
+
+    if (this._roadObjects.length > 0) {
+      this._downRay.ray.origin.set(x, 4000, z);
+      this._downRay.ray.direction.set(0, -1, 0);
+      const roadHits = this._downRay.intersectObjects(this._roadObjects, true);
+      if (roadHits.length > 0) {
+        const roadY = roadHits[0]?.point.y ?? null;
+        if (roadY !== null && (h === null || roadY > h)) h = roadY;
+      }
     }
-    return this._sampleTerrainHeight(x, z);
+
+    return h;
   }
 
   /** Downward raycast against terrain GLB meshes — used outside DEM bounds. */

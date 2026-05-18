@@ -98,7 +98,11 @@ export class SceneManager {
     // each frame.  Render at a large scale so it always sits "outside" the
     // far plane.  Background gets the sky shader output via cube-render.
     this.sky = new Sky();
-    this.sky.scale.setScalar(10_000);
+    // Sky dome encloses sun (7 k), moon (5 k), and stars (9 k), with a
+    // little margin under the camera's 12 km far plane. Zones cap around
+    // 5 km radius so this gives sun/moon plenty of room to sit past world
+    // geometry while still being inside the frustum.
+    this.sky.scale.setScalar(11_000);
     const su = this.sky.material.uniforms;
     su['turbidity']!.value          = 6;     // haze: 1 (clear) – 20 (smoggy)
     su['rayleigh']!.value           = 1.6;   // blue scattering
@@ -140,33 +144,30 @@ export class SceneManager {
     this.scene.add(this.fillLight);
 
     // ── Visible sun + moon discs ─────────────────────────────────────────
-    // MeshBasicMaterial — unlit, full brightness.  depthWrite:false so the
-    // sky/distant terrain don't get z-blocked by the disc; normal depthTest
-    // so trees & ground in front still occlude.  Sized big (radius 40) at
-    // distance 425 → ~10× real-sun apparent size, easy to spot in the sky.
+    // MeshBasicMaterial — unlit, full brightness. Opaque (default depth
+    // behaviour) so they're properly z-sorted against the world: sun at
+    // 10 km and moon at 8 km sit beyond the ~3 km terrain extent, so any
+    // mountain / tree / building between the camera and them naturally
+    // occludes via the depth buffer. Sphere radii scale with distance so
+    // apparent on-screen size matches the prior look at 425 m.
     this.sunMesh = new THREE.Mesh(
-      new THREE.SphereGeometry(40, 24, 24),
-      new THREE.MeshBasicMaterial({
-        color: 0xfff0c0, fog: false, depthWrite: false, transparent: true, opacity: 1,
-      }),
+      new THREE.SphereGeometry(660, 24, 24),  // angular size matches 40 @ 425 m
+      new THREE.MeshBasicMaterial({ color: 0xfff0c0, fog: false }),
     );
-    this.sunMesh.renderOrder = 1;  // draw after the Sky shader
     this.scene.add(this.sunMesh);
 
     this.moonMesh = new THREE.Mesh(
-      new THREE.SphereGeometry(28, 24, 24),
-      new THREE.MeshBasicMaterial({
-        color: 0xe0e8ff, fog: false, depthWrite: false, transparent: true, opacity: 1,
-      }),
+      new THREE.SphereGeometry(330, 24, 24),  // angular size matches 28 @ 425 m
+      new THREE.MeshBasicMaterial({ color: 0xe0e8ff, fog: false }),
     );
-    this.moonMesh.renderOrder = 1;
     this.scene.add(this.moonMesh);
 
     // ── Stars ────────────────────────────────────────────────────────────
     // Hemisphere of points at radius 9000 (just inside the Sky shader's
     // 10000-scale dome).  Faded in/out by sun elevation each frame.
     const STAR_COUNT = 2500;
-    const STAR_RADIUS = 9000;
+    const STAR_RADIUS = 9_000;  // beyond sun (7 k) and moon (5 k) so depth
+                                // sorting puts them in the deep background.
     const starPositions = new Float32Array(STAR_COUNT * 3);
     const starColors    = new Float32Array(STAR_COUNT * 3);
     for (let i = 0; i < STAR_COUNT; i++) {
@@ -188,7 +189,7 @@ export class SceneManager {
     starGeo.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
     starGeo.setAttribute('color',    new THREE.BufferAttribute(starColors,    3));
     const starMat = new THREE.PointsMaterial({
-      size:             18,
+      size:             18,    // scaled with STAR_RADIUS so apparent size stays consistent
       sizeAttenuation:  true,
       vertexColors:     true,
       transparent:      true,
@@ -198,7 +199,9 @@ export class SceneManager {
     });
     this.stars = new THREE.Points(starGeo, starMat);
     this.stars.frustumCulled = false;
-    this.stars.renderOrder   = 0;  // before sun/moon (renderOrder 1) so they sit "behind"
+    // Transparent points without depth-write render after opaque sun/moon.
+    // Stars at 9 km are farther than moon (5 k) and sun (7 k), so depth
+    // tests against the sun/moon discs correctly hide stars behind them.
     this.scene.add(this.stars);
 
     // Post-process pipeline. RenderPass output → MiasmaDistortionPass →
@@ -262,7 +265,7 @@ export class SceneManager {
       this.moonMesh.visible = false;
       this.stars.visible    = false;
     } else {
-      camera.far = 2000;
+      camera.far = 12_000;
       (this.scene.fog as THREE.FogExp2).density = 0.0014;
       this.directionalLight.castShadow = true;
       this.fillLight.visible = true;
@@ -417,35 +420,38 @@ export class SceneManager {
     cam.updateProjectionMatrix();
 
     // ── Place visible sun + moon discs ───────────────────────────────────
-    // Position both at the directional-light vector, at a fixed sky distance.
-    // Sun is visible when it's above the horizon; moon when below.  Cross-fade
-    // both at horizon so transitions don't pop.
-    const SKY_DIST = SUN_DIST * 0.85;
+    // Visual distance is decoupled from SUN_DIST (which positions the
+    // directional light at 500 m for shadow precision). Sun and moon sit
+    // well beyond terrain extent so the depth buffer naturally puts them
+    // behind every world object — sphere radii are scaled to compensate
+    // so apparent on-screen size doesn't change.
+    const SUN_VIS_DIST  = 7_000;
+    const MOON_VIS_DIST = 5_000;
     if (sunAboveHorizon) {
       // Sun at light direction
       this.sunMesh.position.set(px + lx, py + ly, pz + lz)
         .sub(new THREE.Vector3(px, py, pz)).normalize()
-        .multiplyScalar(SKY_DIST).add(new THREE.Vector3(px, py, pz));
+        .multiplyScalar(SUN_VIS_DIST).add(new THREE.Vector3(px, py, pz));
       // Moon on the opposite side, lower
       const mAng = sunAngle + Math.PI;
       this.moonMesh.position.set(
-        px + Math.cos(mAng) * SKY_DIST,
-        py + Math.sin(mAng) * SKY_DIST * 0.6,
-        pz + 0.2 * SKY_DIST,
+        px + Math.cos(mAng) * MOON_VIS_DIST,
+        py + Math.sin(mAng) * MOON_VIS_DIST * 0.6,
+        pz + 0.2 * MOON_VIS_DIST,
       );
     } else {
       // Moon takes the directional-light direction at night
       const mAng = sunAngle + Math.PI;
       this.moonMesh.position.set(
-        px + Math.cos(mAng) * SKY_DIST,
-        py + Math.sin(mAng) * SKY_DIST * 0.6,
-        pz + 0.2 * SKY_DIST,
+        px + Math.cos(mAng) * MOON_VIS_DIST,
+        py + Math.sin(mAng) * MOON_VIS_DIST * 0.6,
+        pz + 0.2 * MOON_VIS_DIST,
       );
       // Sun below horizon — push it under so it's invisible
       this.sunMesh.position.set(
-        px + Math.cos(sunAngle) * SKY_DIST,
-        py + Math.sin(sunAngle) * SKY_DIST,
-        pz - 0.3 * SKY_DIST,
+        px + Math.cos(sunAngle) * SUN_VIS_DIST,
+        py + Math.sin(sunAngle) * SUN_VIS_DIST,
+        pz - 0.3 * SUN_VIS_DIST,
       );
     }
 
@@ -609,11 +615,11 @@ interface EnvPreset {
 
 const PRESET_NIGHT: EnvPreset = {
   skyColor: 0x0a1020, fogColor: 0x101828, fogDensity: 0.0022,
-  hemiSkyColor: 0x2a4060, hemiGroundColor: 0x141418, hemiIntensity: 1.3,
-  ambientColor: 0x263850, ambientIntensity: 0.90,
-  sunColor: 0x5070c0, sunIntensity: 0.75,
+  hemiSkyColor: 0x2a4060, hemiGroundColor: 0x141418, hemiIntensity: 1.5,
+  ambientColor: 0x263850, ambientIntensity: 1.05,
+  sunColor: 0x5070c0, sunIntensity: 0.95,
   fillColor: 0x182040, fillIntensity: 0.35,
-  exposure: 1.0,
+  exposure: 1.1,
 };
 
 const PRESET_DAWN: EnvPreset = {

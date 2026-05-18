@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { ClientConfig } from '@/config/ClientConfig';
+import type { HeightmapService } from '@/world/HeightmapService';
 
 /**
  * OrbitCamera — 3/4 perspective camera that follows a target point.
@@ -50,18 +51,33 @@ export class OrbitCamera {
    *  Narrow phase uses Three.js intersectObjects, which is now BVH-accelerated
    *  globally (main.ts installs three-mesh-bvh + per-chunk computeBoundsTree). */
   private _collisionCandidates: { obj: THREE.Object3D; center: THREE.Vector3; radius: number }[] = [];
+  /** Road meshes captured during setWorldRoot for the terrain Y-clamp. Used as
+   *  the downward-raycast target so when the camera sits over a road its Y
+   *  floor becomes max(terrain, road-top) instead of just terrain. */
+  private _roadObjects: THREE.Object3D[] = [];
   private _camRay = new THREE.Raycaster();
+  private _downRay = new THREE.Raycaster();
   /** How far to back off from a hit point so the camera isn't kissing the wall. */
   private static readonly CAMERA_BUFFER = 0.4;
   /** Don't treat terrain-scale meshes as walls (heightmap handles ground). */
   private static readonly COLLISION_MAX_RADIUS = 50;
+  /** Minimum metres the camera must sit above sampled terrain elevation. */
+  private static readonly TERRAIN_CLEARANCE = 0.6;
+
+  /** Heightmap reference for terrain-aware clamping. Set via setHeightmap. */
+  private _heightmap: HeightmapService | null = null;
 
   constructor() {
     this.camera = new THREE.PerspectiveCamera(
       50,
       window.innerWidth / window.innerHeight,
       0.5,     // near — 0.5m
-      2000,    // far  — 2km, fog hides the clip boundary
+      12_000,  // far  — 12 km. Big enough for the sky shader (11 k) and the
+               // sun/moon/stars (7 / 5 / 9 k) to be depth-sorted past world
+               // geometry (zones cap around 5 km radius), small enough that
+               // distant chunks/terrain/forest get frustum-culled and the GPU
+               // doesn't waste rasterisation on fog-occluded pixels.
+               // logarithmicDepthBuffer keeps near precision intact regardless.
     );
     window.addEventListener('resize', this._onResize);
     this._applyTransform();
@@ -278,6 +294,7 @@ export class OrbitCamera {
   setWorldRoot(root: THREE.Object3D | null): void {
     this._worldRoot = root;
     this._collisionCandidates = [];
+    this._roadObjects = [];
     this._emaBroadMs  = 0;
     this._emaNarrowMs = 0;
     this._didDiagnoseNearby = false;
@@ -292,6 +309,10 @@ export class OrbitCamera {
       if (child.userData['nonCollidable']) continue;
       // Terrain & water are not camera obstacles (heightmap handles ground).
       if (name.includes('terrain') || name.includes('water')) continue;
+      // Roads also go through the regular collision pipeline (they're 3D
+      // slabs now), but stash them for the downward Y-clamp raycast so we
+      // can lift the camera onto road tops, not down into the slab.
+      if (name.includes('road')) this._roadObjects.push(child);
       box.setFromObject(child);
       if (box.isEmpty()) continue;
       box.getBoundingSphere(sphere);
@@ -356,9 +377,51 @@ export class OrbitCamera {
       this.target.z + offsetZ * actualDist,
     );
 
+    // Ground Y-clamp. The BVH spring-arm raycast excludes terrain (meshes
+    // too large for the size filter), so it's the only thing keeping the
+    // camera out of hills. We deliberately don't shorten the arm distance —
+    // cameraTarget is at the player's feet (~terrainY), so even gentle
+    // slopes can put any along-arm sample below terrain near the origin
+    // and an arm-shorten approach collapses to a near-first-person view.
+    // Lifting Y in place is what the player actually wants: camera stays
+    // at the requested distance/yaw, just rides up to clear the slope.
+    // Roads also factored in via a downward raycast — when the camera sits
+    // over a road, the floor becomes the road top rather than the terrain
+    // beneath it, so the camera doesn't sink into the slab.
+    if (this._heightmap) {
+      const cx = this.camera.position.x;
+      const cz = this.camera.position.z;
+      let groundY = this._heightmap.getElevation(cx, cz);
+      if (this._roadObjects.length > 0) {
+        const roadY = this._sampleRoadTopY(cx, cz);
+        if (roadY !== null && (groundY === null || roadY > groundY)) groundY = roadY;
+      }
+      if (groundY !== null) {
+        const minY = groundY + OrbitCamera.TERRAIN_CLEARANCE;
+        if (this.camera.position.y < minY) this.camera.position.y = minY;
+      }
+    }
+
     // Sky-look: tilt the look target upward by the eased engagement value.
     const lookUp = this._skyEngagement * 200;
     this.camera.lookAt(this.target.x, this.target.y + lookUp, this.target.z);
+  }
+
+  /** Wire the heightmap reference so the camera can clamp itself above
+   *  terrain. Pass null to clear (e.g. between zone loads). */
+  setHeightmap(hm: HeightmapService | null): void {
+    this._heightmap = hm;
+  }
+
+  /** Sample road-top Y at world (x, z) via downward raycast. Returns null
+   *  when no road covers that XZ. Cheap thanks to the BVH attached to the
+   *  road geometry at load time. */
+  private _sampleRoadTopY(x: number, z: number): number | null {
+    this._downRay.ray.origin.set(x, 4000, z);
+    this._downRay.ray.direction.set(0, -1, 0);
+    this._downRay.far = 8000;
+    const hits = this._downRay.intersectObjects(this._roadObjects, true);
+    return hits.length > 0 ? (hits[0]?.point.y ?? null) : null;
   }
 
   /**
@@ -456,9 +519,11 @@ export class OrbitCamera {
     return this.distance;
   }
 
-  /** Skip patterns for camera collision — flat or decorative objects. */
+  /** Skip patterns for camera collision — decorative or non-structural objects.
+   *  Roads used to live here when they were flat decals; they're now 3D
+   *  slabs (per-vertex terrain conform + 0.5 m downward extrusion) with a
+   *  rebuilt BVH, so the spring-arm can and should bounce off them. */
   private static readonly CAMERA_IGNORE_NAME_PATTERNS = [
-    'road',     // flat overworld roads
     'beacon',   // ward beacon beams/rings
     'portal',   // vault portal effects
     'banner',   // decorative banners

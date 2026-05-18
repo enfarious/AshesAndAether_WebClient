@@ -182,7 +182,29 @@ type StatusListener   = (msg: string) => void;
 type ProgressListener = (pct: number) => void;
 
 // Bump this when the loader logic changes to invalidate cached GLBs/manifests.
-const DB_VERSION = 8;
+// v10: building chunk manifests now carry lod1Path alongside lod0Path; old
+// cached chunk indices have lod0 only, so we must refetch to pick up LOD1.
+const DB_VERSION = 10;
+
+/**
+ * Marker for `THREE.Object3D.userData` on a building-chunk parent group.
+ *
+ * The chunk parent holds one child Object3D per LOD tier — `lodGroups[0]`
+ * is LOD0 (full extruded polygons), `lodGroups[1]` is LOD1 (per-building
+ * AABB collapse), `lodGroups[2]` is reserved for LOD2 (impostor billboard,
+ * not yet baked). Entries may be null when a tier wasn't supplied by the
+ * manifest. `cx` / `cz` are the chunk centre in metres (zone world space)
+ * so the per-frame controller in app.ts can do a cheap distance check
+ * without re-reading the GLB bbox each frame.
+ */
+export interface BuildingChunkUserData {
+  isBuildingChunk: true;
+  cx:              number;
+  cz:              number;
+  lodGroups:       Array<THREE.Group | null>;
+  /** Index of the LOD currently visible (-1 = none). Mutated by controller. */
+  currentLod:      number;
+}
 
 export class AssetLoader {
   private readonly loader = new GLTFLoader();
@@ -256,15 +278,21 @@ export class AssetLoader {
     // ── Chunked buildings ─────────────────────────────────────────────────────
     // One GLB per spatial cell so Three.js frustum-culls per chunk instead
     // of submitting a city-sized merged mesh that's always in view. Each
-    // chunk is loaded as its own group; offscreen chunks have zero render
-    // cost. lod1Path / lod2Path on each chunk are reserved for the future
-    // decimated + impostor bakes — only lod0Path is consumed today.
+    // chunk loads up to two LODs eagerly: LOD0 (full extruded polygons) and
+    // LOD1 (per-building AABB collapse). They wrap in a parent THREE.Group
+    // tagged with `BuildingChunkUserData` so the per-frame controller in
+    // app.ts can toggle `.visible` per chunk based on camera distance.
+    // LOD2 (impostor billboard) isn't baked yet — chunks past the LOD1 band
+    // are simply hidden.
     //
     // Chunks load with bounded concurrency. Sequential awaits would gate
     // the whole pipeline on round-trip latency × N — a 1000-chunk city
     // would take minutes on a cold IDB. The browser caps to 6 concurrent
     // fetches per origin anyway; 8 here keeps the pipeline saturated
-    // without piling up too many in-flight GLB parses.
+    // without piling up too many in-flight GLB parses. We fetch the two
+    // LODs in parallel within each worker; LOD1 is small enough that this
+    // doesn't meaningfully change wall-clock load time but means the
+    // controller can switch LOD as soon as the chunk is in the scene.
     const chunkedAssets = allAssets.filter(a => a.type === 'buildings_chunked');
     const CHUNK_CONCURRENCY = 8;
     for (const asset of chunkedAssets) {
@@ -275,22 +303,72 @@ export class AssetLoader {
       let next = 0;
       let loadedChunks = 0;
       let failedChunks = 0;
+      let lod1Count    = 0;
       const t0 = performance.now();
+
+      const loadOneLod = async (path: string, idTag: string): Promise<THREE.Group> =>
+        this._loadGlb({
+          id:       `${asset.id}_${idTag}`,
+          path,
+          type:     'buildings_chunk',
+          optional: true,
+        }, unitScale);
 
       const worker = async (): Promise<void> => {
         while (true) {
           const i = next++;
           if (i >= chunks.length) return;
           const chunk = chunks[i]!;
+          const tag   = `${chunk.cx.toFixed(0)}_${chunk.cz.toFixed(0)}`;
           try {
-            const group = await this._loadGlb({
-              id:       `${asset.id}_${chunk.cx.toFixed(0)}_${chunk.cz.toFixed(0)}`,
-              path:     chunk.lod0Path,
-              type:     'buildings_chunk',
-              optional: true,
-            }, unitScale);
-            group.name = `${asset.id}_chunk_${chunk.cx.toFixed(0)}_${chunk.cz.toFixed(0)}`;
-            root.add(group);
+            // LOD0 is required; LOD1 is best-effort. If LOD1 fails, we
+            // still ship the chunk with only LOD0 in the lodGroups slot
+            // and the controller will fall back to LOD0 at mid range.
+            const [lod0Res, lod1Res] = await Promise.allSettled([
+              loadOneLod(chunk.lod0Path, `lod0_${tag}`),
+              chunk.lod1Path
+                ? loadOneLod(chunk.lod1Path, `lod1_${tag}`)
+                : Promise.resolve(null as THREE.Group | null),
+            ]);
+
+            if (lod0Res.status === 'rejected') throw lod0Res.reason;
+            const lod0Group = lod0Res.value;
+            lod0Group.name  = `${asset.id}_chunk_${tag}_lod0`;
+
+            let lod1Group: THREE.Group | null = null;
+            if (lod1Res.status === 'fulfilled' && lod1Res.value) {
+              lod1Group = lod1Res.value;
+              lod1Group.name = `${asset.id}_chunk_${tag}_lod1`;
+              lod1Count++;
+            } else if (lod1Res.status === 'rejected') {
+              console.warn(`[AssetLoader] LOD1 failed for chunk ${tag}:`, lod1Res.reason);
+            }
+
+            // Default visibility: LOD0 on, LOD1 off. The controller fixes
+            // this on its first frame, but if the controller never runs
+            // (zone loads but app.ts loop hasn't ticked yet) the chunk
+            // still renders at full detail rather than going invisible.
+            lod0Group.visible = true;
+            if (lod1Group) lod1Group.visible = false;
+
+            const parent = new THREE.Group();
+            parent.name  = `${asset.id}_chunk_${tag}`;
+            const ud: BuildingChunkUserData = {
+              isBuildingChunk: true,
+              cx:              chunk.cx,
+              cz:              chunk.cz,
+              lodGroups:       [lod0Group, lod1Group, null],
+              // -1 means "no LOD picked yet" — the controller's first
+              // update classifies fresh against the current focus so a
+              // chunk 5 km away on zone load goes straight to hidden
+              // instead of stepping through LOD0→LOD1→hidden over 2-3
+              // frames after the zone fade-in.
+              currentLod:      -1,
+            };
+            parent.userData = ud;
+            parent.add(lod0Group);
+            if (lod1Group) parent.add(lod1Group);
+            root.add(parent);
             loadedChunks++;
           } catch (err) {
             failedChunks++;
@@ -306,7 +384,8 @@ export class AssetLoader {
       await Promise.all(Array.from({ length: CHUNK_CONCURRENCY }, () => worker()));
 
       const dt = (performance.now() - t0).toFixed(0);
-      console.log(`[AssetLoader] ${asset.id}: ${loadedChunks}/${chunks.length} chunks loaded in ${dt}ms` +
+      console.log(`[AssetLoader] ${asset.id}: ${loadedChunks}/${chunks.length} chunks loaded ` +
+        `(${lod1Count} with LOD1) in ${dt}ms` +
         (failedChunks > 0 ? ` (${failedChunks} failed)` : ''));
     }
 
@@ -317,7 +396,7 @@ export class AssetLoader {
       try {
         const mesh = asset.type === 'buildings_osm'
           ? await this._buildOsmBuildings(asset, originLat, originLon)
-          : await this._buildOsmRoads(asset, originLat, originLon);
+          : await this._buildOsmRoads(asset, originLat, originLon, heightmap);
         if (mesh) { mesh.name = asset.id; root.add(mesh); }
       } catch (err) {
         console.warn(`[AssetLoader] OSM asset ${asset.id} failed:`, err);
@@ -583,6 +662,7 @@ export class AssetLoader {
     asset: ManifestAsset,
     originLat: number,
     originLon: number,
+    heightmap: HeightmapService | null,
   ): Promise<THREE.Mesh | null> {
     const res = await fetch(`${ClientConfig.serverUrl}${asset.path}`);
     if (!res.ok) return null;
@@ -594,6 +674,18 @@ export class AssetLoader {
 
     const positions: number[] = [];
     const idxArr:    number[] = [];
+
+    // Per-vertex terrain sample + slab extrusion. The top face sits +0.1 m
+    // above sampled terrain, the bottom is extruded -0.5 m below (via
+    // _thickenMesh after build). Subdividing each OSM segment at ~10 m
+    // intervals + sampling terrain at each subdivision keeps the top face
+    // close to the actual terrain curve; the slab depth then swallows
+    // remaining noise so the road can't be sliced into invisibility.
+    const ROAD_LIFT_M       = 0.30;
+    const ROAD_DEPTH_M      = 1.50;
+    const ROAD_SUBDIV_M     = 10;
+    const sampleY = (x: number, z: number): number =>
+      (heightmap?.getElevation(x, z) ?? 0) + ROAD_LIFT_M;
 
     // Same chunking story as buildings — keeps the main thread breathing.
     await chunkedFor(features, 200, (feat) => {
@@ -618,14 +710,28 @@ export class AssetLoader {
         const px =  dz / len * halfW;
         const pz = -dx / len * halfW;
 
-        const base = positions.length / 3;
-        // 0.05 m above ground to avoid z-fighting with flat terrain
-        positions.push(a.x + px, 0.05, a.z + pz);
-        positions.push(a.x - px, 0.05, a.z - pz);
-        positions.push(b.x + px, 0.05, b.z + pz);
-        positions.push(b.x - px, 0.05, b.z - pz);
+        // Subdivide long edges so the flat-quad-on-curved-terrain error
+        // stays under ~the slab thickness.
+        const subdiv = Math.max(1, Math.ceil(len / ROAD_SUBDIV_M));
+        for (let s = 0; s < subdiv; s++) {
+          const t0 = s       / subdiv;
+          const t1 = (s + 1) / subdiv;
+          const sx = a.x + dx * t0, sz = a.z + dz * t0;
+          const ex = a.x + dx * t1, ez = a.z + dz * t1;
 
-        idxArr.push(base, base + 2, base + 1, base + 1, base + 2, base + 3);
+          const ax0 = sx + px, az0 = sz + pz;
+          const ax1 = sx - px, az1 = sz - pz;
+          const bx0 = ex + px, bz0 = ez + pz;
+          const bx1 = ex - px, bz1 = ez - pz;
+
+          const base = positions.length / 3;
+          positions.push(ax0, sampleY(ax0, az0), az0);
+          positions.push(ax1, sampleY(ax1, az1), az1);
+          positions.push(bx0, sampleY(bx0, bz0), bz0);
+          positions.push(bx1, sampleY(bx1, bz1), bz1);
+
+          idxArr.push(base, base + 2, base + 1, base + 1, base + 2, base + 3);
+        }
       }
     }, (done, total) => {
       this._status(`Tracing roads (${done}/${total})…`);
@@ -644,7 +750,13 @@ export class AssetLoader {
     });
     const mesh = new THREE.Mesh(geo, mat);
     mesh.receiveShadow = true;
-    console.log(`[AssetLoader] OSM roads: ${features.length} ways → ${positions.length / 3} verts`);
+    mesh.castShadow    = true;
+    // Slab extrusion: top face stays at sampled+lift, bottom drops to
+    // sampled+lift-thickness. Adds side walls along the perimeter so
+    // segments below terrain still read as a 3D shape from the side
+    // instead of being clipped out entirely.
+    _thickenMesh(mesh, ROAD_DEPTH_M);
+    console.log(`[AssetLoader] OSM roads: ${features.length} ways → ${positions.length / 3} verts (top), slab ${ROAD_DEPTH_M}m`);
     return mesh;
   }
 

@@ -441,11 +441,14 @@ export class BeaconAura {
       fragmentShader: FRAGMENT_SHADER,
       transparent:    true,
       depthWrite:     false,
-      // Dome skips depthTest to avoid the half-nearest-camera ghosting
-      // (front/back face sort vs terrain depth interaction).
-      // Disc keeps depthTest + polygonOffset so trees and buildings
-      // inside the bubble correctly occlude it from overhead.
-      depthTest:      isDome ? false : true,
+      // Both dome and disc keep depthTest so walls/terrain/foliage in
+      // front correctly occlude them. Additive blending is order-
+      // independent (commutative) so front/back face render order on the
+      // dome's two hemispheres doesn't matter — no ghosting from sort.
+      // Disc keeps polygonOffset so it doesn't z-fight with terrain it
+      // sits on; dome doesn't intersect anything it shouldn't (the
+      // hemisphere is above terrain by construction).
+      depthTest:      true,
       polygonOffset:       !isDome,
       polygonOffsetFactor: -2,
       polygonOffsetUnits:  -2,

@@ -84,9 +84,34 @@ uniform float uSpecularStrength;
 uniform vec3  uFogColor;
 uniform float uFogDensity;
 
+// Heightmap-as-texture for terrain conform discard. Same pattern as
+// MiasmaGroundFog. Lake polygons sit at a single Y; any fragment where
+// the terrain rises above (waterY + epsilon) is discarded so islands,
+// peninsulas, and shallow shores read as terrain instead of water
+// clipping in and out of the heightmap.
+uniform sampler2D uHeightmap;
+uniform vec2  uHeightmapSize;
+uniform vec2  uHeightmapOrigin;
+uniform float uPixelSizeDeg;
+uniform vec2  uHeightmapCenter;
+uniform vec2  uMPerDeg;
+uniform float uHeightmapValid;
+
 varying vec3 vWorldPosition;
 varying vec3 vWorldNormal;
 varying float vFogDepth;
+
+float sampleTerrainY(vec2 worldXZ) {
+  if (uHeightmapValid < 0.5) return -1.0e9;
+  float lat = uHeightmapCenter.x - worldXZ.y / uMPerDeg.x;
+  float lon = uHeightmapCenter.y + worldXZ.x / uMPerDeg.y;
+  vec2 uv = vec2(
+    (lon - uHeightmapOrigin.y) / uPixelSizeDeg,
+    (uHeightmapOrigin.x - lat) / uPixelSizeDeg
+  ) / uHeightmapSize;
+  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return -1.0e9;
+  return texture2D(uHeightmap, uv).r;
+}
 
 // Simple value noise for surface detail
 float hash(vec2 p) {
@@ -105,6 +130,15 @@ float noise(vec2 p) {
 
 void main() {
   #include <logdepthbuf_fragment>
+
+  // Discard fragments where terrain rises well above the water surface
+  // (real peninsulas/islands inside a polygon). 1.5 m epsilon is loose
+  // enough that minor DEM noise + ribbon-quad interpolation error don't
+  // leave holes in rivers — the slab depth below the surface handles the
+  // rest by giving the water visible volume even when the top quad dips
+  // slightly under terrain between sampled corners.
+  float terrainY = sampleTerrainY(vWorldPosition.xz);
+  if (terrainY > vWorldPosition.y + 1.5) discard;
 
   vec3 normal  = normalize(vWorldNormal);
   vec3 viewDir = normalize(cameraPosition - vWorldPosition);
@@ -168,18 +202,64 @@ export class WaterRenderer {
   private _meshes: WaterMeshEntry[] = [];
   private _material: THREE.ShaderMaterial;
   private _elapsed = 0;
+  private _heightmapTexture: THREE.DataTexture | null = null;
 
   constructor(
     private readonly _scene: THREE.Scene,
     private _heightmap: HeightmapService | null,
   ) {
     this._material = WaterRenderer._createMaterial();
+    if (this._heightmap) this._uploadHeightmapUniforms(this._heightmap);
   }
 
   // ── Public API ─────────────────────────────────────────────────────────────
 
-  /** Replace the heightmap (e.g. after zone transfer). */
-  setHeightmap(hm: HeightmapService | null): void { this._heightmap = hm; }
+  /** Replace the heightmap (e.g. after zone transfer). Also re-uploads the
+   *  DEM as a DataTexture so the fragment shader's terrain-clip stays in
+   *  sync with the new zone. */
+  setHeightmap(hm: HeightmapService | null): void {
+    this._heightmap = hm;
+    this._uploadHeightmapUniforms(hm);
+  }
+
+  /** Build (or clear) the heightmap DataTexture + uniforms. Mirrors
+   *  MiasmaGroundFog's pattern; both shaders need the same world↔texel
+   *  transform constants to do a coherent lookup. */
+  private _uploadHeightmapUniforms(hm: HeightmapService | null): void {
+    this._heightmapTexture?.dispose();
+    this._heightmapTexture = null;
+
+    const u = this._material.uniforms;
+    if (!hm) {
+      u['uHeightmap']!.value      = null;
+      u['uHeightmapValid']!.value = 0;
+      return;
+    }
+
+    const inputs = hm.getShaderInputs();
+    const tex = new THREE.DataTexture(
+      inputs.data as unknown as BufferSource,
+      inputs.width,
+      inputs.height,
+      THREE.RedFormat,
+      THREE.FloatType,
+    );
+    tex.minFilter = THREE.LinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    tex.wrapS     = THREE.ClampToEdgeWrapping;
+    tex.wrapT     = THREE.ClampToEdgeWrapping;
+    tex.generateMipmaps = false;
+    tex.needsUpdate     = true;
+    this._heightmapTexture = tex;
+
+    u['uHeightmap']!.value = tex;
+    (u['uHeightmapSize']!.value   as THREE.Vector2).set(inputs.width, inputs.height);
+    (u['uHeightmapOrigin']!.value as THREE.Vector2).set(inputs.originLat, inputs.originLon);
+    (u['uHeightmapCenter']!.value as THREE.Vector2).set(inputs.centerLat, inputs.centerLon);
+    (u['uMPerDeg']!.value         as THREE.Vector2).set(inputs.mPerDegLat, inputs.mPerDegLon);
+    u['uPixelSizeDeg']!.value     = inputs.pixelSizeDeg;
+    u['uHeightmapValid']!.value   = 1;
+  }
 
   /**
    * Fetch water polygon data for a zone and generate meshes.
@@ -273,6 +353,8 @@ export class WaterRenderer {
   dispose(): void {
     this.clear();
     this._material.dispose();
+    this._heightmapTexture?.dispose();
+    this._heightmapTexture = null;
   }
 
   // ── Geometry builders ──────────────────────────────────────────────────────
@@ -411,10 +493,65 @@ export class WaterRenderer {
       }
     }
 
+    // Slab extrusion: copy every top vert to a bottom sibling (Y - depth),
+    // then add a flipped bottom face + side walls along the two long
+    // perimeter edges and the two end caps. Gives the ribbon visible
+    // volume so when terrain bows up between sampled vertices the river
+    // doesn't get sliced into invisibility — and gives the shoreline some
+    // geometric depth instead of reading as a paper-thin sheet. Winding
+    // on the new triangles is for cleanliness; the water shader replaces
+    // the geometry normal with an analytical wave normal so face-side
+    // lighting is unaffected.
+    const SLAB_DEPTH_M = 0.5;
+    const slabPos = new Float32Array(vertCount * 2 * 3);
+    const slabUv  = new Float32Array(vertCount * 2 * 2);
+    for (let i = 0; i < vertCount; i++) {
+      const px = positions[i * 3]!;
+      const py = positions[i * 3 + 1]!;
+      const pz = positions[i * 3 + 2]!;
+      slabPos[i * 3]                     = px;
+      slabPos[i * 3 + 1]                 = py;
+      slabPos[i * 3 + 2]                 = pz;
+      slabPos[(vertCount + i) * 3]       = px;
+      slabPos[(vertCount + i) * 3 + 1]   = py - SLAB_DEPTH_M;
+      slabPos[(vertCount + i) * 3 + 2]   = pz;
+      slabUv[i * 2]                      = uvs[i * 2]!;
+      slabUv[i * 2 + 1]                  = uvs[i * 2 + 1]!;
+      slabUv[(vertCount + i) * 2]        = uvs[i * 2]!;
+      slabUv[(vertCount + i) * 2 + 1]    = uvs[i * 2 + 1]!;
+    }
+    const slabIdx: number[] = indices.slice();
+    for (let t = 0; t < indices.length; t += 3) {
+      slabIdx.push(
+        vertCount + indices[t]!,
+        vertCount + indices[t + 2]!,
+        vertCount + indices[t + 1]!,
+      );
+    }
+    const K = pts.length;
+    for (let i = 0; i < K - 1; i++) {
+      const a  = i * 2;
+      const b  = (i + 1) * 2;
+      slabIdx.push(a, vertCount + a, b);
+      slabIdx.push(b, vertCount + a, vertCount + b);
+    }
+    for (let i = 0; i < K - 1; i++) {
+      const a  = i * 2 + 1;
+      const b  = (i + 1) * 2 + 1;
+      slabIdx.push(a, b, vertCount + a);
+      slabIdx.push(b, vertCount + b, vertCount + a);
+    }
+    slabIdx.push(0, 1, vertCount + 1);
+    slabIdx.push(0, vertCount + 1, vertCount);
+    const lE = (K - 1) * 2;
+    const rE = lE + 1;
+    slabIdx.push(lE, vertCount + rE, rE);
+    slabIdx.push(lE, vertCount + lE, vertCount + rE);
+
     const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-    geo.setIndex(indices);
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(slabPos, 3));
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(slabUv, 2));
+    geo.setIndex(slabIdx);
     geo.computeVertexNormals();
 
     this._addMesh(geo, 'water-ribbon');
@@ -478,6 +615,16 @@ export class WaterRenderer {
         uSpecularStrength: { value: 0.6 },
         uFogColor:         { value: new THREE.Color(0x6080a0) },
         uFogDensity:       { value: 0.0014 },
+        // Heightmap-as-texture — populated lazily by setHeightmap once the
+        // DEM finishes loading. Until then uHeightmapValid = 0 and the
+        // fragment shader skips the terrain-clip check.
+        uHeightmap:        { value: null },
+        uHeightmapSize:    { value: new THREE.Vector2(1, 1) },
+        uHeightmapOrigin:  { value: new THREE.Vector2(0, 0) },
+        uHeightmapCenter:  { value: new THREE.Vector2(0, 0) },
+        uMPerDeg:          { value: new THREE.Vector2(1, 1) },
+        uPixelSizeDeg:     { value: 1.0 },
+        uHeightmapValid:   { value: 0.0 },
       },
       vertexShader:   WATER_VERT,
       fragmentShader: WATER_FRAG,

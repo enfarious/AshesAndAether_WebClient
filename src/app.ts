@@ -752,10 +752,26 @@ export class App {
     tryConnect();
     this.rafId = requestAnimationFrame(this._loop);
 
-    // F8 — toggle OSM forest polygon debug overlay (includes ground ring at zone radius)
-    // F9 — toggle GPU perf overlay (draw calls, tris, shadow lights, frame ms)
+    // F8       — toggle OSM forest polygon debug overlay (includes ground ring at zone radius)
+    // F9       — toggle GPU perf overlay (draw calls, tris, shadow lights, frame ms)
+    // Shift+F9 — dump per-category scene cost breakdown to the dev console.
+    //            Walks scene.scene, buckets every Mesh by its top-level
+    //            group (worldRoot / weather / sky / etc.), reports visible
+    //            meshes, tris (instanced × instanceCount), and unique
+    //            programs per category. Use to track down which group
+    //            owns most of the frame's draw / shader load when F9
+    //            says we're GPU-bound. Reads as "deeper breakdown of the
+    //            perf overlay's totals." Backquote, F1-F7, F10-F12 are
+    //            all already claimed (party cycle, party slots, layout
+    //            editor, browser-intercept).
     window.addEventListener('keydown', (e: KeyboardEvent) => {
       if (e.code === 'F8') this._forestDebug?.toggle();
+      else if (e.code === 'F9' && e.shiftKey) {
+        e.preventDefault();
+        void import('@/world/ScenePerfBreakdown').then(m => {
+          m.dumpScenePerfBreakdown(this.scene.scene, this.scene.renderer);
+        });
+      }
       else if (e.code === 'F9') {
         const on = this.hud?.togglePerfMode() ?? false;
         if (!on) this._perfSnapshot = null;

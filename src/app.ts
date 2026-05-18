@@ -10,6 +10,7 @@ import { SceneManager }       from '@/world/SceneManager';
 import { WeatherEffects }     from '@/world/WeatherEffects';
 import { CloudLayer }         from '@/world/CloudLayer';
 import { AssetLoader }        from '@/world/AssetLoader';
+import { BuildingLodController } from '@/world/BuildingLodController';
 import { EntityFactory }      from '@/entities/EntityFactory';
 import { RemoteEntity }       from '@/entities/RemoteEntity';
 import { AutoAttackRing }     from '@/entities/AutoAttackRing';
@@ -134,6 +135,9 @@ export class App {
   private weather: WeatherEffects;
   private clouds:  CloudLayer;
   private worldRoot:  THREE.Group | null = null;
+  /** Toggles building chunk LOD per frame against player XZ. Re-indexed on
+   *  every worldRoot swap via the dep-wiring block in the render loop. */
+  private buildingLod: BuildingLodController = new BuildingLodController();
   private _heightmap: import('@/world/HeightmapService').HeightmapService | null = null;
   private miasma:     CorruptionMiasma | null = null;
   private miasmaFog:  MiasmaGroundFog | null = null;
@@ -948,6 +952,19 @@ export class App {
     }
     this._perfMark('forest');
 
+    // Building chunk LOD — toggles .visible on baked building chunks per
+    // distance band. Focus is the player's XZ (not the camera position):
+    // the orbit camera floats behind the player, so using camera position
+    // biases the picker toward LOD0 in a way that doesn't match what the
+    // player is actually looking at.
+    {
+      const fp = this.factory.getPlayerEntity()?.object3d.position;
+      if (fp && this.buildingLod.chunkCount() > 0) {
+        this.buildingLod.update(fp.x, fp.z);
+      }
+    }
+    this._perfMark('building-lod');
+
     // Wire PlayerEntity + physics deps via reference tracking. We compare
     // each current dep against the last-wired reference and re-apply on diff.
     // When PE itself swaps (zone transfer recreates the entity), all dep
@@ -972,6 +989,11 @@ export class App {
     if (pe && this.worldRoot !== this._wiredWorldRoot) {
       pe.setWorldRoot(this.worldRoot);
       this.camera.setWorldRoot(this.worldRoot);
+      // Re-index building chunks for LOD. Building chunks live as direct
+      // children of worldRoot with userData.isBuildingChunk set; the
+      // controller walks the tree once here and stores a flat array so
+      // the per-frame update is O(chunks) with no traversal.
+      this.buildingLod.setWorldRoot(this.worldRoot);
       this._wiredWorldRoot = this.worldRoot;
     }
     if (pe && this._forestRenderer !== this._wiredForestRenderer) {

@@ -423,6 +423,12 @@ export class App {
       (id) => this.factory.getObject(id),
       this.uiRoot,
     );
+    // Plates live in a dedicated subtree so CSS2DRenderer doesn't have to
+    // walk the whole scene each frame. The container has no meshes — main
+    // renderer skips it cheaply — but it needs to be in the scene graph so
+    // its matrixWorld stays current and Three.js's standard frame update
+    // ticks it.
+    this.scene.scene.add(this.nameplates.plateContainer);
     this.stagingMarker  = new VaultStagingMarker(this.scene.scene, this.router);
     this._forestRenderer = new ForestRenderer(this.scene.scene, this.entities);
     this.corpses = new CorpseSystem(this.scene.scene, this.entities);
@@ -1198,7 +1204,18 @@ export class App {
     // counts below reflect just this render (including shadow passes).
     const _t0 = performance.now();
     this.scene.render(_cam);
-    this.nameplates.css2d.render(this.scene.scene, _cam);
+    // Render plates against the dedicated plateContainer instead of the
+    // whole scene — keeps CSS2DRenderer's recursive scan O(visible plates)
+    // rather than O(scene). Container's matrixWorld was updated by the
+    // WebGL render above since it's a scene child.
+    //
+    // The cast is a typing concession: CSS2DRenderer.render() is typed
+    // `(scene: Scene, camera)` but its implementation only walks children
+    // and projects matrixWorld — any Object3D works at runtime.
+    this.nameplates.css2d.render(
+      this.nameplates.plateContainer as unknown as THREE.Scene,
+      _cam,
+    );
     const _frameMs = performance.now() - _t0;
 
     // Smooth the per-frame jitter with a light EMA (~0.1 weight).

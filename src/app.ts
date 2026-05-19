@@ -582,7 +582,8 @@ export class App {
     // ── Aether Density (1Hz server push of player's local DangerMap value) ─
     this.world.onEvent(payload => {
       if (payload.eventType !== 'aether_density') return;
-      const data = payload.eventTypeData as { value?: number; lethal?: boolean } | undefined;
+      const data = payload.eventTypeData as
+        { value?: number; lethal?: boolean; activityHeat?: number } | undefined;
       if (data && typeof data.value === 'number') {
         // Centralize on WorldState so post-process / future consumers
         // can read every frame without resubscribing. HUD also reads
@@ -591,6 +592,12 @@ export class App {
         const lethal = data.lethal === true;
         this.world.setAetherDensity(data.value);
         this.hud?.setAetherDensity(data.value, lethal);
+      }
+      // Activity heat — zone-wide hysteretic signal, rides the same event
+      // to skip a SocketClient allowlist round-trip. May be absent during
+      // server rollouts that predate the field — guard with typeof.
+      if (data && typeof data.activityHeat === 'number') {
+        this.hud?.setActivityHeat(data.activityHeat);
       }
     });
 

@@ -50,6 +50,7 @@ export class HUD {
   private aetherFillEl:    HTMLElement | null = null;
   private aetherValueEl:   HTMLElement | null = null;
   private aetherTierEl:    HTMLElement | null = null;
+  private activityBandEl:  HTMLElement | null = null;
   private _fpsFrames = 0;
   private _fpsTime   = 0;
   /** F9 — extended GPU/perf readout under the FPS line. */
@@ -669,6 +670,10 @@ export class HUD {
           <span id="hud-aether-value">0.00</span>
           <span class="hud-aether-tier" id="hud-aether-tier">T1</span>
         </div>
+        <div class="hud-aether-activity">
+          <span class="hud-aether-activity-label">ACTIVITY</span>
+          <span class="hud-aether-activity-band" id="hud-aether-activity-band">QUIET</span>
+        </div>
       </div>
 
       <style>
@@ -725,6 +730,28 @@ export class HUD {
           border-radius: 2px;
           background: rgba(0,0,0,0.4);
           border: 1px solid rgba(200, 145, 60, 0.25);
+        }
+        /* Activity band — zone-wide hysteretic heat from the activity pool.
+         * Sits below the AD readout because they're different signals
+         * (AD = local mat tier / lethality; activity = how lived-in the
+         * zone is). Named bands per WORLD_STATE_AND_ACTIVITY.md §7.2 —
+         * no raw number, no player count, just the mood. */
+        .hud-aether-activity {
+          display: flex;
+          justify-content: space-between;
+          align-items: baseline;
+          font-size: 10px;
+          letter-spacing: 0.10em;
+          color: rgba(212, 201, 184, 0.55);
+        }
+        .hud-aether-activity-label {
+          text-transform: uppercase;
+        }
+        .hud-aether-activity-band {
+          font-weight: bold;
+          letter-spacing: 0.14em;
+          color: rgba(160, 160, 160, 0.85);
+          transition: color 0.4s ease-out;
         }
       </style>
 
@@ -793,6 +820,7 @@ export class HUD {
     this.aetherFillEl    = el.querySelector<HTMLElement>('#hud-aether-fill')!;
     this.aetherValueEl   = el.querySelector<HTMLElement>('#hud-aether-value')!;
     this.aetherTierEl    = el.querySelector<HTMLElement>('#hud-aether-tier')!;
+    this.activityBandEl  = el.querySelector<HTMLElement>('#hud-aether-activity-band')!;
 
     // Release button
     el.querySelector<HTMLButtonElement>('#hud-death-release')!
@@ -1193,6 +1221,17 @@ export class HUD {
     this.aetherTierEl.textContent  = label;
     this.aetherTierEl.style.color  = color;
   }
+
+  /** Update the activity-band readout from the server's per-zone hysteretic
+   *  heat value (0..1, piggy-backed onto the aether_density push).
+   *  Named bands rather than numbers — players read "the zone is bustling"
+   *  not "0.74" (per WORLD_STATE_AND_ACTIVITY.md §7.2). */
+  setActivityHeat(heat: number): void {
+    if (!this.activityBandEl) return;
+    const band = activityBand(Math.max(0, Math.min(1, heat)));
+    this.activityBandEl.textContent = band.label;
+    this.activityBandEl.style.color = band.color;
+  }
 }
 
 // ── Aether Density tier mapping ─────────────────────────────────────────
@@ -1213,6 +1252,17 @@ const AETHER_TIER_COLORS: Record<number, string> = {
   5: '#ffcc44', // gold — deep, brave or dead
   6: '#ff3030', // red — lethal, past the wall
 };
+
+// ── Activity band mapping (zone-wide heat → mood label) ────────────────
+// Slight offset on the low end (< 0.15 vs the doc's 0.25) so a brief
+// warm-up from a couple of kills doesn't immediately flip to "steady".
+function activityBand(heat: number): { label: string; color: string } {
+  if (heat < 0.15) return { label: 'QUIET',    color: 'rgba(160,160,160,0.75)' }; // dormant, restful
+  if (heat < 0.40) return { label: 'STEADY',   color: '#7ac8c8' };                // pale teal
+  if (heat < 0.65) return { label: 'BUSY',     color: '#ddc060' };                // warm yellow
+  if (heat < 0.85) return { label: 'BUSTLING', color: '#ff9040' };                // orange
+  return                  { label: 'BOILING',  color: '#ff5530' };                // hot — every spawn is elite
+}
 
 /** Per-frame perf snapshot fed into HUD.updateFps for the F9 overlay. */
 export interface PerfSnapshot {

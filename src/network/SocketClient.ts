@@ -124,6 +124,11 @@ export class SocketClient {
       'map_beacon_update', 'map_ad_patch',
       // Activities panel — single push event carries the full snapshot.
       'activity_snapshot',
+      // Generic server-driven choice/prompt — opens ChoiceModal with a
+      // token + prompt + body + list of options. Reply path is the
+      // /choose <token> <value> slash command. Used by the zone
+      // whisperer NPC + future bounty boards / NPC dialog trees.
+      'open_choice',
     ] as const;
 
     for (const name of serverEvents) {

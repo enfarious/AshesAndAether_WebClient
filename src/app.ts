@@ -60,6 +60,7 @@ import { AIDebugWindow }      from '@/ui/AIDebugWindow';
 import { BuildPanel }         from '@/ui/BuildPanel';
 import { RegistrationModal }  from '@/ui/RegistrationModal';
 import { HirelingPanel }      from '@/ui/HirelingPanel';
+import { ChoiceModal }        from '@/ui/ChoiceModal';
 import { MerchantPanel }      from '@/ui/MerchantPanel';
 import { CaravanPanel }       from '@/ui/CaravanPanel';
 import { DummyPanel }         from '@/ui/DummyPanel';
@@ -195,6 +196,7 @@ export class App {
   private marketPanel:       MarketPanel       | null = null;
   private registrationModal: RegistrationModal  | null = null;
   private hirelingPanel:     HirelingPanel      | null = null;
+  private choiceModal:       ChoiceModal        | null = null;
   private merchantPanel:     MerchantPanel      | null = null;
   private dummyPanel:        DummyPanel         | null = null;
   private caravanPanel:      CaravanPanel       | null = null;
@@ -583,7 +585,7 @@ export class App {
     this.world.onEvent(payload => {
       if (payload.eventType !== 'aether_density') return;
       const data = payload.eventTypeData as
-        { value?: number; lethal?: boolean; activityHeat?: number } | undefined;
+        { value?: number; lethal?: boolean; activityHeat?: number; bossState?: string } | undefined;
       if (data && typeof data.value === 'number') {
         // Centralize on WorldState so post-process / future consumers
         // can read every frame without resubscribing. HUD also reads
@@ -598,6 +600,11 @@ export class App {
       // server rollouts that predate the field — guard with typeof.
       if (data && typeof data.activityHeat === 'number') {
         this.hud?.setActivityHeat(data.activityHeat);
+      }
+      // Zone boss state — zone-wide enum, piggy-backed for the same
+      // reason. HUD hides the row entirely while slumbering.
+      if (data && typeof data.bossState === 'string') {
+        this.hud?.setZoneBossState(data.bossState);
       }
     });
 
@@ -1459,19 +1466,36 @@ export class App {
           // the forest instead of the ground.
           this.guildBeacons = new GuildBeaconManager(this.scene.scene, () => this.worldRoot);
         }
-        // Vault zones are flat at Y=0. The previous overworld heightmap would
-        // otherwise still be in effect when the camera snaps and entities
-        // render — putting them hundreds of metres above the vault floor.
-        // Null the heightmap synchronously here, before any further setup.
-        if (this.world.zone?.id.startsWith('vault:')) {
+        // Instanced zones (vault, boss arena) have no heightmap — they're
+        // flat at Y=0. The previous overworld heightmap would otherwise
+        // stay in effect when the camera snaps and entities render —
+        // putting them (and the camera) hundreds of metres above the
+        // instance floor. Null every consumer synchronously here, before
+        // any further setup. The arena prefix was missing pre-2026-05-19,
+        // so arena zones inherited the wrong heightmap and the camera
+        // clamped to junk elevations from a different zone's terrain.
+        const instanceZone = this.world.zone?.id.startsWith('vault:')
+          || this.world.zone?.id.startsWith('boss_arena:');
+        if (instanceZone) {
           this._heightmap = null;
           this.clickMove.setHeightmap(null);
           this.factory.setHeightmap(null);
           this.autoAttackRing.setHeightmap(null);
-    this.telegraphs.setHeightmap(null);
+          this.telegraphs.setHeightmap(null);
+          // Camera was missing from this sweep — kept the stale ref and
+          // tried to Y-clamp against the previous zone's heightmap when
+          // entering an instance.
+          this.camera.setHeightmap(null);
           const pe = this.factory.getPlayerEntity();
           if (pe) pe.setHeightmap(null);
         }
+        // Vault staging marker — only clears on vault_staging_broken,
+        // which fires on intra-vault movement, not on zone changes. So a
+        // marker rendered in a vault would persist into the next zone
+        // (arena, overworld, etc.) until the player happened to re-enter
+        // a vault and a new staging activated. Clear unconditionally on
+        // every world entry — cheap when no marker is active.
+        this.stagingMarker.clearForZoneChange();
         // Snap camera to player position on world entry
         this.camera.snapToTarget(
           new THREE.Vector3(this.player.position.x, this.player.position.y, this.player.position.z)
@@ -1760,6 +1784,14 @@ export class App {
       // success). No host-side wiring beyond construction.
       this.hirelingPanel = new HirelingPanel(this.uiRoot, this.socket);
       this.modalStack.register(this.hirelingPanel);
+    }
+    if (!this.choiceModal) {
+      // Generic server-driven choice/prompt modal. Listens for
+      // `open_choice`; sends `/choose <token> <value>` on click. Used
+      // by the zone whisperer (boss-rouse confirmation) + any future
+      // bounty / NPC dialog / etc. list-select flow.
+      this.choiceModal = new ChoiceModal(this.uiRoot, this.socket);
+      this.modalStack.register(this.choiceModal);
     }
     if (!this.merchantPanel) {
       // Listens for `open_merchant_panel` (F-key on vendor NPC + on
@@ -2201,43 +2233,43 @@ export class App {
       // if it ever feels like a slide.)
     });
 
-    // Cast lifecycle — HUD cast bar for self, nameplate cast bar for
-    // everyone else. Both drive off the same server cast_start /
-    // cast_complete / cast_break events (and channel variants) — the
-    // entityId routes to the right widget.
+    // Cast / channel lifecycle — self goes to the HUD; everyone else
+    // routes through _routeEntityCast which decides between world-space
+    // nameplate bar, party window inline bar, or suppression based on
+    // is-ally + is-current-target + the two ClientConfig toggles
+    // (nameplateTargetShowCast, nameplateAllyShowCast). End events fan
+    // out to both subsystems — both are idempotent on unknown ids.
     this.router.onCastStart((p) => {
       if (p.entityId === this.player.id) {
         this.hud?.showCast(p.abilityName, p.durationMs);
       } else {
-        this.nameplates?.showCast(p.entityId, p.abilityName, p.durationMs);
+        this._routeEntityCast(p.entityId, p.abilityName, p.durationMs, /*drain*/ false);
       }
     });
     this.router.onCastComplete((p) => {
       if (p.entityId === this.player.id) this.hud?.completeCast();
-      else this.nameplates?.endCast(p.entityId);
+      else this._routeEntityCastEnd(p.entityId);
     });
     this.router.onCastBreak((p) => {
       if (p.entityId === this.player.id) this.hud?.breakCast();
-      else this.nameplates?.endCast(p.entityId);
+      else this._routeEntityCastEnd(p.entityId);
     });
 
-    // Channel lifecycle — same widgets but drain mode (1 → 0). Server's
-    // channel_start arrives right after cast_complete for channeled
-    // abilities, so the bar transitions cleanly cast → channel.
+    // Channel = same path, drain mode (1 → 0).
     this.router.onChannelStart((p) => {
       if (p.entityId === this.player.id) {
         this.hud?.showChannel(p.abilityName, p.durationMs);
       } else {
-        this.nameplates?.showChannel(p.entityId, p.abilityName, p.durationMs);
+        this._routeEntityCast(p.entityId, p.abilityName, p.durationMs, /*drain*/ true);
       }
     });
     this.router.onChannelComplete((p) => {
       if (p.entityId === this.player.id) this.hud?.completeCast();
-      else this.nameplates?.endCast(p.entityId);
+      else this._routeEntityCastEnd(p.entityId);
     });
     this.router.onChannelBreak((p) => {
       if (p.entityId === this.player.id) this.hud?.breakCast();
-      else this.nameplates?.endCast(p.entityId);
+      else this._routeEntityCastEnd(p.entityId);
     });
 
     this.hud.show();
@@ -2255,6 +2287,77 @@ export class App {
 
     // Apply saved layout positions now that all widgets exist in the DOM
     this.layoutEditor?.applyAll();
+  }
+
+  // ── Cast-routing helpers ─────────────────────────────────────────────────
+
+  /** True if entityId is a friendly the local player has a vested
+   *  interest in (party member, owned companion, owned hireling, or a
+   *  party-mate's pet). Self is intentionally excluded — the cast
+   *  handlers route self to the HUD before reaching here. */
+  private _isAlly(entityId: string): boolean {
+    const e = this.entities.get(entityId);
+    if (!e) return false;
+    const t = (e.type ?? '').toLowerCase();
+    if (t === 'player') {
+      return this.player.partyMembers.some((m) => m.id === entityId);
+    }
+    if (t === 'companion' || t === 'hireling') {
+      const owner = e.ownerCharacterId;
+      if (!owner) return false;
+      if (owner === this.player.id) return true;
+      return this.player.partyMembers.some((m) => m.id === owner);
+    }
+    return false;
+  }
+
+  /** Dispatch a non-self entity cast/channel start to the right widgets.
+   *
+   *  Allies: party window bar is always populated (low-clutter inline
+   *  view per the design pass). World-space floating bar additionally
+   *  fires when `nameplateAllyShowCast` is on, OR when the ally happens
+   *  to be the current target and `nameplateTargetShowCast` is on.
+   *
+   *  Non-allies (mobs, NPCs, unaffiliated players): floating bar only
+   *  when they're the current target AND `nameplateTargetShowCast` is
+   *  on. Casts from anyone else are silently dropped — the user's eyes
+   *  shouldn't be drawn to chatter they don't care about. */
+  private _routeEntityCast(
+    entityId:    string,
+    abilityName: string,
+    durationMs:  number,
+    drain:       boolean,
+  ): void {
+    const isTarget = this.player.targetId === entityId;
+    const isAlly   = this._isAlly(entityId);
+
+    const showFloating = (): void => {
+      if (drain) this.nameplates?.showChannel(entityId, abilityName, durationMs);
+      else       this.nameplates?.showCast(entityId, abilityName, durationMs);
+    };
+
+    if (isAlly) {
+      this.partyWindow?.showCast(entityId, abilityName, durationMs, drain);
+      if (ClientConfig.nameplateAllyShowCast) {
+        showFloating();
+      } else if (isTarget && ClientConfig.nameplateTargetShowCast) {
+        showFloating();
+      }
+      return;
+    }
+
+    if (isTarget && ClientConfig.nameplateTargetShowCast) {
+      showFloating();
+    }
+    // else: silent drop — non-ally, non-target.
+  }
+
+  /** Fan-out end event to both widgets; both are no-ops on unknown ids
+   *  so this is safe regardless of which subsystem actually held the
+   *  cast bar for this entity. */
+  private _routeEntityCastEnd(entityId: string): void {
+    this.partyWindow?.endCast(entityId);
+    this.nameplates?.endCast(entityId);
   }
 
   // ── Asset loading ─────────────────────────────────────────────────────────

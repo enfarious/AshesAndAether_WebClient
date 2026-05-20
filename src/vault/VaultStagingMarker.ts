@@ -58,6 +58,14 @@ export class VaultStagingMarker {
     this.teardowns = [];
   }
 
+  /** Force-clear any active marker. Called from the app's world-entry
+   *  flow so a marker rendered in a vault doesn't bleed into the next
+   *  zone (arena, overworld, another vault) — vault_staging_broken
+   *  only fires on intra-vault movement, not on zone changes. */
+  clearForZoneChange(): void {
+    this._clearMarker();
+  }
+
   // ── Event handlers ────────────────────────────────────────────────────
 
   private _onActive(payload: VaultStagingActivePayload): void {

@@ -87,7 +87,14 @@ let _nameplateShowNpcs:     boolean = true;
 let _nameplateShowPlayers:  boolean = true;
 let _nameplateShowGuildTag: boolean = true;
 let _nameplateTargetShowHp: boolean = true;
-let _nameplateTargetShowCast: boolean = false;
+// Target's cast bar floats over their nameplate by default. Off-switch in
+// Settings → Display for players who prefer minimal world-space chrome.
+let _nameplateTargetShowCast: boolean = true;
+// World-space cast bars for friendly entities (party members, owned
+// companions, owned hirelings). Default off — those casts surface in the
+// party window's per-row bar instead. Toggle on for players who'd rather
+// see the floating bars (e.g. coordinating heals at a glance).
+let _nameplateAllyShowCast: boolean = false;
 let _nameplateMaxRange:     number  = 60;     // metres — beyond, plates hide
 let _nameplateFadeStart:    number  = 35;     // metres — opacity drop begins
 let _nameplateMaxCount:     number  = 30;     // hard cap on concurrent plates
@@ -293,6 +300,9 @@ export const ClientConfig = {
 
   get nameplateTargetShowCast(): boolean { return _nameplateTargetShowCast; },
   set nameplateTargetShowCast(v: boolean) { _nameplateTargetShowCast = v; },
+
+  get nameplateAllyShowCast(): boolean { return _nameplateAllyShowCast; },
+  set nameplateAllyShowCast(v: boolean) { _nameplateAllyShowCast = v; },
 
   /** Hard cull distance — entities beyond this distance have no plate. */
   get nameplateMaxRange(): number { return _nameplateMaxRange; },

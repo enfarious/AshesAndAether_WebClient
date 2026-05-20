@@ -51,6 +51,9 @@ export class HUD {
   private aetherValueEl:   HTMLElement | null = null;
   private aetherTierEl:    HTMLElement | null = null;
   private activityBandEl:  HTMLElement | null = null;
+  private bossStateRowEl:  HTMLElement | null = null;
+  private bossStateLabelEl: HTMLElement | null = null;
+  private bossStateEl:     HTMLElement | null = null;
   private _fpsFrames = 0;
   private _fpsTime   = 0;
   /** F9 — extended GPU/perf readout under the FPS line. */
@@ -674,6 +677,10 @@ export class HUD {
           <span class="hud-aether-activity-label">ACTIVITY</span>
           <span class="hud-aether-activity-band" id="hud-aether-activity-band">QUIET</span>
         </div>
+        <div class="hud-aether-boss" id="hud-aether-boss-row" style="display:none;">
+          <span class="hud-aether-activity-label" id="hud-aether-boss-label">ZONE BOSS</span>
+          <span class="hud-aether-boss-state" id="hud-aether-boss-state">DORMANT</span>
+        </div>
       </div>
 
       <style>
@@ -753,6 +760,25 @@ export class HUD {
           color: rgba(160, 160, 160, 0.85);
           transition: color 0.4s ease-out;
         }
+        /* Zone boss row — hidden while slumbering (the empty state is
+         * the default and doesn't need a label). Visible during windup /
+         * engaged / recently_defeated. Same row shape as activity, but
+         * the state name is the dramatic content so we give it more
+         * weight via color, not size. */
+        .hud-aether-boss {
+          display: flex;
+          justify-content: space-between;
+          align-items: baseline;
+          font-size: 10px;
+          letter-spacing: 0.10em;
+          color: rgba(212, 201, 184, 0.55);
+        }
+        .hud-aether-boss-state {
+          font-weight: bold;
+          letter-spacing: 0.14em;
+          color: rgba(255, 200, 120, 0.95);
+          transition: color 0.4s ease-out;
+        }
       </style>
 
       <div id="hud-interact-prompt" class="hud-interact-prompt">
@@ -821,6 +847,9 @@ export class HUD {
     this.aetherValueEl   = el.querySelector<HTMLElement>('#hud-aether-value')!;
     this.aetherTierEl    = el.querySelector<HTMLElement>('#hud-aether-tier')!;
     this.activityBandEl  = el.querySelector<HTMLElement>('#hud-aether-activity-band')!;
+    this.bossStateRowEl   = el.querySelector<HTMLElement>('#hud-aether-boss-row')!;
+    this.bossStateLabelEl = el.querySelector<HTMLElement>('#hud-aether-boss-label')!;
+    this.bossStateEl      = el.querySelector<HTMLElement>('#hud-aether-boss-state')!;
 
     // Release button
     el.querySelector<HTMLButtonElement>('#hud-death-release')!
@@ -1232,6 +1261,25 @@ export class HUD {
     this.activityBandEl.textContent = band.label;
     this.activityBandEl.style.color = band.color;
   }
+
+  /** Update the zone-boss state row. Hides the row entirely while
+   *  slumbering (default state — no need to advertise "nothing's
+   *  happening"); shows + colors it during windup / engaged /
+   *  recently_defeated / zone_lost. The row label itself switches
+   *  framing in zone_lost — the threat is no longer the subject; the
+   *  town is. */
+  setZoneBossState(state: string): void {
+    if (!this.bossStateRowEl || !this.bossStateEl || !this.bossStateLabelEl) return;
+    const shape = zoneBossDisplay(state);
+    if (!shape) {
+      this.bossStateRowEl.style.display = 'none';
+      return;
+    }
+    this.bossStateRowEl.style.display = 'flex';
+    this.bossStateLabelEl.textContent = shape.rowLabel;
+    this.bossStateEl.textContent = shape.stateLabel;
+    this.bossStateEl.style.color = shape.color;
+  }
 }
 
 // ── Aether Density tier mapping ─────────────────────────────────────────
@@ -1262,6 +1310,25 @@ function activityBand(heat: number): { label: string; color: string } {
   if (heat < 0.65) return { label: 'BUSY',     color: '#ddc060' };                // warm yellow
   if (heat < 0.85) return { label: 'BUSTLING', color: '#ff9040' };                // orange
   return                  { label: 'BOILING',  color: '#ff5530' };                // hot — every spawn is elite
+}
+
+// ── Zone boss state mapping ─────────────────────────────────────────────
+// Maps the server's ZoneBossState enum to display text + color. Returns
+// null for 'slumbering' so the HUD hides the row entirely.
+//
+// Note the rowLabel swap on 'zone_lost' — when the town is gone, the
+// row is no longer about the boss. "ZONE BOSS: FALLEN" reads exactly
+// backwards (it sounds like the boss fell = victory). So the row's
+// subject changes too: TOWNHALL: DESTROYED.
+function zoneBossDisplay(state: string): { rowLabel: string; stateLabel: string; color: string } | null {
+  switch (state) {
+    case 'windup':            return { rowLabel: 'ZONE BOSS', stateLabel: 'STIRRING',  color: '#ffb060' }; // amber — countdown
+    case 'engaged':           return { rowLabel: 'ZONE BOSS', stateLabel: 'AWAKE',     color: '#ff4030' }; // hot red — fight in progress
+    case 'recently_defeated': return { rowLabel: 'ZONE BOSS', stateLabel: 'DEFEATED',  color: '#7ad080' }; // green — victory
+    case 'zone_lost':         return { rowLabel: 'TOWNHALL',  stateLabel: 'DESTROYED', color: '#a04050' }; // muted red — town fell
+    case 'slumbering':
+    default:                  return null;                                                                 // hide row
+  }
 }
 
 /** Per-frame perf snapshot fed into HUD.updateFps for the F9 overlay. */

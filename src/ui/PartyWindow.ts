@@ -52,6 +52,11 @@ export class PartyWindow {
   /** User-arranged order of player cluster owners. New owners append at the
    *  end; missing owners drop. Persisted per (selfId × partyId|solo) key. */
   private _clusterOrder: string[] = [];
+  /** Active cast bars by entityId. Driven by app.ts forwarding ally cast
+   *  events here so the floating bar can stay suppressed in the world. */
+  private _castStates = new Map<string, { abilityName: string; startedAt: number; durationMs: number; drain: boolean }>();
+  /** RAF handle for the cast-tick loop. Self-cancels when no active casts. */
+  private _castRafId: number | null = null;
 
   constructor(
     private readonly uiRoot:   HTMLElement,
@@ -160,6 +165,8 @@ export class PartyWindow {
 
   dispose(): void {
     if (this._rafId !== null) { cancelAnimationFrame(this._rafId); this._rafId = null; }
+    if (this._castRafId !== null) { cancelAnimationFrame(this._castRafId); this._castRafId = null; }
+    this._castStates.clear();
     this.cleanup.forEach(fn => fn());
     this.root.remove();
   }
@@ -394,6 +401,12 @@ export class PartyWindow {
           display: flex;
           flex-direction: column;
           gap: 1px;
+          /* Anchor for the cast bar overlay — when a cast fires, the
+           * cast bar absolutely positions over this whole stack so it
+           * replaces the visual real estate without resizing the row.
+           * Previously the cast bar took its own row, causing the panel
+           * to "dance" each time a cast started/ended. */
+          position: relative;
         }
 
         .pw-bar {
@@ -410,6 +423,38 @@ export class PartyWindow {
           transition: transform 0.25s ease;
         }
 
+        /* Cast bar — absolute overlay covering the HP/MP/ST stack while
+         * active. Doesn't change the row's layout height, so casts
+         * starting/ending don't make the panel dance. Hidden by default;
+         * the rAF tick toggles display + scales the fill per frame. */
+        .pw-cast-bar {
+          position: absolute;
+          inset: 0;
+          background: rgba(8,5,2,0.88);
+          border: 1px solid rgba(200,145,60,0.35);
+          overflow: hidden;
+          pointer-events: none;
+        }
+        .pw-cast-fill {
+          position: absolute;
+          inset: 0;
+          background: linear-gradient(90deg, #6a4f12, #d6a040);
+          transform-origin: left center;
+          transform: scaleX(0);
+        }
+        .pw-cast-label {
+          position: absolute;
+          inset: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-family: var(--font-mono, monospace);
+          font-size: 8px;
+          letter-spacing: 0.06em;
+          color: rgba(255,235,200,0.92);
+          text-shadow: 0 0 2px rgba(0,0,0,0.85);
+          pointer-events: none;
+        }
         .pw-bar-fill.hp   { background: linear-gradient(90deg, #5a0f0f, #8b2020); }
         /* MP gets a more solid (less gradient-y) blue per the playtest note —
          * the healer's bar needs to read clearly so tanks know not to charge
@@ -591,6 +636,82 @@ export class PartyWindow {
       this._setBar(card, '.pw-bar-mp', '.pw-bar-fill.mp', mpPct);
       this._setBar(card, '.pw-bar-st', '.pw-bar-fill.st', stPct);
     });
+  }
+
+  /** Public entry — app.ts calls this when an ally (party / companion /
+   *  hireling) starts a cast. drain=false renders a fill (0→1); drain=true
+   *  renders a drain (1→0) for channels. No-op if the entity isn't in
+   *  the party window (cross-zone party member without an in-zone entity,
+   *  etc.) — the next refresh will catch up if they arrive. */
+  showCast(entityId: string, abilityName: string, durationMs: number, drain: boolean): void {
+    this._castStates.set(entityId, {
+      abilityName,
+      startedAt: performance.now(),
+      durationMs,
+      drain,
+    });
+    this._scheduleCastTick();
+  }
+
+  /** Public entry — app.ts calls this on cast_complete / cast_break /
+   *  channel_complete / channel_break. Idempotent: no-op if no active
+   *  cast for the id. */
+  endCast(entityId: string): void {
+    if (!this._castStates.delete(entityId)) return;
+    this._applyCastDisplay(entityId, null);
+  }
+
+  private _scheduleCastTick(): void {
+    if (this._castRafId !== null) return;
+    const tick = (): void => {
+      this._castRafId = null;
+      this._tickCasts();
+      if (this._castStates.size > 0) this._scheduleCastTick();
+    };
+    this._castRafId = requestAnimationFrame(tick);
+  }
+
+  private _tickCasts(): void {
+    const now = performance.now();
+    // Walk a snapshot — _applyCastDisplay can delete from castStates on
+    // auto-expiry, mutating during iteration.
+    for (const [entityId, st] of Array.from(this._castStates)) {
+      const elapsed = now - st.startedAt;
+      if (elapsed >= st.durationMs) {
+        // Auto-end if the server's terminating event is delayed; the
+        // real complete/break event arriving later finds no state and
+        // no-ops cleanly.
+        this._castStates.delete(entityId);
+        this._applyCastDisplay(entityId, null);
+        continue;
+      }
+      const progress = st.drain ? 1 - elapsed / st.durationMs : elapsed / st.durationMs;
+      this._applyCastDisplay(entityId, { progress, label: st.abilityName });
+    }
+  }
+
+  /** Mutate the row's cast-bar DOM. `null` hides; an object sets fill +
+   *  label + shows. Defensive against rows that haven't been rendered
+   *  yet — those will pick up the state on the next refresh because
+   *  _tickCasts re-applies every frame. */
+  private _applyCastDisplay(
+    entityId: string,
+    state: { progress: number; label: string } | null,
+  ): void {
+    const card = this.root.querySelector<HTMLElement>(`.pw-member[data-member-id="${entityId}"]`);
+    const bar  = card?.querySelector<HTMLElement>('.pw-cast-bar');
+    const fill = card?.querySelector<HTMLElement>('.pw-cast-fill');
+    const lbl  = card?.querySelector<HTMLElement>('.pw-cast-label');
+    if (!bar || !fill) return;
+    if (!state) {
+      bar.style.display = 'none';
+      fill.style.transform = 'scaleX(0)';
+      if (lbl) lbl.textContent = '';
+      return;
+    }
+    bar.style.display = '';
+    fill.style.transform = `scaleX(${Math.max(0, Math.min(1, state.progress))})`;
+    if (lbl) lbl.textContent = state.label;
   }
 
   /** Show + scale a bar when pct is non-null, hide otherwise. */
@@ -780,6 +901,10 @@ export class PartyWindow {
         <div class="pw-bar pw-bar-hp" title="Health"  style="display:none"><div class="pw-bar-fill hp"></div></div>
         <div class="pw-bar pw-bar-mp" title="Mana"    style="display:none"><div class="pw-bar-fill mp"></div></div>
         <div class="pw-bar pw-bar-st" title="Stamina" style="display:none"><div class="pw-bar-fill st"></div></div>
+        <div class="pw-cast-bar" style="display:none">
+          <div class="pw-cast-fill"></div>
+          <div class="pw-cast-label"></div>
+        </div>
       </div>
     `;
 

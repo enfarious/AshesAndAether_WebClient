@@ -67,6 +67,7 @@ const KEY_NP_PLAYERS     = 'aa_np_players';
 const KEY_NP_GUILD_TAG   = 'aa_np_guild_tag';
 const KEY_NP_TGT_HP      = 'aa_np_target_hp';
 const KEY_NP_TGT_CAST    = 'aa_np_target_cast';
+const KEY_NP_ALLY_CAST   = 'aa_np_ally_cast';
 const KEY_NP_MAX_RANGE   = 'aa_np_max_range';
 const KEY_NP_FADE_START  = 'aa_np_fade_start';
 const KEY_NP_MAX_COUNT   = 'aa_np_max_count';
@@ -265,7 +266,8 @@ export class SettingsWindow {
     ClientConfig.nameplateShowPlayers  = loadBool(KEY_NP_PLAYERS,   true);
     ClientConfig.nameplateShowGuildTag = loadBool(KEY_NP_GUILD_TAG, true);
     ClientConfig.nameplateTargetShowHp = loadBool(KEY_NP_TGT_HP,    true);
-    ClientConfig.nameplateTargetShowCast = loadBool(KEY_NP_TGT_CAST, false);
+    ClientConfig.nameplateTargetShowCast = loadBool(KEY_NP_TGT_CAST, true);
+    ClientConfig.nameplateAllyShowCast   = loadBool(KEY_NP_ALLY_CAST, false);
     ClientConfig.nameplateMaxRange   = Math.min(200, Math.max(10,  loadNum(KEY_NP_MAX_RANGE,  60)));
     ClientConfig.nameplateFadeStart  = Math.min(ClientConfig.nameplateMaxRange,
                                          Math.max(5, loadNum(KEY_NP_FADE_START, 35)));
@@ -613,9 +615,15 @@ export class SettingsWindow {
     }));
     page.appendChild(this._buildToggle({
       label: 'Show Cast Bar on Target Plate',
-      sublabel: 'Duplicates the target frame’s cast bar — off by default',
+      sublabel: 'Floating cast bar over your current target — on by default',
       initial: ClientConfig.nameplateTargetShowCast,
       onChange: (v) => { saveBool(KEY_NP_TGT_CAST, v); ClientConfig.nameplateTargetShowCast = v; },
+    }));
+    page.appendChild(this._buildToggle({
+      label: 'Show Ally Cast Bars in World',
+      sublabel: 'Floating cast bars on party + companions + hirelings — off by default (party window shows them inline)',
+      initial: ClientConfig.nameplateAllyShowCast,
+      onChange: (v) => { saveBool(KEY_NP_ALLY_CAST, v); ClientConfig.nameplateAllyShowCast = v; },
     }));
 
     page.appendChild(this._buildDivider());

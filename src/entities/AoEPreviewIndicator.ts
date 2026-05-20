@@ -29,7 +29,10 @@ const PREVIEW_OPACITY = 0.55;
 const TWO_PI_DEG = 360;
 
 export class AoEPreviewIndicator {
-  private mesh:     THREE.Mesh | null = null;
+  // Object3D (not Mesh) — radial-cone shapes return a Group of N child
+  // meshes from TelegraphRenderer.buildExternalMesh. Visible/position
+  // operations work on both; geometry dispose walks children for groups.
+  private mesh:     THREE.Object3D | null = null;
   private material: THREE.ShaderMaterial | null = null;
   /** Cached shape signature — when the armed ability changes, we rebuild
    *  the mesh rather than trying to mutate geometry/uniforms in place. */
@@ -128,7 +131,14 @@ export class AoEPreviewIndicator {
   private _destroyMesh(): void {
     if (this.mesh) {
       this.scene.remove(this.mesh);
-      this.mesh.geometry.dispose();
+      // Group (radial cone) → walk children; single Mesh → dispose directly.
+      if (this.mesh instanceof THREE.Mesh) {
+        this.mesh.geometry.dispose();
+      } else {
+        this.mesh.traverse((obj) => {
+          if (obj instanceof THREE.Mesh) obj.geometry.dispose();
+        });
+      }
       this.mesh = null;
     }
     if (this.material) {

@@ -545,7 +545,12 @@ export interface ChannelBreakPayload {
  *  so future abilities don't require a wire-format change. */
 export type AoeShape =
   | { shape: 'circle'; radius: number }
-  | { shape: 'cone';   length: number; angle: number }
+  | { shape: 'cone';   length: number; angle: number;
+      /** When > 1, the cone is fired N times at evenly-spaced heading
+       *  offsets (0°, 360/N°, …) from the caster. World boss Cardinal
+       *  Storm uses this for the 4-radial-cone shape. Default 1 =
+       *  single cone, identical to pre-existing behavior. */
+      radialCount?: number }
   | { shape: 'line';   length: number; width: number };
 
 /** Broadcast when a cast/channel-phase AoE warning ring should appear on

@@ -184,7 +184,12 @@ const FRAGMENT_LINE = /* glsl */`
 
 interface ActiveTelegraph {
   payload:    TelegraphRegisterPayload;
-  mesh:       THREE.Mesh;
+  /** Object3D rather than Mesh — radial cones (cone shape with
+   *  radialCount > 1) return a Group of N child meshes. Single-cone
+   *  and circle/line cases are still Mesh; the union narrows to the
+   *  common Object3D API surface used by the renderer (visible,
+   *  position, rotation). */
+  mesh:       THREE.Object3D;
   material:   THREE.ShaderMaterial;
   pulse:      number;          // 0..1, decays each frame
   duration:   number;          // ms, cached
@@ -363,12 +368,22 @@ export class TelegraphRenderer {
     const tg = this.active.get(id);
     if (!tg) return;
     this.scene.remove(tg.mesh);
-    tg.mesh.geometry.dispose();
+    // Dispose geometry — Mesh has its own; Group walks children. Radial
+    // cones share one geometry across N children, so disposing it via
+    // the first child cleans up the buffer once for all (Three.js will
+    // no-op subsequent disposes on the same geometry).
+    if (tg.mesh instanceof THREE.Mesh) {
+      tg.mesh.geometry.dispose();
+    } else {
+      tg.mesh.traverse((obj) => {
+        if (obj instanceof THREE.Mesh) obj.geometry.dispose();
+      });
+    }
     tg.material.dispose();
     this.active.delete(id);
   }
 
-  private _makeMesh(p: TelegraphRegisterPayload, role: TelegraphRole): { mesh: THREE.Mesh; material: THREE.ShaderMaterial } | null {
+  private _makeMesh(p: TelegraphRegisterPayload, role: TelegraphRole): { mesh: THREE.Object3D; material: THREE.ShaderMaterial } | null {
     const color =
       role === 'danger'      ? COLOR_DANGER      :
       role === 'beneficial'  ? COLOR_BENEFICIAL  :
@@ -389,7 +404,7 @@ export class TelegraphRenderer {
     shape:    AoeShape,
     role:     TelegraphRole,
     heading:  number | undefined,
-  ): { mesh: THREE.Mesh; material: THREE.ShaderMaterial } | null {
+  ): { mesh: THREE.Object3D; material: THREE.ShaderMaterial } | null {
     const color =
       role === 'danger'      ? COLOR_DANGER      :
       role === 'beneficial'  ? COLOR_BENEFICIAL  :
@@ -474,7 +489,7 @@ export class TelegraphRenderer {
     p: TelegraphRegisterPayload,
     shape: Extract<AoeShape, { shape: 'cone' }>,
     color: THREE.Color,
-  ): { mesh: THREE.Mesh; material: THREE.ShaderMaterial } {
+  ): { mesh: THREE.Object3D; material: THREE.ShaderMaterial } {
     // Cone tessellation also scales with length so a 20 m cone gets enough
     // rings to drape across hills, while a 3 m breath weapon stays cheap.
     const radial = Math.min(64, Math.max(24, Math.round(shape.length * 4)));
@@ -491,16 +506,38 @@ export class TelegraphRenderer {
       ...this._commonMaterialOpts(),
     });
     wireHeightmap(material, this.heightmap);
-    const mesh = new THREE.Mesh(geometry, material);
-    // Cone scales proportionally: x = z = length (radius and arc-width both
-    // grow with the same length parameter, since angle is encoded in the
-    // shader).
-    mesh.scale.set(shape.length, 1, shape.length);
-    if (p.heading !== undefined) mesh.rotation.y = p.heading * Math.PI / 180;
-    mesh.renderOrder = 998;
-    mesh.visible = false;
-    mesh.frustumCulled = false;
-    return { mesh, material };
+
+    const radialCount = Math.max(1, shape.radialCount ?? 1);
+
+    // Single cone — standard path, return the mesh directly.
+    if (radialCount === 1) {
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.scale.set(shape.length, 1, shape.length);
+      if (p.heading !== undefined) mesh.rotation.y = p.heading * Math.PI / 180;
+      mesh.renderOrder = 998;
+      mesh.visible = false;
+      mesh.frustumCulled = false;
+      return { mesh, material };
+    }
+
+    // Radial cones — render N copies sharing geometry + material at
+    // evenly-spaced y-rotation offsets, wrapped in a Group. The Group's
+    // own rotation.y carries the caster heading; per-child rotations
+    // are fixed offsets (0°, 360/N°, 2·360/N°, …). Position updates on
+    // the Group propagate to all children. Material uniforms are
+    // shared so all N cones animate identically (fill, opacity, color).
+    const group = new THREE.Group();
+    for (let k = 0; k < radialCount; k++) {
+      const child = new THREE.Mesh(geometry, material);
+      child.scale.set(shape.length, 1, shape.length);
+      child.rotation.y = (k * 2 * Math.PI) / radialCount;
+      child.renderOrder = 998;
+      child.frustumCulled = false;
+      group.add(child);
+    }
+    if (p.heading !== undefined) group.rotation.y = p.heading * Math.PI / 180;
+    group.visible = false;
+    return { mesh: group, material };
   }
 
   private _makeLineMesh(

@@ -71,6 +71,7 @@ import { CommandHelpPanel }   from '@/ui/CommandHelpPanel';
 import { SystemToast }        from '@/ui/SystemToast';
 import { LevelUpToast }       from '@/ui/LevelUpToast';
 import { VaultCompleteToast } from '@/ui/VaultCompleteToast';
+import { InstanceResultsWindow } from '@/ui/InstanceResultsWindow';
 import { SkyHint }            from '@/ui/SkyHint';
 import { CorpseSystem }       from '@/entities/CorpseSystem';
 import { CorruptionMiasma }  from '@/entities/CorruptionMiasma';
@@ -190,6 +191,7 @@ export class App {
   private systemToast:     SystemToast     | null = null;
   private levelUpToast:    LevelUpToast    | null = null;
   private vaultCompleteToast: VaultCompleteToast | null = null;
+  private instanceResultsWindow: InstanceResultsWindow | null = null;
   private skyHint:         SkyHint         | null = null;
   private abilityWindow:   AbilityWindow   | null = null;
   private activitiesPanel: ActivitiesPanel | null = null;
@@ -1775,18 +1777,30 @@ export class App {
         this.commandHelpPanel.show(p);
       });
 
-      // Vault completion celebration banner.
+      // Vault completion. The InstanceResultsWindow is the functional
+      // surface — a persistent, non-blocking, non-dismissible panel with
+      // the run summary + a "Leave" button (→ /vault leave). Leaving a
+      // cleared vault is now the player's deliberate choice (server backs
+      // it with a 3-minute auto-leave timer). The celebration toast still
+      // fires as a brief flourish on top.
       if (!this.vaultCompleteToast) this.vaultCompleteToast = new VaultCompleteToast(this.uiRoot);
+      if (!this.instanceResultsWindow) {
+        this.instanceResultsWindow = new InstanceResultsWindow(this.uiRoot, this.socket);
+      }
       this.router.onVaultComplete(p => {
         this.vaultCompleteToast!.show({
           goldAwarded: p.goldAwarded,
           hasPortal:   !!p.exitPortal,
         });
+        this.instanceResultsWindow!.show(p);
       });
 
-      // Deep-dungeon completion banner — reuses the vault toast component
-      // with a dungeon-flavoured headline. No reward / no portal (Phase 2
-      // completion is banner-only; the server ejects the party shortly).
+      // Deep-dungeon completion. The functional leave surface is the
+      // post-fight scoreboard modal in instanced mode (the Heartwood boss
+      // death finalizes a BossFightSession flagged `instanced` → the modal
+      // pops with a "Leave" button → /dungeon leave). This banner stays as
+      // a brief celebratory flourish only — no leave affordance here, so
+      // it does not double up with the scoreboard.
       this.router.onDungeonComplete(p => {
         this.vaultCompleteToast!.show({
           goldAwarded: 0,
@@ -1819,6 +1833,13 @@ export class App {
       this.router.onWorldEntry(() => {
         if (forestTimer) { clearTimeout(forestTimer); forestTimer = null; }
         if (dismissForest) { dismissForest(); dismissForest = null; }
+        // A world_entry after leaving an instanced encounter (vault /
+        // dungeon / arena) means the player has been pulled back to the
+        // overworld — tear down the now-stale instanced result surfaces.
+        // The scoreboard's instanced mode refuses ordinary hide(), so use
+        // forceHide(); the vault results window hides unconditionally.
+        this.fightScoreboardModal?.forceHide();
+        this.instanceResultsWindow?.hide();
         // Synthetic instance zones (vault / arena / dungeon staging +
         // instance) have no wildlife sim connection, so the forest never
         // "finishes growing" and the toast would stick around all session.
@@ -1870,8 +1891,10 @@ export class App {
     if (!this.fightScoreboardModal) {
       // Post-fight scoreboard — opens on `open_fight_scoreboard` after
       // any boss (zone/region/world) resolves. Tabs for DPS/HPS/Tank/
-      // Debuffs surface per-participant contribution. Single "Return to
-      // World" button + Esc/backdrop close.
+      // Debuffs surface per-participant contribution. Overworld zone
+      // bosses get the dismissible "Return to World" + Esc/backdrop close;
+      // instanced encounters (deep dungeon, region/world arena) get the
+      // persistent, non-blocking, non-dismissible "Leave" mode instead.
       this.fightScoreboardModal = new PostFightScoreboardModal(this.uiRoot, this.socket);
       this.modalStack.register(this.fightScoreboardModal);
     }

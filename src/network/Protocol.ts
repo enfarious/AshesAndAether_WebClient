@@ -1417,12 +1417,37 @@ export interface VaultRoomClearedPayload {
   message:    string;
 }
 
+/** Per-participant combat tally inside a vault summary. Mirrors the
+ *  server's VaultSummary.participants entry shape. */
+export interface VaultSummaryParticipant {
+  characterId: string;
+  name:        string;
+  damageDealt: number;
+  hitsLanded:  number;
+  damageTaken: number;
+}
+
+/** Server → Client: vault run summary — carried inside VaultCompletePayload.
+ *  Mirrors the server's VaultSummary (vault/VaultManager.ts). */
+export interface VaultSummaryPayload {
+  instanceId:   string;
+  templateId:   string;
+  vaultName:    string;
+  /** Run duration in whole seconds. */
+  duration:     number;
+  roomsCleared: number;
+  totalRooms:   number;
+  completed:    boolean;
+  participants: VaultSummaryParticipant[];
+  lootAwarded:  unknown[];
+}
+
 /** Server → Client: vault completed successfully. */
 export interface VaultCompletePayload {
   instanceId:  string;
   goldAwarded: number;
   message?:    string;
-  summary?:    unknown;
+  summary?:    VaultSummaryPayload;
   /** Exit portal spawn — client synthesizes this entity locally. Optional
    *  in case the vault has no tile grid (legacy, hand-authored rooms). */
   exitPortal?: {
@@ -1464,6 +1489,50 @@ export interface VaultStagingBrokenPayload {
   combatPartySize:    number;
   scalingTier:        'solo' | 'small' | 'party';
   message?:           string;
+}
+
+// ─── Post-fight scoreboard ────────────────────────────────────────────────
+
+export type FightTier    = 'zone' | 'region' | 'world';
+export type FightOutcome = 'victory' | 'wipe' | 'abandoned';
+
+/** Per-character contribution tally inside a FightResultPayload. Mirrors the
+ *  server's ContributionStats (bosses/BossFightSession.ts). */
+export interface FightContributionStats {
+  damageDealt:        number;
+  healingDone:        number;
+  damageTaken:        number;
+  debuffsApplied:     number;
+  debuffSecondsTotal: number;
+  firstActionAt:      number;
+  lastActionAt:       number;
+}
+
+export interface FightParticipant {
+  characterId:   string;
+  characterName: string;
+  stats:         FightContributionStats;
+}
+
+/** Server → Client: post-fight scoreboard payload, pushed on
+ *  `open_fight_scoreboard` when a boss resolves. Mirrors the server's
+ *  FightResult (bosses/BossFightSession.ts).
+ *
+ *  `instanced` + `leaveCommand` flag instanced encounters (deep dungeon,
+ *  region/world arena) — the client uses them to switch the scoreboard
+ *  modal into persistent, non-dismissible "Leave" mode. Absent / false for
+ *  overworld zone bosses (dismissible "Return to World"). */
+export interface FightResultPayload {
+  bossId:        string;
+  bossTier:      FightTier;
+  bossName:      string;
+  startedAt:     number;
+  endedAt:       number;
+  durationMs:    number;
+  outcome:       FightOutcome;
+  participants:  FightParticipant[];
+  instanced?:    boolean;
+  leaveCommand?: string;
 }
 
 // ─── Activities panel snapshot ────────────────────────────────────────────

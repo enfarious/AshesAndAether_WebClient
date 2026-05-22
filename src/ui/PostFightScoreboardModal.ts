@@ -1,46 +1,26 @@
 import type { SocketClient } from '@/network/SocketClient';
+import type { FightResultPayload } from '@/network/Protocol';
 
 /**
  * PostFightScoreboardModal — opened on `open_fight_scoreboard` after any
  * boss (zone / region / world) resolves. Tabs for DPS / HPS / Tank /
- * Debuffs surface the per-participant contribution; single "Return to
- * World" button closes. Esc + backdrop click also close.
+ * Debuffs surface the per-participant contribution.
+ *
+ * Two modes, picked off `payload.instanced`:
+ *   - Overworld zone boss (instanced absent/false): dismissible. Single
+ *     "Return to World" button; Esc + backdrop click also close. The modal
+ *     is purely informational ("stuff for nerds" per 2026-05-20).
+ *   - Instanced encounter (deep dungeon, region/world arena — instanced
+ *     true): the scoreboard IS the deliberate leave surface. The button
+ *     becomes "Leave" and sends `payload.leaveCommand`; Esc + backdrop
+ *     close are suppressed; the modal is non-blocking (the player can see
+ *     and click the world behind it) but cannot be dismissed.
  *
  * Reward distribution is server-side and decoupled from this modal —
- * closing the scoreboard doesn't affect what was already granted. The
- * modal is purely informational ("stuff for nerds" per the design call
- * 2026-05-20).
+ * leaving doesn't affect what was already granted.
  */
 
-type FightTier = 'zone' | 'region' | 'world';
-type FightOutcome = 'victory' | 'wipe' | 'abandoned';
-
-interface ContributionStats {
-  damageDealt:        number;
-  healingDone:        number;
-  damageTaken:        number;
-  debuffsApplied:     number;
-  debuffSecondsTotal: number;
-  firstActionAt:      number;
-  lastActionAt:       number;
-}
-
-interface FightParticipant {
-  characterId:   string;
-  characterName: string;
-  stats:         ContributionStats;
-}
-
-export interface FightResultPayload {
-  bossId:       string;
-  bossTier:     FightTier;
-  bossName:     string;
-  startedAt:    number;
-  endedAt:      number;
-  durationMs:   number;
-  outcome:      FightOutcome;
-  participants: FightParticipant[];
-}
+export type { FightResultPayload };
 
 type TabKey = 'dps' | 'hps' | 'tank' | 'debuffs';
 
@@ -77,6 +57,7 @@ export class PostFightScoreboardModal {
   private subEl:     HTMLElement;
   private tabsEl:    HTMLElement;
   private bodyEl:    HTMLElement;
+  private actionBtn: HTMLButtonElement;
   private cleanup:   (() => void)[] = [];
   private _open     = false;
   private activeTab: TabKey = 'dps';
@@ -86,11 +67,12 @@ export class PostFightScoreboardModal {
     private readonly mountEl: HTMLElement,
     private readonly socket:  SocketClient,
   ) {
-    this.root    = document.createElement('div');
-    this.titleEl = document.createElement('h2');
-    this.subEl   = document.createElement('div');
-    this.tabsEl  = document.createElement('div');
-    this.bodyEl  = document.createElement('div');
+    this.root      = document.createElement('div');
+    this.titleEl   = document.createElement('h2');
+    this.subEl     = document.createElement('div');
+    this.tabsEl    = document.createElement('div');
+    this.bodyEl    = document.createElement('div');
+    this.actionBtn = document.createElement('button');
     this._build();
     this.root.style.display = 'none';
     this.mountEl.appendChild(this.root);
@@ -100,13 +82,21 @@ export class PostFightScoreboardModal {
     });
 
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && this._open) {
+      // Esc only closes in the dismissible (non-instanced) overworld-boss
+      // mode. Instanced encounters are non-dismissible — the player leaves
+      // deliberately via the Leave button.
+      if (e.key === 'Escape' && this._open && !this._instanced) {
         e.preventDefault();
         this.hide();
       }
     };
     window.addEventListener('keydown', onKey);
     this.cleanup.push(() => window.removeEventListener('keydown', onKey));
+  }
+
+  /** True when the currently-shown result is an instanced encounter. */
+  private get _instanced(): boolean {
+    return !!this.payload?.instanced;
   }
 
   show(payload: FightResultPayload): void {
@@ -118,11 +108,30 @@ export class PostFightScoreboardModal {
   }
 
   hide(): void {
+    // In instanced mode the modal is non-dismissible — guard against
+    // ModalStack.closeTop() (gamepad menu button) duck-typing this away.
+    // The only way out of an instanced encounter is the Leave button.
+    if (this._instanced) return;
     this._open = false;
     this.root.style.display = 'none';
   }
 
-  get isVisible(): boolean { return this._open; }
+  /** Force the modal closed regardless of mode. Used on world_entry —
+   *  after an instanced Leave the zone transfer lands the player in the
+   *  overworld, at which point the (now stale) scoreboard must come down
+   *  even though `hide()` would otherwise refuse in instanced mode. */
+  forceHide(): void {
+    this._open = false;
+    this.root.style.display = 'none';
+    this.payload = null;
+  }
+
+  /** ModalStack contract. Instanced mode reports NOT visible on purpose:
+   *  the instanced scoreboard is non-blocking (clicks fall through, the
+   *  player walks around) and non-dismissible — it must not gate gamepad
+   *  input via `ModalStack.anyOpen`, nor be picked by `closeTop()`. The
+   *  dismissible overworld-boss mode reports visibility normally. */
+  get isVisible(): boolean { return this._open && !this._instanced; }
 
   dispose(): void {
     this.cleanup.forEach(fn => fn());
@@ -140,6 +149,17 @@ export class PostFightScoreboardModal {
         z-index: 860;
         align-items: center;
         justify-content: center;
+        pointer-events: auto;
+      }
+      /* Instanced mode: non-blocking. Drop the dark overlay and let clicks
+         fall through to the world — only the inner box is interactive — so
+         the player can see + walk around while the (non-dismissible)
+         scoreboard stays up. */
+      #fight-scoreboard.fs-instanced {
+        background: transparent;
+        pointer-events: none;
+      }
+      #fight-scoreboard.fs-instanced #fs-box {
         pointer-events: auto;
       }
       #fs-box {
@@ -304,18 +324,30 @@ export class PostFightScoreboardModal {
 
     const footer = document.createElement('div');
     footer.className = 'fs-footer';
-    const returnBtn = document.createElement('button');
-    returnBtn.textContent = 'Return to World';
-    returnBtn.addEventListener('click', () => this.hide());
-    footer.appendChild(returnBtn);
+    this.actionBtn.addEventListener('click', () => this._onActionButton());
+    footer.appendChild(this.actionBtn);
     box.appendChild(footer);
 
-    // Click outside the box (on the backdrop) also closes.
+    // Click outside the box (on the backdrop) closes — but ONLY in the
+    // dismissible overworld-boss mode. Instanced encounters are
+    // non-dismissible (and the backdrop is pointer-events:none anyway).
     this.root.addEventListener('click', (e) => {
-      if (e.target === this.root) this.hide();
+      if (e.target === this.root && !this._instanced) this.hide();
     });
 
     this.root.appendChild(box);
+  }
+
+  /** Footer button click. Dismissible mode → close the modal. Instanced
+   *  mode → fire the server leave command (the modal stays up until the
+   *  zone transfer pulls the player out). */
+  private _onActionButton(): void {
+    const p = this.payload;
+    if (p?.instanced && p.leaveCommand) {
+      this.socket.sendCommand(p.leaveCommand);
+      return;
+    }
+    this.hide();
   }
 
   private _render(): void {
@@ -324,6 +356,11 @@ export class PostFightScoreboardModal {
     if (!p || !box) return;
 
     box.classList.toggle('outcome-wipe', p.outcome === 'wipe');
+    // Instanced encounters get the non-blocking, non-dismissible treatment
+    // (no dark overlay, click-through backdrop) + a "Leave" action button.
+    this.root.classList.toggle('fs-instanced', !!p.instanced);
+    this.actionBtn.textContent = p.instanced ? 'Leave' : 'Return to World';
+
     const tierLabel = p.bossTier === 'world' ? 'WORLD BOSS'
                     : p.bossTier === 'region' ? 'REGION BOSS' : 'ZONE BOSS';
     this.titleEl.textContent = p.outcome === 'victory'

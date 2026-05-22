@@ -68,9 +68,16 @@ export class OrbitCamera {
   private static readonly COLLISION_MAX_RADIUS = 50;
   /** Minimum metres the camera must sit above sampled terrain elevation. */
   private static readonly TERRAIN_CLEARANCE = 0.6;
+  /** Clearances for the deep-dungeon floor / ceiling Y clamp. */
+  private static readonly DUNGEON_FLOOR_CLEARANCE   = 0.5;
+  private static readonly DUNGEON_CEILING_CLEARANCE = 0.4;
 
   /** Heightmap reference for terrain-aware clamping. Set via setHeightmap. */
   private _heightmap: HeightmapService | null = null;
+  /** Deep-dungeon floor / ceiling Y samplers — set via setDungeonSamplers.
+   *  Return null outside any dungeon region, so the clamp self-disables. */
+  private _floorSampler:   ((x: number, z: number) => number | null) | null = null;
+  private _ceilingSampler: ((x: number, z: number) => number | null) | null = null;
 
   constructor() {
     this.camera = new THREE.PerspectiveCamera(
@@ -430,6 +437,28 @@ export class OrbitCamera {
       }
     }
 
+    // Deep-dungeon floor / ceiling Y-clamp. The spring-arm raycast catches
+    // walls but structurally can't backstop a floor — it shortens the arm,
+    // never lifts Y, and the floor slab is thin / single-sided. A hard Y
+    // clamp inside the dungeon shell, same shape as the terrain clamp above.
+    // The samplers return null outside any dungeon region, so this is inert
+    // in the overworld / vaults. Ceiling first, floor last — a low ceiling
+    // must never shove the camera below the floor.
+    {
+      const cx = this.camera.position.x;
+      const cz = this.camera.position.z;
+      const ceilY = this._ceilingSampler?.(cx, cz) ?? null;
+      if (ceilY !== null) {
+        const maxY = ceilY - OrbitCamera.DUNGEON_CEILING_CLEARANCE;
+        if (this.camera.position.y > maxY) this.camera.position.y = maxY;
+      }
+      const floorY = this._floorSampler?.(cx, cz) ?? null;
+      if (floorY !== null) {
+        const minY = floorY + OrbitCamera.DUNGEON_FLOOR_CLEARANCE;
+        if (this.camera.position.y < minY) this.camera.position.y = minY;
+      }
+    }
+
     // Sky-look: tilt the look target upward by the eased engagement value.
     const lookUp = this._skyEngagement * 200;
     this.camera.lookAt(this.target.x, this.target.y + lookUp, this.target.z);
@@ -439,6 +468,17 @@ export class OrbitCamera {
    *  terrain. Pass null to clear (e.g. between zone loads). */
   setHeightmap(hm: HeightmapService | null): void {
     this._heightmap = hm;
+  }
+
+  /** Wire the deep-dungeon floor + ceiling Y samplers so the camera clamps
+   *  itself inside the dungeon shell instead of falling through the floor.
+   *  Both return null outside any dungeon region (clamp self-disables). */
+  setDungeonSamplers(
+    floor:   ((x: number, z: number) => number | null) | null,
+    ceiling: ((x: number, z: number) => number | null) | null,
+  ): void {
+    this._floorSampler   = floor;
+    this._ceilingSampler = ceiling;
   }
 
   /** Sample road-top Y at world (x, z) via downward raycast. Returns null

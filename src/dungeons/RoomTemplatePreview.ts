@@ -31,6 +31,24 @@ interface RoomPlacement {
   template: WireTemplate;
   origin:   { x: number; y: number; z: number };
 }
+/** A single polyline vertex — mirrors the server `Waypoint` type. Each
+ *  point carries its own Y so a ramp/stair connector's polyline has
+ *  differing Y between endpoints. */
+interface WireWaypoint {
+  x: number; y: number; z: number;
+}
+/** A placed connector — parametric polyline geometry bridging two rooms.
+ *  Mirrors the server `ConnectorPlacement`. `polyline` is the FULL
+ *  world-space path: `[fromExitWorld, ...intermediateWaypoints, toExitWorld]`
+ *  and is always ≥2 points. The renderer builds geometry generically from
+ *  these points — it does NOT assume axis-aligned segments (only the V0
+ *  *server* restricts bends to 90°; see _computeConnectorWallRects). */
+interface WireConnector {
+  edgeId:   string;
+  style:    'corridor' | 'ramp' | 'stair' | 'elevator';
+  width:    number;
+  polyline: WireWaypoint[];
+}
 /** World-space axis-aligned rect — matches the server WallRect shape. */
 interface WireRect {
   minX: number; minZ: number; maxX: number; maxZ: number;
@@ -48,6 +66,10 @@ interface PreviewPayload {
   origin?:     { x: number; y: number; z: number };
   // Multi-room form (admin /preview-floor <dungeon> <floor>)
   placements?: RoomPlacement[];
+  // First-class connector polylines bridging the rooms. Present on every
+  // dungeon/floor render; ABSENT on the single-room admin /preview-room
+  // render (no graph edge exists there) — handle undefined/empty.
+  connectors?: WireConnector[];
   // Deep-dungeon boss-door gates still closed at render time (Phase 3).
   gates?:      WireGate[];
   // Tear-down
@@ -71,9 +93,39 @@ const DOORWAY_HEIGHT = 8.0;
  *  will leak past where the server blocks (and snap-back when it catches
  *  up). */
 const PLAYER_RADIUS  = 0.5;
+/** Connector wall + ceiling height. Must be at least DOORWAY_HEIGHT: the
+ *  room cuts its doorway opening that tall, so a shorter connector leaves an
+ *  open slot above the connector roof that peers into the void. The room's
+ *  own lintel seals everything above DOORWAY_HEIGHT. */
+const CONNECTOR_WALL_HEIGHT = DOORWAY_HEIGHT;
+/** Stair step run-length (metres) — a stepped connector climbs its Y delta
+ *  in steps of roughly this depth. Cosmetic only; collision + sampleFloorY
+ *  treat a stair like a ramp (linear Y), matching the server. */
+const STAIR_STEP_RUN = 0.45;
+/** AXIS_EPSILON — a polyline segment counts as axis-aligned when one of
+ *  |Δx| / |Δz| is within this of zero. Mirrors server Stitcher.AXIS_EPSILON.
+ *  Used ONLY by the collision mirror (_computeConnectorWallRects /
+ *  _computeConnectorFloorRegions) — the renderer is axis-agnostic. */
+const AXIS_EPSILON   = 1e-3;
 
 interface CollisionRect {
   minX: number; minZ: number; maxX: number; maxZ: number;
+}
+
+/**
+ * A walkable floor region with a Y range — mirrors the server `FloorRegion`.
+ * A flat room region has `y0 === y1` (`axis: 'flat'`); a sloped connector
+ * segment carries `y0` at the `axis`-min edge and `y1` at the `axis`-max
+ * edge so `sampleFloorY` can lerp Y along the run. Drives WASD-prediction
+ * Y so walking a ramp stays smooth instead of stair-stepping on server
+ * corrections.
+ */
+interface FloorRegion {
+  minX: number; minZ: number; maxX: number; maxZ: number;
+  y0: number; y1: number; axis: 'x' | 'z' | 'flat';
+  /** Absolute world ceiling Y over this region — drives the camera's upper
+   *  clamp. Flat per region (a sloped connector stores its lowest ceiling). */
+  ceilingY: number;
 }
 
 /**
@@ -90,8 +142,15 @@ export class RoomTemplatePreview {
   private group: THREE.Group | null = null;
   /** Halo-inflated wall rects in world space. Used by resolveMovement to
    *  clamp WASD prediction so the player doesn't ghost through walls
-   *  before the server-side resolveMovement snaps them back. */
+   *  before the server-side resolveMovement snaps them back. Both room
+   *  walls AND connector side-walls land here. */
   private collisionRects: CollisionRect[] = [];
+
+  /** Walkable floor regions — one flat region per room, one (possibly
+   *  sloped) region per connector polyline segment. Consulted by
+   *  `sampleFloorY` to keep WASD-predicted Y smooth on ramps/stairs.
+   *  Mirrors the server CollisionSystem.floorRegions list. */
+  private floorRegions: FloorRegion[] = [];
 
   /** Boss-door gate slab meshes, keyed by gateId — removed when the
    *  `dungeon_gate` event reports the gate has opened. */
@@ -130,11 +189,33 @@ export class RoomTemplatePreview {
       this.group.name = 'room_preview';
       for (const placement of placements) {
         const roomGroup = this._buildRoom(placement.template);
+        // RoomPlacement.origin.y is now a real, varying value (terraced
+        // dungeons) — the sub-group is positioned at the full origin so
+        // the room sits at its placement elevation.
         roomGroup.position.set(placement.origin.x, placement.origin.y, placement.origin.z);
         this.group.add(roomGroup);
         // Compute world-space, halo-inflated collision rects for this room.
         for (const rect of this._computeWallRects(placement.template, placement.origin)) {
           this.collisionRects.push(rect);
+        }
+        // Flat walkable floor region for this room (footprint AABB at
+        // origin.y) — feeds sampleFloorY for smooth WASD-predicted Y.
+        this.floorRegions.push(this._computeRoomFloorRegion(placement));
+      }
+      // First-class connectors — parametric polyline geometry bridging the
+      // rooms. Absent on the single-room admin render; the `?? []` makes
+      // that path a no-op.
+      for (const connector of p.connectors ?? []) {
+        const connGroup = this._buildConnector(connector);
+        this.group.add(connGroup);
+        // Connector side-wall collision rects (mirrors server geometry).
+        for (const rect of this._computeConnectorWallRects(connector)) {
+          this.collisionRects.push(rect);
+        }
+        // Connector floor regions — one (possibly sloped) per polyline
+        // segment — so sampleFloorY can lerp Y along a ramp/stair.
+        for (const region of this._computeConnectorFloorRegions(connector)) {
+          this.floorRegions.push(region);
         }
       }
       // Boss-door gate slabs (Phase 3). Each closed gate gets a dark slab
@@ -156,9 +237,12 @@ export class RoomTemplatePreview {
       }
 
       this.scene.add(this.group);
-      // Register each room sub-group as a camera-collision target so the
-      // spring-arm doesn't clip through walls/ceilings. Position is final
-      // because we set it above + scene.add before adding the target.
+      // Register every sub-group as a camera-collision target so the
+      // spring-arm doesn't clip through walls/ceilings. This covers room
+      // sub-groups, connector sub-groups, AND gate slabs — connector
+      // groups were added above so they're in `children` here. Each
+      // sub-group's world transform is final (positions set + scene.add
+      // already done), which addCollisionTarget requires.
       for (const child of this.group.children) {
         this.camera.addCollisionTarget(child);
       }
@@ -235,12 +319,69 @@ export class RoomTemplatePreview {
     return false;
   }
 
+  /**
+   * Ground Y at a world (x,z), resolved against the registered floor
+   * regions. Returns null when (x,z) is inside no region — the caller
+   * keeps its last Y (e.g. mid-doorway between two regions for a frame).
+   *
+   * For a flat region Y is constant (`y0`). For a sloped region Y is
+   * lerped by the fractional position along the run `axis`: 0 at the
+   * axis-min edge (`y0`) → 1 at the axis-max edge (`y1`).
+   *
+   * Mirrors server CollisionSystem.sampleFloorY — WASD prediction calls
+   * this so predicted Y stays smooth on ramps/stairs and consistent with
+   * the server (which runs the identical lookup). Last-match-wins if
+   * regions overlap; terraced rooms never overlap in plan so in practice
+   * each (x,z) hits at most one region.
+   */
+  sampleFloorY(x: number, z: number): number | null {
+    if (this.floorRegions.length === 0) return null;
+    let result: number | null = null;
+    for (const r of this.floorRegions) {
+      if (x < r.minX || x > r.maxX || z < r.minZ || z > r.maxZ) continue;
+      if (r.axis === 'flat' || r.y0 === r.y1) {
+        result = r.y0;
+      } else if (r.axis === 'x') {
+        const span = r.maxX - r.minX;
+        const t = span > 0 ? (x - r.minX) / span : 0;
+        result = r.y0 + (r.y1 - r.y0) * t;
+      } else {
+        const span = r.maxZ - r.minZ;
+        const t = span > 0 ? (z - r.minZ) / span : 0;
+        result = r.y0 + (r.y1 - r.y0) * t;
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Ceiling Y at a world (x,z) — the dungeon analogue of sampleFloorY for
+   * the camera's upper clamp. Flat per region (a sloped connector stores its
+   * lowest ceiling), so no lerp. Returns null outside every region.
+   */
+  sampleCeilingY(x: number, z: number): number | null {
+    if (this.floorRegions.length === 0) return null;
+    let result: number | null = null;
+    for (const r of this.floorRegions) {
+      if (x < r.minX || x > r.maxX || z < r.minZ || z > r.maxZ) continue;
+      result = r.ceilingY;
+    }
+    return result;
+  }
+
   clear(): void {
+    // Drop ALL dungeon collision state — room walls, connector side-walls,
+    // and floor regions. Stale connector collision leaking into the
+    // overworld is the exact bug class this project has hit before, so the
+    // teardown is deliberately exhaustive here.
     this.collisionRects = [];
+    this.floorRegions   = [];
     // Gate slabs live under this.group — the traverse-dispose below frees
     // their geometry/material; just drop the tracking maps here.
     this.gateMeshes.clear();
     this.gateCollisionRects.clear();
+    // Drops every transient camera-collision target registered for this
+    // dungeon — room sub-groups AND connector sub-groups.
     this.camera.clearTransientCollisionTargets();
     if (!this.group) return;
     this.scene.remove(this.group);
@@ -312,6 +453,314 @@ export class RoomTemplatePreview {
       }
     }
     return rects;
+  }
+
+  /**
+   * Flat walkable floor region for a room — its footprint AABB at the
+   * room's placement Y. `y0 === y1` / `axis: 'flat'` (a room never slopes).
+   * Mirrors server Stitcher.computeRoomFloorRegion.
+   */
+  private _computeRoomFloorRegion(placement: RoomPlacement): FloorRegion {
+    const { sizeX, sizeZ } = placement.template.footprint;
+    const { x, y, z } = placement.origin;
+    return {
+      minX: x - sizeX / 2,
+      maxX: x + sizeX / 2,
+      minZ: z - sizeZ / 2,
+      maxZ: z + sizeZ / 2,
+      y0: y,
+      y1: y,
+      axis: 'flat',
+      ceilingY: y + (placement.template.wallHeight ?? 4),
+    };
+  }
+
+  /**
+   * Build the visual geometry for one connector — floor, two side walls,
+   * and a ceiling, per polyline segment.
+   *
+   * The polyline is already FULL world-space, so all geometry is built in
+   * world coordinates directly from the points — the returned group sits
+   * at the scene origin (position 0,0,0). Geometry is built GENERICALLY
+   * from consecutive point pairs: it does NOT special-case N/S/E/W and
+   * will correctly draw a diagonal or curved connector if one ever
+   * arrives (the V0 90°-bend limit lives only in the server stitcher and
+   * in the collision mirror, never here).
+   *
+   * Per style:
+   *   - 'corridor' — flat level floor quad per segment.
+   *   - 'ramp'     — floor quad tilted to match the segment's Y slope.
+   *   - 'stair'    — a run of stepped boxes climbing the segment Y delta.
+   *   - 'elevator' — a flat platform quad at each end Y plus a shaft; the
+   *                  walls enclose the shaft. (Treated like a ramp for
+   *                  floor-Y purposes — the server lerps Y the same way.)
+   */
+  private _buildConnector(connector: WireConnector): THREE.Group {
+    const root = new THREE.Group();
+    root.name = `connector_${connector.edgeId}`;
+
+    const floorMat = new THREE.MeshStandardMaterial({
+      color: 0x241f18, roughness: 0.92, metalness: 0.0,
+    });
+    const wallMat = new THREE.MeshStandardMaterial({
+      color: 0x352d24, roughness: 0.78, metalness: 0.05,
+    });
+    const ceilMat = new THREE.MeshStandardMaterial({
+      color: 0x282119, roughness: 0.85, metalness: 0.04,
+    });
+
+    const poly = connector.polyline;
+    const half = connector.width / 2;
+
+    for (let i = 0; i < poly.length - 1; i++) {
+      const a = poly[i]!;
+      const b = poly[i + 1]!;
+      const dx = b.x - a.x;
+      const dz = b.z - a.z;
+      const runLen = Math.hypot(dx, dz);
+      if (runLen < AXIS_EPSILON) continue; // degenerate — skip
+
+      // Perpendicular unit vector in XZ — offsets the two flanking walls.
+      const nx = -dz / runLen;
+      const nz =  dx / runLen;
+      // Forward unit vector in XZ — used to orient geometry along the run.
+      const fx = dx / runLen;
+      const fz = dz / runLen;
+      // Heading of the run in XZ (rotation about Y). atan2(fx,fz) so the
+      // local +Z of a quad/box points down the run.
+      const yaw = Math.atan2(fx, fz);
+      const midX = (a.x + b.x) / 2;
+      const midZ = (a.z + b.z) / 2;
+      const dy   = b.y - a.y;
+
+      // ── Floor ──────────────────────────────────────────────────────────
+      if (connector.style === 'stair' && Math.abs(dy) > AXIS_EPSILON) {
+        // Stepped boxes climbing the Y delta. Step count from the run
+        // length so steps stay a sane depth; each step is a flat box.
+        const stepCount = Math.max(1, Math.round(runLen / STAIR_STEP_RUN));
+        const stepRun   = runLen / stepCount;
+        for (let s = 0; s < stepCount; s++) {
+          // Step centre at fractional position (s+0.5)/stepCount along run.
+          const t  = (s + 0.5) / stepCount;
+          const cx = a.x + dx * t;
+          const cz = a.z + dz * t;
+          // Top of the step = lerped floor Y at the step's far edge, so
+          // the player stands at the matching sampleFloorY height.
+          const stepTopY = a.y + dy * ((s + 1) / stepCount);
+          const stepH    = 0.25;
+          const step = new THREE.Mesh(
+            new THREE.BoxGeometry(connector.width, stepH, stepRun),
+            floorMat,
+          );
+          step.position.set(cx, stepTopY - stepH / 2 + 0.02, cz);
+          step.rotation.order = 'YXZ';
+          step.rotation.y = yaw;
+          step.receiveShadow = true;
+          step.castShadow    = true;
+          root.add(step);
+        }
+      } else {
+        // corridor (flat), ramp (tilted), elevator (flat platform). A thin
+        // box so the floor reads with thickness; tilted for a Y delta.
+        const floorThick = 0.12;
+        // Slope length — the hypotenuse including the Y rise, so a tilted
+        // floor still spans corner-to-corner without a gap.
+        const slopeLen = Math.hypot(runLen, dy);
+        const floor = new THREE.Mesh(
+          new THREE.BoxGeometry(connector.width, floorThick, slopeLen),
+          floorMat,
+        );
+        floor.position.set(midX, (a.y + b.y) / 2 + 0.02, midZ);
+        // rotation.order MUST be 'YXZ'. Three.js's default 'XYZ' applies the
+        // X (pitch) about the world axis BEFORE the yaw, shearing the ramp
+        // into a parallelogram. 'YXZ' yaws first, so the pitch lands on the
+        // run-local X axis.
+        floor.rotation.order = 'YXZ';
+        floor.rotation.y = yaw;
+        // Pitch about the (now run-local) X axis so the slope matches dy/runLen.
+        if (Math.abs(dy) > AXIS_EPSILON) {
+          floor.rotation.x = -Math.atan2(dy, runLen);
+        }
+        floor.receiveShadow = true;
+        floor.castShadow    = true;
+        root.add(floor);
+      }
+
+      // ── Side walls ─────────────────────────────────────────────────────
+      // Two boxes offset ±width/2 perpendicular to the run, full height,
+      // each spanning the (sloped) segment length. Walls follow the Y
+      // slope so they sit flush with floor + ceiling.
+      const wallH    = CONNECTOR_WALL_HEIGHT;
+      const wallLen  = Math.hypot(runLen, dy);
+      const wallPitch = Math.abs(dy) > AXIS_EPSILON ? -Math.atan2(dy, runLen) : 0;
+      for (const side of [+1, -1] as const) {
+        const wall = new THREE.Mesh(
+          new THREE.BoxGeometry(WALL_THICK, wallH, wallLen),
+          wallMat,
+        );
+        wall.position.set(
+          midX + nx * half * side,
+          (a.y + b.y) / 2 + wallH / 2,
+          midZ + nz * half * side,
+        );
+        wall.rotation.order = 'YXZ'; // yaw-then-pitch in the run-local frame
+        wall.rotation.y = yaw;
+        wall.rotation.x = wallPitch;
+        wall.castShadow    = true;
+        wall.receiveShadow = true;
+        root.add(wall);
+      }
+
+      // ── Ceiling ────────────────────────────────────────────────────────
+      // Optional but kept for visual consistency with rooms — a thin box
+      // capping the connector at wall height, following the Y slope.
+      const ceilThick = 0.1;
+      const ceiling = new THREE.Mesh(
+        new THREE.BoxGeometry(connector.width, ceilThick, wallLen),
+        ceilMat,
+      );
+      ceiling.position.set(midX, (a.y + b.y) / 2 + wallH, midZ);
+      ceiling.rotation.order = 'YXZ'; // yaw-then-pitch in the run-local frame
+      ceiling.rotation.y = yaw;
+      ceiling.rotation.x = wallPitch;
+      ceiling.receiveShadow = true;
+      root.add(ceiling);
+
+      // Interior light per segment so the connector isn't pitch black.
+      const light = new THREE.PointLight(0xffd0a0, 1.0, runLen * 1.6 + 6, 1.4);
+      light.position.set(midX, (a.y + b.y) / 2 + wallH * 0.8, midZ);
+      root.add(light);
+    }
+
+    return root;
+  }
+
+  /**
+   * Connector side-wall collision rects — halo-inflated, world-space.
+   *
+   * Mirrors the server: two oriented wall segments per polyline segment,
+   * offset ±width/2 perpendicular to the run, then each reduced to its
+   * AABB (server Stitcher.computeConnectorWallSegments →
+   * orientedSegmentToRect). V0 connector segments are axis-aligned, so an
+   * axis-aligned wall IS an axis-aligned rect — the AABB is exact.
+   *
+   * Non-axis-aligned segments are skipped here (the renderer still draws
+   * them); that matches the server, whose V0 collision adapter only
+   * handles axis-aligned segments. When diagonal connectors land, both
+   * sides relax this in lockstep.
+   */
+  private _computeConnectorWallRects(connector: WireConnector): CollisionRect[] {
+    const rects: CollisionRect[] = [];
+    const poly = connector.polyline;
+    const half = connector.width / 2;
+
+    for (let i = 0; i < poly.length - 1; i++) {
+      const a = poly[i]!;
+      const b = poly[i + 1]!;
+      const dx = b.x - a.x;
+      const dz = b.z - a.z;
+      const len = Math.hypot(dx, dz);
+      if (len < AXIS_EPSILON) continue;
+
+      // V0 collision mirror — axis-aligned segments only. A diagonal
+      // segment is left for the future diagonal branch (the server skips
+      // it here too); the renderer above still draws it.
+      const alongX = Math.abs(dz) <= AXIS_EPSILON;
+      const alongZ = Math.abs(dx) <= AXIS_EPSILON;
+      if (!alongX && !alongZ) continue;
+
+      // Perpendicular unit vector — offsets the two flanking walls.
+      const nx = -dz / len;
+      const nz =  dx / len;
+
+      // Inset the wall ends that meet a room. The WALL_THICK/2 + PLAYER_RADIUS
+      // halo below extends the rect past the segment endpoint; without the
+      // inset that haloed rect pokes past the room wall plane into the
+      // doorway, leaving an L-corner NPCs snag on. Only the polyline's two
+      // room-meeting ends inset; interior bend joints keep full length.
+      // MUST match server Stitcher.computeConnectorWallSegments exactly.
+      const inset = Math.min(WALL_THICK / 2 + PLAYER_RADIUS, len * 0.4);
+      const ux = dx / len, uz = dz / len;
+      const aInset = (i === 0)               ? inset : 0;
+      const bInset = (i === poly.length - 2) ? inset : 0;
+      const iax = a.x + ux * aInset, iaz = a.z + uz * aInset;
+      const ibx = b.x - ux * bInset, ibz = b.z - uz * bInset;
+
+      // Each wall is a thick line segment; its AABB (the server's
+      // orientedSegmentToRect) is the collision rect. Halo-inflated by
+      // PLAYER_RADIUS to match the server's wall-slide grid expansion.
+      for (const side of [+1, -1] as const) {
+        const ax = iax + nx * half * side;
+        const az = iaz + nz * half * side;
+        const bx = ibx + nx * half * side;
+        const bz = ibz + nz * half * side;
+        const h  = WALL_THICK / 2;
+        rects.push({
+          minX: Math.min(ax, bx) - h - PLAYER_RADIUS,
+          maxX: Math.max(ax, bx) + h + PLAYER_RADIUS,
+          minZ: Math.min(az, bz) - h - PLAYER_RADIUS,
+          maxZ: Math.max(az, bz) + h + PLAYER_RADIUS,
+        });
+      }
+    }
+    return rects;
+  }
+
+  /**
+   * Walkable floor regions for a connector — one per polyline segment. A
+   * sloped segment (endpoints differ in Y) carries `y0`/`y1` along its run
+   * `axis` so `sampleFloorY` can lerp Y; a flat segment has `y0 === y1`,
+   * `axis: 'flat'`.
+   *
+   * Mirrors server Stitcher.computeConnectorFloorRegions — axis-aligned
+   * segments only (V0). The endpoint Y is assigned to the axis-min /
+   * axis-max edge so a movement query lerps Y correctly regardless of
+   * travel direction.
+   */
+  private _computeConnectorFloorRegions(connector: WireConnector): FloorRegion[] {
+    const regions: FloorRegion[] = [];
+    const poly = connector.polyline;
+    const half = connector.width / 2;
+
+    for (let i = 0; i < poly.length - 1; i++) {
+      const a = poly[i]!;
+      const b = poly[i + 1]!;
+      const dx = b.x - a.x;
+      const dz = b.z - a.z;
+      const len = Math.hypot(dx, dz);
+      if (len < AXIS_EPSILON) continue;
+
+      const alongX = Math.abs(dz) <= AXIS_EPSILON;
+      const alongZ = Math.abs(dx) <= AXIS_EPSILON;
+      if (!alongX && !alongZ) continue; // diagonal — future branch
+
+      if (alongX) {
+        const minX = Math.min(a.x, b.x);
+        const maxX = Math.max(a.x, b.x);
+        const yAtMinX = a.x <= b.x ? a.y : b.y;
+        const yAtMaxX = a.x <= b.x ? b.y : a.y;
+        regions.push({
+          minX, maxX,
+          minZ: a.z - half, maxZ: a.z + half,
+          y0: yAtMinX, y1: yAtMaxX,
+          axis: yAtMinX === yAtMaxX ? 'flat' : 'x',
+          ceilingY: Math.min(yAtMinX, yAtMaxX) + CONNECTOR_WALL_HEIGHT,
+        });
+      } else {
+        const minZ = Math.min(a.z, b.z);
+        const maxZ = Math.max(a.z, b.z);
+        const yAtMinZ = a.z <= b.z ? a.y : b.y;
+        const yAtMaxZ = a.z <= b.z ? b.y : a.y;
+        regions.push({
+          minX: a.x - half, maxX: a.x + half,
+          minZ, maxZ,
+          y0: yAtMinZ, y1: yAtMaxZ,
+          axis: yAtMinZ === yAtMaxZ ? 'flat' : 'z',
+          ceilingY: Math.min(yAtMinZ, yAtMaxZ) + CONNECTOR_WALL_HEIGHT,
+        });
+      }
+    }
+    return regions;
   }
 
   private _buildRoom(tmpl: WireTemplate): THREE.Group {

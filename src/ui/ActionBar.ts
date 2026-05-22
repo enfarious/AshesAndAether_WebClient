@@ -158,6 +158,22 @@ export class ActionBar {
     }
   }
 
+  /** Remove a slot's cooldown — the data entry AND its overlay/text DOM.
+   *  tick()'s natural-expiry path resets the overlay; any OUT-OF-BAND clear
+   *  (cast/channel cancel, blocked-cast rejection) must reset it the same
+   *  way, or the overlay element freezes at its last-painted scaleY — tick()
+   *  never repaints a slot that's no longer in the map — and the slot looks
+   *  stuck on cooldown forever even though it's perfectly usable. */
+  private _clearCooldown(slot: number): void {
+    this.cooldowns.delete(slot);
+    const el = this.slotEls[slot];
+    if (!el) return;
+    const overlay = el.querySelector<HTMLElement>('.ab-cd-overlay');
+    const textEl  = el.querySelector<HTMLElement>('.ab-cd-text');
+    if (overlay) overlay.style.transform = 'scaleY(0)';
+    if (textEl)  textEl.textContent = '';
+  }
+
   // ── Gamepad slot-focus cursor ──────────────────────────────────────────────
 
   /** Move focus to the previous slot (wraps). Wakes from null at slot 0. */
@@ -340,8 +356,24 @@ export class ActionBar {
       }
       this.cooldowns.set(slot, { remaining: duration, total: duration });
     } else {
-      this.cooldowns.delete(slot);
+      this._clearCooldown(slot);
     }
+  }
+
+  /** Clear an optimistic cooldown when the server reports the cast/channel
+   *  was cancelled (cast_break / channel_break). A cancelled cast committed
+   *  no server-side cooldown, so the optimistic CD set on press must be
+   *  dropped — otherwise the slot reads as on-cooldown for the full invented
+   *  duration and activateSlot's `cooldowns.has` guard locks it out. Slot
+   *  resolved like flashOutcome (abilityId → loadout, recent-press fallback
+   *  for canonical-id drift). */
+  clearCooldownOnCancel(abilityId: string): void {
+    let slot = this.player.activeLoadout.indexOf(abilityId);
+    if (slot < 0 && this._lastCastSlot !== null && performance.now() - this._lastCastAt < 3000) {
+      slot = this._lastCastSlot;
+    }
+    if (slot < 0) return;
+    this._clearCooldown(slot);
   }
 
   private _flashSlot(index: number, className: string): void {

@@ -154,6 +154,18 @@ export class WASDController {
   private movementCollider: ((fromX: number, fromZ: number, toX: number, toZ: number) => { x: number; z: number }) | null = null;
   setMovementCollider(fn: typeof this.movementCollider): void { this.movementCollider = fn; }
 
+  /** Optional client-side floor-Y sampler. In a deep dungeon the player
+   *  walks across terraced rooms + ramped/staired connectors; the server
+   *  sends a correct varying Y every tick but WASD prediction lags one
+   *  round-trip, so without this a ramp would show ~10 Hz stair-step Y
+   *  corrections. When wired, WASD prediction reads predicted Y from
+   *  `sampleFloorY(x,z)` (the same floor-region model the server uses)
+   *  instead of blindly copying the server's last Y. Returns null when the
+   *  query point is in no floor region (overworld, vault, mid-doorway) —
+   *  the caller then falls back to the server Y. */
+  private floorSampler: ((x: number, z: number) => number | null) | null = null;
+  setFloorSampler(fn: typeof this.floorSampler): void { this.floorSampler = fn; }
+
   constructor(
     private readonly camera:   OrbitCamera,
     private readonly socket:   SocketClient,
@@ -288,8 +300,14 @@ export class WASDController {
           this._localX = toX;
           this._localZ = toZ;
         }
-        // Y tracks server for terrain height
-        this._localY = this.player.position.y;
+        // Y tracking. In a deep dungeon a floor sampler is wired — predict
+        // Y from the floor-region model at the (resolved) predicted XZ so
+        // walking up a ramp stays smooth instead of stair-stepping on
+        // ~10 Hz server corrections. The sampler returns null outside any
+        // floor region (overworld, vault, mid-doorway between regions) —
+        // fall back to the server's authoritative Y there.
+        const sampledY = this.floorSampler?.(this._localX, this._localZ) ?? null;
+        this._localY = sampledY ?? this.player.position.y;
 
         // Drive the entity directly — no intermediary
         this._playerEntity?.drivePosition(this._localX, this._localY, this._localZ);

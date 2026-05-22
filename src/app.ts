@@ -457,6 +457,18 @@ export class App {
     this.wasd.setMovementCollider((fromX, fromZ, toX, toZ) =>
       this._roomPreview.resolveMovement(fromX, fromZ, toX, toZ),
     );
+    // Wire WASD's client-side floor-Y sampler to the preview's floor
+    // regions — keeps WASD-predicted Y smooth on deep-dungeon ramps/stairs.
+    // Returns null (so prediction falls back to server Y) until a dungeon
+    // preview is active; cleared when the preview clears.
+    this.wasd.setFloorSampler((x, z) => this._roomPreview.sampleFloorY(x, z));
+    // Wire the camera's deep-dungeon floor/ceiling Y clamp to the same
+    // preview regions — stops the orbit camera falling through dungeon
+    // floors. Samplers return null outside a dungeon, so it self-disables.
+    this.camera.setDungeonSamplers(
+      (x, z) => this._roomPreview.sampleFloorY(x, z),
+      (x, z) => this._roomPreview.sampleCeilingY(x, z),
+    );
     this.gamepad = new GamepadController(this.camera, this.socket, this.player, this.gamepadBindings, this.factory);
 
     // Asset loader status → loading screen
@@ -2321,8 +2333,15 @@ export class App {
       else this._routeEntityCastEnd(p.entityId);
     });
     this.router.onCastBreak((p) => {
-      if (p.entityId === this.player.id) this.hud?.breakCast();
-      else this._routeEntityCastEnd(p.entityId);
+      if (p.entityId === this.player.id) {
+        this.hud?.breakCast();
+        // Cancelled cast committed no server cooldown — drop the optimistic
+        // CD the ActionBar set on press, or the slot stays "on CD" for the
+        // full invented duration.
+        this.actionBar?.clearCooldownOnCancel(p.abilityId);
+      } else {
+        this._routeEntityCastEnd(p.entityId);
+      }
     });
 
     // Channel = same path, drain mode (1 → 0).
@@ -2338,8 +2357,12 @@ export class App {
       else this._routeEntityCastEnd(p.entityId);
     });
     this.router.onChannelBreak((p) => {
-      if (p.entityId === this.player.id) this.hud?.breakCast();
-      else this._routeEntityCastEnd(p.entityId);
+      if (p.entityId === this.player.id) {
+        this.hud?.breakCast();
+        this.actionBar?.clearCooldownOnCancel(p.abilityId);
+      } else {
+        this._routeEntityCastEnd(p.entityId);
+      }
     });
 
     this.hud.show();

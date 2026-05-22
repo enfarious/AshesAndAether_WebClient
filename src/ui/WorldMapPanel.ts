@@ -228,11 +228,13 @@ export class WorldMapPanel {
     requestAnimationFrame(() => this.root.classList.add('wm-visible'));
     this.visible = true;
 
-    // Instance zones (vault: / boss_arena:) have no real geography — show
-    // a friendly "no map" panel instead of fetching/rendering stale data
-    // from the player's previous overworld zone.
+    // Instance zones (vault: / boss_arena: / dungeon_entry:) have no real
+    // geography — show a friendly "no map" panel instead of fetching/
+    // rendering stale data from the player's previous overworld zone.
     const zoneId = this.world.zone?.id ?? '';
-    const isInstance = zoneId.startsWith('vault:') || zoneId.startsWith('boss_arena:');
+    const isInstance = zoneId.startsWith('vault:')
+      || zoneId.startsWith('boss_arena:')
+      || zoneId.startsWith('dungeon_entry:');
     const mapEl   = this.root.querySelector<HTMLElement>('#wm-map');
     const noMapEl = this.root.querySelector<HTMLElement>('#wm-no-map');
     if (mapEl)   mapEl.style.display   = isInstance ? 'none' : '';

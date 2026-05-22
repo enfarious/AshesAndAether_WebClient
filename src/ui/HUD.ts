@@ -50,10 +50,18 @@ export class HUD {
   private aetherFillEl:    HTMLElement | null = null;
   private aetherValueEl:   HTMLElement | null = null;
   private aetherTierEl:    HTMLElement | null = null;
+  private aetherRootEl:    HTMLElement | null = null;
   private activityBandEl:  HTMLElement | null = null;
   private bossStateRowEl:  HTMLElement | null = null;
   private bossStateLabelEl: HTMLElement | null = null;
   private bossStateEl:     HTMLElement | null = null;
+  private pvpRowEl:        HTMLElement | null = null;
+  private pvpStateEl:      HTMLElement | null = null;
+  /** Live PvP timer that refreshes "ARMING Xs" on the second. Cleared
+   *  when state stabilises to armed/idle (no countdown to render). */
+  private _pvpCountdownTimer: ReturnType<typeof setInterval> | null = null;
+  private _pvpCountdownEnds  = 0;
+  private _pvpCountdownPrefix = '';
   private _fpsFrames = 0;
   private _fpsTime   = 0;
   /** F9 — extended GPU/perf readout under the FPS line. */
@@ -681,6 +689,10 @@ export class HUD {
           <span class="hud-aether-activity-label" id="hud-aether-boss-label">ZONE BOSS</span>
           <span class="hud-aether-boss-state" id="hud-aether-boss-state">DORMANT</span>
         </div>
+        <div class="hud-aether-pvp" id="hud-aether-pvp-row" style="display:none;">
+          <span class="hud-aether-pvp-label">PVP</span>
+          <span class="hud-aether-pvp-state" id="hud-aether-pvp-state">ARMING 10s</span>
+        </div>
       </div>
 
       <style>
@@ -702,6 +714,42 @@ export class HUD {
           gap: 4px;
           pointer-events: none;
           font-family: var(--font-mono);
+          transition: border-color 0.3s ease-out, box-shadow 0.3s ease-out;
+        }
+        /* Open-PvP states. Armed = pulsing red border (you're hot, the
+         * world can hit you). Arming/Disarming = solid dimmed red so the
+         * countdown is visible without the strobe (anti-seizure +
+         * "transition pending" affordance). Idle = no decoration. */
+        .hud-aether.pvp-armed {
+          border-color: rgba(220, 70, 70, 0.95);
+          box-shadow: 0 0 14px rgba(220, 70, 70, 0.6), 0 2px 8px rgba(0,0,0,0.5);
+          animation: pvp-armed-pulse 1.2s ease-in-out infinite;
+        }
+        .hud-aether.pvp-arming,
+        .hud-aether.pvp-disarming {
+          border-color: rgba(180, 70, 70, 0.65);
+          box-shadow: 0 0 6px rgba(180, 70, 70, 0.35), 0 2px 8px rgba(0,0,0,0.5);
+        }
+        @keyframes pvp-armed-pulse {
+          0%, 100% { border-color: rgba(220, 70, 70, 0.95); box-shadow: 0 0 14px rgba(220, 70, 70, 0.6), 0 2px 8px rgba(0,0,0,0.5); }
+          50%      { border-color: rgba(255,110,110, 1.0); box-shadow: 0 0 22px rgba(255, 90, 90, 0.85), 0 2px 8px rgba(0,0,0,0.5); }
+        }
+        .hud-aether-pvp {
+          display: flex;
+          justify-content: space-between;
+          align-items: baseline;
+          font-size: 10px;
+          letter-spacing: 0.10em;
+          color: rgba(220, 80, 80, 0.85);
+        }
+        .hud-aether-pvp-label {
+          text-transform: uppercase;
+          color: rgba(220, 80, 80, 0.6);
+        }
+        .hud-aether-pvp-state {
+          font-weight: bold;
+          letter-spacing: 0.14em;
+          color: rgba(255, 130, 130, 0.95);
         }
         .hud-aether-label {
           font-size: 9px;
@@ -846,10 +894,13 @@ export class HUD {
     this.aetherFillEl    = el.querySelector<HTMLElement>('#hud-aether-fill')!;
     this.aetherValueEl   = el.querySelector<HTMLElement>('#hud-aether-value')!;
     this.aetherTierEl    = el.querySelector<HTMLElement>('#hud-aether-tier')!;
+    this.aetherRootEl    = el.querySelector<HTMLElement>('#hud-aether')!;
     this.activityBandEl  = el.querySelector<HTMLElement>('#hud-aether-activity-band')!;
     this.bossStateRowEl   = el.querySelector<HTMLElement>('#hud-aether-boss-row')!;
     this.bossStateLabelEl = el.querySelector<HTMLElement>('#hud-aether-boss-label')!;
     this.bossStateEl      = el.querySelector<HTMLElement>('#hud-aether-boss-state')!;
+    this.pvpRowEl         = el.querySelector<HTMLElement>('#hud-aether-pvp-row')!;
+    this.pvpStateEl       = el.querySelector<HTMLElement>('#hud-aether-pvp-state')!;
 
     // Release button
     el.querySelector<HTMLButtonElement>('#hud-death-release')!
@@ -1116,9 +1167,11 @@ export class HUD {
 
     const remaining = Math.max(0, Math.floor((dissolveAt - Date.now()) / 1000));
     if (remaining === 0) {
-      this.deathTimerEl.textContent = 'Corpse dissolving…';
-      // Client-side auto-release once the timer hits zero
-      this.socket.sendRespawn();
+      // No auto-release — the death screen has the explicit Release button
+      // and future respawn-location options will live alongside it.
+      // Surface that the corpse is dissolving but the player still chooses
+      // when to leave the death overlay.
+      this.deathTimerEl.textContent = 'Corpse dissolving — release when ready.';
       if (this.timerInterval !== null) {
         clearInterval(this.timerInterval);
         this.timerInterval = null;
@@ -1249,6 +1302,73 @@ export class HUD {
     this.aetherValueEl.textContent = clamped.toFixed(2);
     this.aetherTierEl.textContent  = label;
     this.aetherTierEl.style.color  = color;
+  }
+
+  /** Apply the open-PvP state to the AD widget. Idle hides the row +
+   *  clears the border. Combat-lock takes precedence over the state
+   *  enum — when locked, label shows "COMBAT Xs" with the seconds-to-clear
+   *  countdown (the user's primary affordance for "when can I leave").
+   *  Arming/disarming render their own countdown when not combat-locked. */
+  setPvpState(
+    state: 'idle' | 'arming' | 'armed' | 'disarming',
+    transitionSeconds: number,
+    combatLocked: boolean,
+    combatLockSeconds: number,
+  ): void {
+    if (!this.aetherRootEl || !this.pvpRowEl || !this.pvpStateEl) return;
+
+    if (this._pvpCountdownTimer) {
+      clearInterval(this._pvpCountdownTimer);
+      this._pvpCountdownTimer = null;
+    }
+
+    this.aetherRootEl.classList.remove('pvp-armed', 'pvp-arming', 'pvp-disarming');
+
+    // Combat-locked: pulse + countdown to clear, regardless of state enum.
+    // Position rules resume once the lock clears, so the widget will
+    // re-render to whatever state is next.
+    if (combatLocked) {
+      this.pvpRowEl.style.display = 'flex';
+      this.aetherRootEl.classList.add('pvp-armed');
+      this._pvpCountdownPrefix = 'COMBAT';
+      this._pvpCountdownEnds   = performance.now() + combatLockSeconds * 1000;
+      this._startPvpCountdown();
+      return;
+    }
+
+    if (state === 'idle') {
+      this.pvpRowEl.style.display = 'none';
+      return;
+    }
+    this.pvpRowEl.style.display = 'flex';
+
+    if (state === 'armed') {
+      this.aetherRootEl.classList.add('pvp-armed');
+      this.pvpStateEl.textContent = 'ARMED';
+      return;
+    }
+
+    // arming / disarming — solid dim border, transition countdown.
+    this.aetherRootEl.classList.add(state === 'arming' ? 'pvp-arming' : 'pvp-disarming');
+    this._pvpCountdownPrefix = state === 'arming' ? 'ARMING' : 'DISARMING';
+    this._pvpCountdownEnds   = performance.now() + transitionSeconds * 1000;
+    this._startPvpCountdown();
+  }
+
+  private _startPvpCountdown(): void {
+    const tick = () => {
+      if (!this.pvpStateEl) return;
+      const remaining = Math.max(0, Math.ceil((this._pvpCountdownEnds - performance.now()) / 1000));
+      this.pvpStateEl.textContent = `${this._pvpCountdownPrefix} ${remaining}s`;
+      if (remaining <= 0 && this._pvpCountdownTimer) {
+        // Server will push the final transition. Until then hold at 0
+        // so the row doesn't flicker out before the push arrives.
+        clearInterval(this._pvpCountdownTimer);
+        this._pvpCountdownTimer = null;
+      }
+    };
+    tick();
+    this._pvpCountdownTimer = setInterval(tick, 250);
   }
 
   /** Update the activity-band readout from the server's per-zone hysteretic

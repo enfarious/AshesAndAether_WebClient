@@ -195,6 +195,76 @@ export abstract class EntityObject {
   }
 
   /**
+   * Deep dungeon portal — standing-stone trilithon (two vertical stones +
+   * horizontal capstone) with a vertical sheet of violet aether-light
+   * between the pillars. Reads as a *gateway* in contrast to the vault
+   * portal's ground-rune-and-column. V0 placeholder until art lands.
+   */
+  static _addDeepDungeonPortalToGroup(group: THREE.Group): void {
+    const stoneMat = new THREE.MeshStandardMaterial({
+      color:     0x4a4036,
+      roughness: 0.82,
+      metalness: 0.08,
+    });
+
+    // Left + right standing stones — wide rectangular pillars.
+    const pillarGeo = new THREE.BoxGeometry(0.7, 3.4, 0.55);
+    const left = new THREE.Mesh(pillarGeo, stoneMat);
+    left.position.set(-1.4, 1.7, 0);
+    left.castShadow = true;
+    left.receiveShadow = true;
+    group.add(left);
+
+    const right = new THREE.Mesh(pillarGeo, stoneMat);
+    right.position.set(1.4, 1.7, 0);
+    right.castShadow = true;
+    right.receiveShadow = true;
+    group.add(right);
+
+    // Capstone — horizontal slab spanning the two pillars.
+    const capGeo = new THREE.BoxGeometry(3.6, 0.55, 0.75);
+    const cap = new THREE.Mesh(capGeo, stoneMat);
+    cap.position.set(0, 3.65, 0);
+    cap.castShadow = true;
+    cap.receiveShadow = true;
+    group.add(cap);
+
+    // Aether-light sheet between the pillars — additive blend so it reads
+    // as luminescent regardless of ambient light. Outer sheet is the soft
+    // glow, inner sheet is a brighter core.
+    const sheetGeo = new THREE.PlaneGeometry(2.1, 3.0);
+    const sheetMat = new THREE.MeshBasicMaterial({
+      color:       0xa070ff,
+      transparent: true,
+      opacity:     0.45,
+      side:        THREE.DoubleSide,
+      depthWrite:  false,
+      blending:    THREE.AdditiveBlending,
+    });
+    const sheet = new THREE.Mesh(sheetGeo, sheetMat);
+    sheet.position.set(0, 1.6, 0);
+    group.add(sheet);
+
+    const coreGeo = new THREE.PlaneGeometry(1.5, 2.4);
+    const coreMat = new THREE.MeshBasicMaterial({
+      color:       0xd4b8ff,
+      transparent: true,
+      opacity:     0.5,
+      side:        THREE.DoubleSide,
+      depthWrite:  false,
+      blending:    THREE.AdditiveBlending,
+    });
+    const core = new THREE.Mesh(coreGeo, coreMat);
+    core.position.set(0, 1.6, 0.02);  // slight Z offset to avoid z-fight with sheet
+    group.add(core);
+
+    // Soft point light at the base for area glow + ground tint.
+    const light = new THREE.PointLight(0xa070ff, 1.4, 10, 1.6);
+    light.position.set(0, 1.2, 0);
+    group.add(light);
+  }
+
+  /**
    * Hireling-console obelisk for vault entry rooms. A tapered four-sided
    * pillar with an emissive amber band — readable from across the room
    * as "the thing you press F on before stepping out of staging." Total

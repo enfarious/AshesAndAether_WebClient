@@ -3,6 +3,7 @@ import type { EntityRegistry } from '@/state/EntityRegistry';
 import type { SocketClient }   from '@/network/SocketClient';
 import type { Entity }         from '@/network/Protocol';
 import { ClientConfig }        from '@/config/ClientConfig';
+import { isEffectivelyHostile } from '@/entities/pvpHostility';
 
 /** How close the Approach button stops short of the target, in metres.
  *  Tuned for a melee-weapon-length gap — close enough to swing, not face-to-face. */
@@ -68,15 +69,24 @@ export class TargetWindow {
   /** Brief client-side spam guard after clicking Harvest. */
   private _harvestCooldown = false;
 
+  /** Hostility check that combines the server-pushed `hostile` flag with
+   *  the open-PvP rule (armed peer + non-guildmate when self is also
+   *  armed). Used to decide whether the Attack / Disengage rows are
+   *  visible for a target. */
+  private _isAttackable(e: Entity): boolean {
+    if (e.type === 'mob' || e.type === 'wildlife') return true;
+    return isEffectivelyHostile(e, this.player.pvpArmed, this.player.guildId);
+  }
+
   private readonly _menu: MenuItem[] = [
     {
-      // Attack — mobs, wildlife, and any entity explicitly flagged hostile.
-      // Hidden when this entity is already our auto-attack target; the
-      // Disengage item below takes its place so the same row toggles between
-      // engage/disengage based on combat state.
+      // Attack — mobs, wildlife, and any entity hostile to us (server flag
+      // OR open-PvP rule). Hidden when this entity is already our auto-
+      // attack target; the Disengage item below takes its place so the
+      // same row toggles between engage/disengage based on combat state.
       label:   'Attack',
       visible: e => (
-        !!(e.hostile || e.type === 'mob' || e.type === 'wildlife')
+        this._isAttackable(e)
         && this.player.combat.autoAttackTarget !== e.id
       ),
       execute: e => {
@@ -95,7 +105,7 @@ export class TargetWindow {
       // handleCombatAction handles by clearing autoAttackTarget.
       label:   'Disengage',
       visible: e => (
-        !!(e.hostile || e.type === 'mob' || e.type === 'wildlife')
+        this._isAttackable(e)
         && this.player.combat.autoAttackTarget === e.id
       ),
       execute: e => this.socket.sendCombatAction('disengage', e.id),
@@ -610,12 +620,16 @@ export class TargetWindow {
 
     // Menu — only rebuild when the set of visible actions could have changed
     // (target swap, type change, hostile flag change, crossing the Interact
-    // range threshold, or engaging/disengaging auto-attack on this entity).
+    // range threshold, engaging/disengaging auto-attack, OR a PvP armed-
+    // state change on either side that flips effective hostility).
     // HP/distance-within-band ticks skip this.
     const inParty = entity ? this.player.partyMembers.some(m => m.id === entity.id) : false;
     const inInteractRange = entity ? this._distanceTo(entity) <= INTERACT_MAX_DISTANCE : false;
     const isAutoAttackTarget = entity ? this.player.combat.autoAttackTarget === entity.id : false;
-    const newKey = `${id}|${entity?.type ?? ''}|${entity?.hostile ?? false}|${entity?.isAlive ?? true}|${entity?.interactive ?? ''}|${inParty}|${inInteractRange}|${isAutoAttackTarget}`;
+    const effectiveHostile = entity
+      ? isEffectivelyHostile(entity, this.player.pvpArmed, this.player.guildId)
+      : false;
+    const newKey = `${id}|${entity?.type ?? ''}|${effectiveHostile}|${entity?.isAlive ?? true}|${entity?.interactive ?? ''}|${inParty}|${inInteractRange}|${isAutoAttackTarget}`;
     if (newKey !== this._menuKey) {
       this._menuKey = newKey;
       this._rebuildMenu(entity ?? null);

@@ -1,12 +1,20 @@
 /**
  * VaultCompleteToast — celebratory center-screen banner shown when a vault
- * is cleared. Bigger and more dramatic than SystemToast: scales in, holds
- * a few seconds, fades. Player still sees the chat message and the spawned
- * exit portal afterward.
+ * (or deep dungeon) is cleared. Bigger and more dramatic than SystemToast:
+ * scales in, holds a few seconds, fades. Player still sees the chat message
+ * and the spawned exit portal afterward.
+ *
+ * `headline` / `sub` default to the vault flavour; the deep-dungeon
+ * completion path overrides them ("DUNGEON CLEARED") so the same toast
+ * serves both without forking a near-identical component.
  */
 export interface VaultCompleteToastData {
   goldAwarded: number;
   hasPortal:   boolean;
+  /** Override the big headline line. Defaults to 'VAULT CLEARED'. */
+  headline?:   string;
+  /** Override the sub line. Defaults to the gold / "vault is yours" text. */
+  sub?:        string;
 }
 
 export class VaultCompleteToast {
@@ -40,14 +48,14 @@ export class VaultCompleteToast {
 
     const headline = document.createElement('div');
     headline.className = 'vct-headline';
-    headline.textContent = 'VAULT CLEARED';
+    headline.textContent = data.headline ?? 'VAULT CLEARED';
     el.appendChild(headline);
 
     const sub = document.createElement('div');
     sub.className = 'vct-sub';
-    sub.textContent = data.goldAwarded > 0
+    sub.textContent = data.sub ?? (data.goldAwarded > 0
       ? `+${data.goldAwarded.toLocaleString()} gold`
-      : 'The vault is yours.';
+      : 'The vault is yours.');
     el.appendChild(sub);
 
     if (data.hasPortal) {

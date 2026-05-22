@@ -29,6 +29,9 @@ interface CurrentHire {
 
 export interface HirelingPanelPayload {
   stagingActive:   boolean;
+  /** True only for dungeon-entry staging — surfaces the "Begin Descent"
+   *  button. False for vault staging and inside the dungeon proper. */
+  canDescend:      boolean;
   humans:          number;
   companions:      number;
   hirelingsActive: number;
@@ -74,6 +77,7 @@ export class HirelingPanel {
   private bodyEl:  HTMLElement;
   private titleEl: HTMLElement;
   private subEl:   HTMLElement;
+  private descendBtn!: HTMLButtonElement;
   private cleanup: (() => void)[] = [];
   private _open = false;
 
@@ -273,6 +277,7 @@ export class HirelingPanel {
       .hp-footer {
         display: flex;
         justify-content: flex-end;
+        gap: 8px;
         padding-top: 6px;
         border-top: 1px solid rgba(120, 90, 55, 0.25);
       }
@@ -288,6 +293,13 @@ export class HirelingPanel {
         text-transform: uppercase;
       }
       .hp-footer button:hover { background: rgba(100, 75, 50, 0.4); }
+      .hp-footer .hp-descend {
+        background: rgba(255,140,50,0.85);
+        border-color: rgba(255,190,120,0.9);
+        color: #1a140d;
+        font-weight: 700;
+      }
+      .hp-footer .hp-descend:hover { background: rgba(255,165,80,0.95); }
       .hp-empty {
         font-size: 12px;
         color: rgba(180,165,140,0.55);
@@ -305,9 +317,22 @@ export class HirelingPanel {
     this.subEl.className = 'hp-sub';
     box.appendChild(this.bodyEl);
 
-    // Footer with explicit Close button (Esc also works).
+    // Footer: Begin Descent (dungeon staging only) + Close (Esc also works).
     const footer = document.createElement('div');
     footer.className = 'hp-footer';
+
+    // Begin Descent — shown only for dungeon-entry staging (canDescend).
+    // Fires /dungeon descend; the server gates it to the party leader and
+    // tells non-leaders why. Closes the panel — descent teleports the party.
+    this.descendBtn = document.createElement('button');
+    this.descendBtn.className = 'hp-descend';
+    this.descendBtn.textContent = 'Begin Descent';
+    this.descendBtn.addEventListener('click', () => {
+      this.socket.sendCommand('/dungeon descend');
+      this.hide();
+    });
+    footer.appendChild(this.descendBtn);
+
     const closeBtn = document.createElement('button');
     closeBtn.textContent = 'Close';
     closeBtn.addEventListener('click', () => this.hide());
@@ -325,6 +350,9 @@ export class HirelingPanel {
       `${used}/${p.partyCap} squad slots used — ${p.slotsRemaining} remaining   ` +
       `(humans ${p.humans} · companions ${p.companions} · hirelings ${p.hirelingsActive})` +
       (p.stagingActive ? '' : '   ⚠ staging committed — roster locked');
+
+    // Begin Descent button — dungeon-entry staging only.
+    this.descendBtn.style.display = p.canDescend ? '' : 'none';
 
     this.bodyEl.innerHTML = '';
 

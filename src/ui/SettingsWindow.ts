@@ -58,6 +58,7 @@ const KEY_SFX_VOL      = 'aa_sfx_volume';
 const KEY_TREE_RANGE   = 'aa_tree_visible_range';
 const KEY_BEACON_DETAIL = 'aa_beacon_detail';
 const KEY_MIASMA_QUALITY = 'aa_miasma_quality';
+const KEY_MIASMA_SUBDIVISIONS = 'aa_miasma_subdivisions';
 const KEY_MIASMA_RANGE   = 'aa_miasma_range';
 // Nameplate keys
 const KEY_NP_SELF_MODE   = 'aa_np_self_mode';
@@ -437,31 +438,47 @@ export class SettingsWindow {
       },
     }));
 
-    // Miasma Fog — quality preset for the ground-fog plane. 'Off' skips
-    // the fog entirely (no plane constructed). Higher tiers conform to
-    // terrain ridges at distance more tightly. App.ts disposes/recreates
-    // the fog on change.
-    const miasmaLevels: Array<{ id: 'off' | 'low' | 'med' | 'high' | 'ultra'; label: string }> = [
-      { id: 'off',   label: 'Off'   },
-      { id: 'low',   label: 'Low'   },
-      { id: 'med',   label: 'Med'   },
-      { id: 'high',  label: 'High'  },
-      { id: 'ultra', label: 'Ultra' },
-    ];
-    const initialMiasma = (localStorage.getItem(KEY_MIASMA_QUALITY) ?? 'med') as typeof miasmaLevels[number]['id'];
-    if (miasmaLevels.some((m) => m.id === initialMiasma)) {
-      ClientConfig.miasmaQuality = initialMiasma;
+    // Miasma Fog — per-axis subdivisions for the ground-fog plane. 0 =
+    // off (no plane constructed). Total verts = (n+1)². Named tiers were:
+    // Low 64, Med 128, High 192, Ultra 256 — slider keeps continuous
+    // access INCLUDING absurd values (1024+ = millions of verts) for
+    // visual testing. App.ts disposes/recreates the fog on change.
+    //
+    // On boot: prefer the numeric override saved by the slider; fall
+    // back to the old enum tier from the pre-slider settings store, so
+    // existing users don't get reset to default.
+    const savedSubdiv = localStorage.getItem(KEY_MIASMA_SUBDIVISIONS);
+    let initialSubdiv: number;
+    if (savedSubdiv !== null && !Number.isNaN(Number(savedSubdiv))) {
+      initialSubdiv = Math.max(0, Math.min(2048, Math.floor(Number(savedSubdiv))));
+      ClientConfig.miasmaSubdivisionsOverride = initialSubdiv;
+    } else {
+      const legacyTier = (localStorage.getItem(KEY_MIASMA_QUALITY) ?? 'med') as
+        'off' | 'low' | 'med' | 'high' | 'ultra';
+      ClientConfig.miasmaQuality = legacyTier;
+      initialSubdiv = ClientConfig.miasmaSubdivisions();
     }
-    page.appendChild(this._buildPresetRow({
+    page.appendChild(this._buildSlider({
       label: 'Miasma Fog',
-      presets: [0, 1, 2, 3, 4],
-      initial: miasmaLevels.findIndex((m) => m.id === ClientConfig.miasmaQuality),
-      format: (v) => miasmaLevels[v]?.label ?? '?',
+      min: 0, max: 2048, step: 8,
+      initial: initialSubdiv,
+      format: (v) => {
+        if (v <= 0) return 'Off';
+        // Label hints at the named tiers + flags the absurd zone for
+        // anyone yanking the slider all the way over.
+        const tier = v < 32 ? ' (sparse)'
+                   : v < 96 ? ' (low)'
+                   : v < 160 ? ' (med)'
+                   : v < 224 ? ' (high)'
+                   : v < 320 ? ' (ultra)'
+                   : v < 768 ? ' (testing)'
+                   : ' (absurd)';
+        return `${v}²${tier}`;
+      },
       onChange: (v) => {
-        const tier = miasmaLevels[v]?.id;
-        if (!tier) return;
-        localStorage.setItem(KEY_MIASMA_QUALITY, tier);
-        ClientConfig.miasmaQuality = tier;
+        const n = Math.max(0, Math.min(2048, Math.floor(v)));
+        localStorage.setItem(KEY_MIASMA_SUBDIVISIONS, String(n));
+        ClientConfig.miasmaSubdivisionsOverride = n;
         this.callbacks.onMiasmaQualityChange();
       },
     }));

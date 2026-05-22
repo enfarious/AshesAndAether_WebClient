@@ -3,6 +3,7 @@ import { EntityObject } from './EntityObject';
 import { HeadingIndicator } from './HeadingIndicator';
 import type { CharacterState } from '@/network/Protocol';
 import type { HeightmapService } from '@/world/HeightmapService';
+import type { BuildingCollider } from '@/world/BuildingCollider';
 
 /**
  * PlayerMoveMode — exactly one position source has authority per mode.
@@ -146,6 +147,11 @@ export class PlayerEntity extends EntityObject {
    */
   private _treeQuery: ((x: number, z: number, rSq: number) => Array<{ x: number; z: number }>) | null = null;
 
+  /** Continuous overworld building collision — mirrors the server's polygon
+   *  collision so WASD prediction agrees with authority. Null in vault zones
+   *  (and before load): drivePosition then falls back to the GLB mesh ray. */
+  private _buildingCollider: BuildingCollider | null = null;
+
   /** Combined trunk + player exclusion radius — must match server CollisionSystem. */
   private static readonly TREE_EXCL_R    = 1.0;  // TREE_TRUNK_RADIUS(0.5) + PLAYER_RADIUS(0.5)
   private static readonly TREE_SEARCH_SQ = 4.0;  // search 2 m around proposed position
@@ -281,6 +287,12 @@ export class PlayerEntity extends EntityObject {
   /** Wire up the tree position query from ForestRenderer. */
   setTreeQuery(fn: (x: number, z: number, rSq: number) => Array<{ x: number; z: number }>): void {
     this._treeQuery = fn;
+  }
+
+  /** Wire the continuous overworld building collider. Pass null in vault /
+   *  non-OSM zones — drivePosition then falls back to the GLB mesh raycast. */
+  setBuildingCollider(c: BuildingCollider | null): void {
+    this._buildingCollider = c;
   }
 
   /**
@@ -460,14 +472,29 @@ export class PlayerEntity extends EntityObject {
     const elev0 = this._getGroundHeight(x, z);
     if (elev0 !== null) y = elev0;
 
-    // 2. Wall collision — clip movement if a wall is ahead
-    const clipped = this._clipMovement(x, z);
-    if (clipped) {
-      x = clipped.x;
-      z = clipped.z;
-      // Re-sample at clipped position
-      const elevC = this._getGroundHeight(x, z);
-      if (elevC !== null) y = elevC;
+    // 2. Wall collision. Overworld: continuous building-polygon collision —
+    //    identical math + data to the server, so prediction agrees with
+    //    authority (no rubber-band, true corners). Vault / non-OSM zones
+    //    have no collider loaded → fall back to the GLB mesh raycast.
+    if (this._buildingCollider?.ready) {
+      const resolved = this._buildingCollider.resolveMovement(
+        this.object3d.position.x, this.object3d.position.z, x, z,
+      );
+      if (resolved.x !== x || resolved.z !== z) {
+        x = resolved.x;
+        z = resolved.z;
+        const elevC = this._getGroundHeight(x, z);
+        if (elevC !== null) y = elevC;
+      }
+    } else {
+      const clipped = this._clipMovement(x, z);
+      if (clipped) {
+        x = clipped.x;
+        z = clipped.z;
+        // Re-sample at clipped position
+        const elevC = this._getGroundHeight(x, z);
+        if (elevC !== null) y = elevC;
+      }
     }
 
     // 3. Tree collision — analytical cylinder push-out (matches server)

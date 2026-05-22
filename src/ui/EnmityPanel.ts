@@ -189,6 +189,12 @@ export class EnmityPanel {
         padding: 2px 0;
         max-height: 200px;
         overflow-y: auto;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+
+      .enmity-body::-webkit-scrollbar {
+        display: none;
       }
 
       .enmity-row {

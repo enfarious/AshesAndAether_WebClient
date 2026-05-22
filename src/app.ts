@@ -19,6 +19,7 @@ import { AoEPreviewIndicator } from '@/entities/AoEPreviewIndicator';
 import { TelegraphRenderer } from '@/entities/TelegraphRenderer';
 import { NameplateManager } from '@/entities/NameplateManager';
 import { VaultStagingMarker } from '@/vault/VaultStagingMarker';
+import { RoomTemplatePreview } from '@/dungeons/RoomTemplatePreview';
 import { OrbitCamera }        from '@/camera/OrbitCamera';
 import { CameraInput }        from '@/camera/CameraInput';
 import { ClickMoveController } from '@/input/ClickMoveController';
@@ -61,6 +62,7 @@ import { BuildPanel }         from '@/ui/BuildPanel';
 import { RegistrationModal }  from '@/ui/RegistrationModal';
 import { HirelingPanel }      from '@/ui/HirelingPanel';
 import { ChoiceModal }        from '@/ui/ChoiceModal';
+import { PostFightScoreboardModal } from '@/ui/PostFightScoreboardModal';
 import { MerchantPanel }      from '@/ui/MerchantPanel';
 import { CaravanPanel }       from '@/ui/CaravanPanel';
 import { DummyPanel }         from '@/ui/DummyPanel';
@@ -86,6 +88,7 @@ import { WaterRenderer }      from '@/world/WaterRenderer';
 import { yieldToBrowser }     from '@/world/yieldUtil';
 import { ForestDebugRenderer } from '@/world/ForestDebugRenderer';
 import { ForestRenderer }      from '@/world/ForestRenderer';
+import { BuildingCollider }    from '@/world/BuildingCollider';
 import { VaultRenderer }      from '@/world/VaultRenderer';
 import type { VaultTileData } from '@/world/VaultRenderer';
 import { PlacementMode }      from '@/village/PlacementMode';
@@ -132,6 +135,10 @@ export class App {
   private telegraphs:    TelegraphRenderer;
   private nameplates:    NameplateManager;
   private stagingMarker: VaultStagingMarker;
+  private _roomPreview:  RoomTemplatePreview;
+  /** Continuous overworld building collision — loaded per zone, wired into
+   *  the PlayerEntity so WASD prediction matches the server. */
+  private readonly _buildingCollider = new BuildingCollider();
   private corpses: CorpseSystem;
   private weather: WeatherEffects;
   private clouds:  CloudLayer;
@@ -197,6 +204,7 @@ export class App {
   private registrationModal: RegistrationModal  | null = null;
   private hirelingPanel:     HirelingPanel      | null = null;
   private choiceModal:       ChoiceModal        | null = null;
+  private fightScoreboardModal: PostFightScoreboardModal | null = null;
   private merchantPanel:     MerchantPanel      | null = null;
   private dummyPanel:        DummyPanel         | null = null;
   private caravanPanel:      CaravanPanel       | null = null;
@@ -432,6 +440,7 @@ export class App {
     // ticks it.
     this.scene.scene.add(this.nameplates.plateContainer);
     this.stagingMarker  = new VaultStagingMarker(this.scene.scene, this.router);
+    this._roomPreview   = new RoomTemplatePreview(this.scene.scene, this.socket, this.camera);
     this._forestRenderer = new ForestRenderer(this.scene.scene, this.entities);
     this.corpses = new CorpseSystem(this.scene.scene, this.entities);
     this.weather = new WeatherEffects(this.scene.scene);
@@ -442,6 +451,12 @@ export class App {
       canvas, this.camera, this.socket, this.player, this.entities, this.factory,
     );
     this.wasd = new WASDController(this.camera, this.socket, this.player, this.entities, this.factory);
+    // Wire WASD's client-side movement clamp to the preview's wall rects.
+    // No-op until a preview is active (rect list is empty); cleared when
+    // the preview clears.
+    this.wasd.setMovementCollider((fromX, fromZ, toX, toZ) =>
+      this._roomPreview.resolveMovement(fromX, fromZ, toX, toZ),
+    );
     this.gamepad = new GamepadController(this.camera, this.socket, this.player, this.gamepadBindings, this.factory);
 
     // Asset loader status → loading screen
@@ -579,6 +594,28 @@ export class App {
         if (data?.id) this.disposableBeacons?.removeBeacon(data.id);
         return;
       }
+    });
+
+    // ── PvP state transitions (per-character; drives AD widget pulse) ─
+    this.socket.on('pvp_state', (payload: unknown) => {
+      const p = payload as {
+        state?: 'idle' | 'arming' | 'armed' | 'disarming';
+        transitionSeconds?: number;
+        combatLocked?: boolean;
+        combatLockSeconds?: number;
+      } | undefined;
+      if (!p || typeof p.state !== 'string') return;
+      this.hud?.setPvpState(
+        p.state,
+        p.transitionSeconds ?? 0,
+        p.combatLocked === true,
+        p.combatLockSeconds ?? 0,
+      );
+      // Mirror the armed boolean onto PlayerState so the client-side
+      // hostility classifier (NameplateManager + TargetWindow +
+      // TabTargetService) can compare against self when classifying
+      // peers as PvP enemies.
+      this.player.setPvpArmed(p.state === 'armed');
     });
 
     // ── Aether Density (1Hz server push of player's local DangerMap value) ─
@@ -1010,6 +1047,9 @@ export class App {
       this.wasd.setPlayerEntity(pe);
       this.gamepad.setPlayerEntity(pe);
       this.clickMove.setPlayerEntity(pe);
+      // Stable collider instance — its footprints reload per zone; the PE
+      // just holds the reference. Re-applied here whenever the PE swaps.
+      pe?.setBuildingCollider(this._buildingCollider);
       this._wiredPe = pe;
       // PE swap → new PE has no deps applied. Invalidate dep tracking so the
       // checks below re-apply each one to the new PE.
@@ -1475,7 +1515,8 @@ export class App {
         // so arena zones inherited the wrong heightmap and the camera
         // clamped to junk elevations from a different zone's terrain.
         const instanceZone = this.world.zone?.id.startsWith('vault:')
-          || this.world.zone?.id.startsWith('boss_arena:');
+          || this.world.zone?.id.startsWith('boss_arena:')
+          || this.world.zone?.id.startsWith('dungeon_entry:');
         if (instanceZone) {
           this._heightmap = null;
           this.clickMove.setHeightmap(null);
@@ -1731,6 +1772,18 @@ export class App {
         });
       });
 
+      // Deep-dungeon completion banner — reuses the vault toast component
+      // with a dungeon-flavoured headline. No reward / no portal (Phase 2
+      // completion is banner-only; the server ejects the party shortly).
+      this.router.onDungeonComplete(p => {
+        this.vaultCompleteToast!.show({
+          goldAwarded: 0,
+          hasPortal:   false,
+          headline:    'DUNGEON CLEARED',
+          sub:         p.message ?? 'The dungeon is yours.',
+        });
+      });
+
       // Level-up celebration toast (player only — companion shows in chat already).
       if (!this.levelUpToast) this.levelUpToast = new LevelUpToast(this.uiRoot);
       this.router.onExperienceGained(p => {
@@ -1754,7 +1807,16 @@ export class App {
       this.router.onWorldEntry(() => {
         if (forestTimer) { clearTimeout(forestTimer); forestTimer = null; }
         if (dismissForest) { dismissForest(); dismissForest = null; }
-        if (this.world.zone?.id.startsWith('vault:')) return;
+        // Synthetic instance zones (vault / arena / dungeon staging +
+        // instance) have no wildlife sim connection, so the forest never
+        // "finishes growing" and the toast would stick around all session.
+        const zoneId = this.world.zone?.id ?? '';
+        if (
+          zoneId.startsWith('vault:')
+          || zoneId.startsWith('boss_arena:')
+          || zoneId.startsWith('dungeon_entry:')
+          || zoneId.startsWith('deep_dungeon:')
+        ) return;
         forestTimer = setTimeout(() => {
           forestTimer = null;
           dismissForest = this.systemToast!.showPersistent(
@@ -1792,6 +1854,14 @@ export class App {
       // bounty / NPC dialog / etc. list-select flow.
       this.choiceModal = new ChoiceModal(this.uiRoot, this.socket);
       this.modalStack.register(this.choiceModal);
+    }
+    if (!this.fightScoreboardModal) {
+      // Post-fight scoreboard — opens on `open_fight_scoreboard` after
+      // any boss (zone/region/world) resolves. Tabs for DPS/HPS/Tank/
+      // Debuffs surface per-participant contribution. Single "Return to
+      // World" button + Esc/backdrop close.
+      this.fightScoreboardModal = new PostFightScoreboardModal(this.uiRoot, this.socket);
+      this.modalStack.register(this.fightScoreboardModal);
     }
     if (!this.merchantPanel) {
       // Listens for `open_merchant_panel` (F-key on vendor NPC + on
@@ -2405,6 +2475,23 @@ export class App {
       this.camera.setWorldRoot(null);
     }
 
+    // Drop building-collision footprints from the previous zone. The
+    // overworld path reloads them further down; vault / staging / dungeon
+    // zones early-return before that — without this clear they keep
+    // colliding against the last overworld's building polygons (invisible
+    // walls inside the instance).
+    this._buildingCollider.clear();
+
+    // Clear stale room geometry + its client-side collision when leaving a
+    // dungeon / staging instance for a normal zone — otherwise the room
+    // meshes and their collisionRects (which feed WASD prediction) linger,
+    // leaving invisible dungeon walls in the overworld. Instance zones are
+    // skipped: the server re-pushes `preview_room` on join, and clearing
+    // here would race that push.
+    if (!zoneId.startsWith('dungeon_entry:') && !zoneId.startsWith('deep_dungeon:')) {
+      this._roomPreview.clear();
+    }
+
     // Village zones use procedural terrain instead of server-hosted GLBs
     if (zoneId.startsWith('village:')) {
       this._buildVillageTerrain();
@@ -2442,6 +2529,47 @@ export class App {
       // off-screen vault hall behind walls. No occlusion culling in Three.js.
       this.scene.setIndoorMode(true, this.camera.getCamera());
       await this._buildVaultTerrain(zoneId);
+      this._assetsLoaded = true;
+      this._maybeFinishLoading();
+      return;
+    }
+
+    // Deep dungeon staging — same indoor treatment as vault but no terrain
+    // to build for V0. Player loads in around the obelisk; admin
+    // /preview-room (and, later, the stitched dungeon geometry) fills the
+    // space. Camera distance + setIndoorMode together pull the camera in
+    // so previewed rooms eyeball honestly instead of via the outdoor 50m
+    // third-person framing.
+    if (zoneId.startsWith('dungeon_entry:')) {
+      this.beacons?.setVisible(false);
+      this.guildBeacons?.setVisible(false);
+      this.disposableBeacons?.setVisible(false);
+      this.playerCorpses?.setVisible(false);
+      this.harvestNodes?.setVisible(false);
+      this.rockRenderer?.setVisible(false);
+      this.miasmaFog?.setVisible(false);
+      this.clouds.setVisible(false);
+      this.minimap?.hide();
+      this.scene.setIndoorMode(true, this.camera.getCamera());
+      // Match vault's tight indoor distance — without this, the camera
+      // inherits the previous zone's distance (50m overworld) and shoots
+      // above any reasonable ceiling.
+      this.camera.setDistance(15);
+      this._assetsLoaded = true;
+      this._maybeFinishLoading();
+      return;
+    }
+
+    // Deep dungeon instance — the stitched rooms render via the preview_room
+    // path (RoomTemplatePreview), independent of this asset load. Skip the
+    // overworld asset chain entirely (no forest / wildlife / terrain GLBs —
+    // a dungeon isn't a living biome) and pull the camera in like staging so
+    // it sits below the room ceilings instead of shooting over them at the
+    // outdoor 50m distance. Room floors + room lights still render.
+    if (zoneId.startsWith('deep_dungeon:')) {
+      this.minimap?.hide();
+      this.scene.setIndoorMode(true, this.camera.getCamera());
+      this.camera.setDistance(15);
       this._assetsLoaded = true;
       this._maybeFinishLoading();
       return;
@@ -2600,6 +2728,12 @@ export class App {
       } catch (err) {
         console.warn('[App] Tree manifest fetch failed:', err);
       }
+
+      // Continuous building collision — fetch world-space footprints so WASD
+      // prediction collides against the same polygons the server does. Non-OSM
+      // zones return empty → collider inert → drivePosition falls back to the
+      // GLB mesh raycast. load() swallows its own errors (never throws).
+      await this._buildingCollider.load(zoneId);
     } catch (err) {
       console.error('[App] Zone asset load failed:', err);
     }

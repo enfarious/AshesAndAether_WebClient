@@ -152,6 +152,13 @@ export class PlayerState {
   private _guildBonuses: { corruptionResistPercent: number; xpBonusPercent: number } | null = null;
   private _guildMembers:       GuildMemberInfo[] = [];
 
+  // ── Open-PvP ────────────────────────────────────────────────────────────────
+  /** True while the server has us in the `armed` state (mirrored from
+   *  pvp_state pushes). Combined with `guildId` + each peer's `pvpArmed`
+   *  to compute client-side hostility — drives nameplate color, target
+   *  Attack button, tab-target cycling. */
+  private _pvpArmed: boolean = false;
+
   // ── Enmity ──────────────────────────────────────────────────────────────────
   private _enmityList: EnmityEntry[] = [];
 
@@ -262,6 +269,16 @@ export class PlayerState {
   get guildId():          string | null          { return this._guildId; }
   get guildName():        string | null          { return this._guildName; }
   get guildTag():         string | null          { return this._guildTag; }
+  /** Open-PvP armed state. Set via `setPvpArmed` from the pvp_state event
+   *  handler in app.ts. Idle/arming/disarming all read false; only
+   *  `state === 'armed'` flips this true. */
+  get pvpArmed():         boolean                { return this._pvpArmed; }
+
+  setPvpArmed(armed: boolean): void {
+    if (this._pvpArmed === armed) return;
+    this._pvpArmed = armed;
+    this._notify();
+  }
   get guildDescription(): string | null          { return this._guildDescription; }
   get guildMotto():       string | null          { return this._guildMotto; }
   get guildMemberCount(): number                 { return this._guildMemberCount; }

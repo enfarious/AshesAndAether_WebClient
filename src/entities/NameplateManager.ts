@@ -6,6 +6,7 @@ import type { Entity } from '@/network/Protocol';
 import type { EntityObject } from './EntityObject';
 import { ClientConfig } from '@/config/ClientConfig';
 import { computeConTier, NOTORIOUS_READOUT, aggroNameColor, type ConReadout } from './ConTier';
+import { isPvpHostileToSelf } from './pvpHostility';
 
 /**
  * NameplateManager — owns the CSS2DRenderer, builds and updates one DOM
@@ -273,10 +274,12 @@ export class NameplateManager {
     }
     if (!existing) { this._onAdd(entity); return; }
 
-    const viewerLevel = this.playerState.level;
-    const isSelf      = entity.id === this.registry.playerId;
-    const isParty     = this.playerState.partyMembers.some(m => m.id === entity.id);
-    existing.render(entity, { isSelf, isParty, isTarget, viewerLevel });
+    const viewerLevel    = this.playerState.level;
+    const isSelf         = entity.id === this.registry.playerId;
+    const isParty        = this.playerState.partyMembers.some(m => m.id === entity.id);
+    const viewerPvpArmed = this.playerState.pvpArmed;
+    const viewerGuildId  = this.playerState.guildId;
+    existing.render(entity, { isSelf, isParty, isTarget, viewerLevel, viewerPvpArmed, viewerGuildId });
   }
 
   private _refreshAll(): void {
@@ -326,10 +329,14 @@ export class NameplateManager {
 // ── Nameplate (single plate) ──────────────────────────────────────────────
 
 interface RenderContext {
-  isSelf:      boolean;
-  isParty:     boolean;
-  isTarget:    boolean;
-  viewerLevel: number | undefined;
+  isSelf:         boolean;
+  isParty:        boolean;
+  isTarget:       boolean;
+  viewerLevel:    number | undefined;
+  /** Viewer's own armed flag — required for the open-PvP hostility
+   *  classifier (both sides armed + non-guild = hostile). */
+  viewerPvpArmed: boolean;
+  viewerGuildId:  string | null;
 }
 
 class Nameplate {
@@ -442,13 +449,18 @@ class Nameplate {
   render(entity: Entity, ctx: RenderContext): void {
     // ── Aggro / friendly classification ────────────────────────────────
     const type        = (entity.type ?? '').toLowerCase();
-    const isFriendly  = ctx.isSelf
-                        || ctx.isParty
-                        || type === 'player'
-                        || type === 'companion'
-                        || type === 'hireling'
-                        || type === 'npc'
-                        || entity.disposition === 'friendly';
+    // Open-PvP: armed non-guildmate peers flip from friendly to hostile.
+    // Takes precedence over the "all players are friendly" default.
+    const pvpHostile  = isPvpHostileToSelf(entity, ctx.viewerPvpArmed, ctx.viewerGuildId);
+    const isFriendly  = !pvpHostile && (
+                          ctx.isSelf
+                          || ctx.isParty
+                          || type === 'player'
+                          || type === 'companion'
+                          || type === 'hireling'
+                          || type === 'npc'
+                          || entity.disposition === 'friendly'
+                        );
 
     // ── Name (with guild tag for non-party players) ────────────────────
     let displayName = entity.name ?? '';

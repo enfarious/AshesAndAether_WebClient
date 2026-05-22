@@ -51,6 +51,11 @@ export class OrbitCamera {
    *  Narrow phase uses Three.js intersectObjects, which is now BVH-accelerated
    *  globally (main.ts installs three-mesh-bvh + per-chunk computeBoundsTree). */
   private _collisionCandidates: { obj: THREE.Object3D; center: THREE.Vector3; radius: number }[] = [];
+  /** Transient collision targets — registered outside the worldRoot flow
+   *  (e.g. dungeon preview rooms, debug visualizations). Cleared by
+   *  clearTransientCollisionTargets, also wiped on setWorldRoot (zone
+   *  change) so stale preview targets don't follow the player. */
+  private _transientCandidates: { obj: THREE.Object3D; center: THREE.Vector3; radius: number }[] = [];
   /** Road meshes captured during setWorldRoot for the terrain Y-clamp. Used as
    *  the downward-raycast target so when the camera sits over a road its Y
    *  floor becomes max(terrain, road-top) instead of just terrain. */
@@ -291,10 +296,33 @@ export class OrbitCamera {
    * exceeds COLLISION_MAX_RADIUS) so per-tile walls are picked up.
    * Call once per zone load.
    */
+  /**
+   * Register an object as a transient camera-collision target — the
+   * spring-arm will raycast against it. Use for geometry added directly
+   * to scene.scene (not worldRoot), like the dungeon room preview. The
+   * object's bounding sphere is captured at the moment of the call, so
+   * make sure its world transform is final before registering.
+   */
+  addCollisionTarget(obj: THREE.Object3D): void {
+    const box = new THREE.Box3().setFromObject(obj);
+    if (box.isEmpty()) return;
+    const sphere = new THREE.Sphere();
+    box.getBoundingSphere(sphere);
+    this._transientCandidates.push({ obj, center: sphere.center.clone(), radius: sphere.radius });
+  }
+
+  /** Drop all transient targets. RoomTemplatePreview calls this on clear. */
+  clearTransientCollisionTargets(): void {
+    this._transientCandidates = [];
+  }
+
   setWorldRoot(root: THREE.Object3D | null): void {
     this._worldRoot = root;
     this._collisionCandidates = [];
     this._roadObjects = [];
+    // Zone change also dumps preview-room collision targets — stale targets
+    // from a prior zone shouldn't keep blocking the camera here.
+    this._transientCandidates = [];
     this._emaBroadMs  = 0;
     this._emaNarrowMs = 0;
     this._didDiagnoseNearby = false;
@@ -452,21 +480,27 @@ export class OrbitCamera {
   get debugNearby():    number { return this._lastNearby;   }
 
   private _resolveCameraDistance(dirX: number, dirY: number, dirZ: number): number {
-    if (this._collisionCandidates.length === 0) return this.distance;
+    if (this._collisionCandidates.length === 0 && this._transientCandidates.length === 0) {
+      return this.distance;
+    }
 
     const tBroad0 = performance.now();
     const reach = this.distance + OrbitCamera.CAMERA_BUFFER;
 
     // Broad phase: candidates whose bounding sphere intersects the ray-band.
+    // Walks both the worldRoot-derived candidates and the transient list
+    // (dungeon previews etc.) so previews collide with the camera too.
     const nearby: THREE.Object3D[] = [];
-    for (const c of this._collisionCandidates) {
+    const checkCandidate = (c: { obj: THREE.Object3D; center: THREE.Vector3; radius: number }): void => {
       const cdx = c.center.x - this.target.x;
       const cdy = c.center.y - this.target.y;
       const cdz = c.center.z - this.target.z;
       const distSq = cdx * cdx + cdy * cdy + cdz * cdz;
       const r = reach + c.radius;
       if (distSq <= r * r) nearby.push(c.obj);
-    }
+    };
+    for (const c of this._collisionCandidates) checkCandidate(c);
+    for (const c of this._transientCandidates)  checkCandidate(c);
     const tBroad1 = performance.now();
     this._emaBroadMs = this._emaBroadMs === 0
       ? (tBroad1 - tBroad0)

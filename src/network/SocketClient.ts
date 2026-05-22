@@ -95,6 +95,10 @@ export class SocketClient {
       'vault_room_enter', 'vault_mob_killed', 'vault_room_cleared',
       'vault_gate_opened', 'vault_complete', 'vault_failed', 'vault_player_left',
       'vault_staging_active', 'vault_staging_broken',
+      // Deep-dungeon completion — fired when the terminal R9 boss dies.
+      // Carries the "cleared" banner payload; the party is ejected to the
+      // overworld shortly after.
+      'dungeon_complete',
       'open_hireling_panel',
       'open_dummy_panel',
       'open_caravan_panel',
@@ -129,6 +133,25 @@ export class SocketClient {
       // /choose <token> <value> slash command. Used by the zone
       // whisperer NPC + future bounty boards / NPC dialog trees.
       'open_choice',
+      // Post-fight contribution scoreboard — pushed to every participant
+      // when a zone / region / world boss resolves. Carries the
+      // FightResult payload (dmg/heal/tank/debuff per character).
+      'open_fight_scoreboard',
+      // Open-PvP state transitions (idle / arming / armed / disarming).
+      // Drives the AD widget border pulse + "X seconds remaining"
+      // affordance. Per-character push; server filters by socketId.
+      'pvp_state',
+      // Logout refused — gateway sends this when the player is
+      // combat-locked and tried to /logout. Payload has secondsRemaining
+      // + a human-readable message for chat surfacing.
+      'logout_refused',
+      // Admin /preview-room — server pushes a room-template payload (or
+      // a {clear: true} flag) which the RoomTemplatePreview renders at the
+      // player's current world position. Dev tool, no gameplay impact.
+      'preview_room',
+      // Deep-dungeon boss-door gate opened (Phase 3) — { gateId, state }.
+      // RoomTemplatePreview drops the matching slab + collision rect.
+      'dungeon_gate',
     ] as const;
 
     for (const name of serverEvents) {

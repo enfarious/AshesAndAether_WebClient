@@ -322,6 +322,16 @@ export interface Entity {
   /** Guild tag (3-5 uppercase chars) for non-party player plates —
    *  rendered as "[TAG] Name". Resolved server-side at zone-in. */
   guildTag?: string;
+  /** Guild membership id — drives the client-side same-guild filter for
+   *  PvP hostility (armed + non-guildmate = hostile to self). Distinct
+   *  from `guildTag` (display) so renames don't break the comparison. */
+  guildId?: string;
+  /** Open-PvP state — true while the player is in the `armed` state
+   *  (state machine driven by AD ≥ 0.5 + combat-lock on the server).
+   *  Client pairs this with self's pvpArmed + guildId comparison to
+   *  decide whether this peer is hostile (drives target Attack button,
+   *  nameplate color, tab-target cycling). */
+  pvpArmed?: boolean;
   /** Mob-only: the id of whatever entity this mob is currently auto-
    *  attacking. Server pushes on AA-target transition + initial spawn.
    *  Drives the sub-target indicator (red when this mob is engaged with
@@ -1425,6 +1435,15 @@ export interface VaultCompletePayload {
 /** Server → Client: vault failed (party wipe). */
 export interface VaultFailedPayload {
   instanceId: string;
+  message:    string;
+}
+
+/** Server → Client: deep dungeon cleared — the terminal R9 boss died.
+ *  Phase 2 completion is banner-only: no reward, no exit portal. The party
+ *  is ejected to the overworld a few seconds after this arrives. */
+export interface DungeonCompletePayload {
+  instanceId: string;
+  dungeonId:  string;
   message:    string;
 }
 

@@ -21,6 +21,26 @@ export interface CorpseData {
   ownerCharacterName: string;
   position:           { x: number; y: number; z: number };
   expiresAt:          number;
+  /** True if the corpse's owner took PvP damage on their last life.
+   *  Drives the killer-exclusive window + earlier FFA flip. */
+  diedInPvP?:         boolean;
+  /** ms epoch when the corpse becomes lootable by anyone (FFA). Before
+   *  this, only owner — and, if `diedInPvP`, the killer — may loot. */
+  lootableByAllAt?:   number;
+  /** Killer resolved to a character id by the server. Lets the local
+   *  client decide "am I the killer?" without walking the entity chain.
+   *  Null = no character-attributable killer (env death, mob kill). */
+  killerCharacterId?: string | null;
+}
+
+/** Mirror of the server-side eligibility rule. Old corpses (before the
+ *  PvP fields landed) default to owner-only, matching the previous
+ *  behavior so an in-flight zone doesn't break on update. */
+export function isCorpseLootableBy(c: CorpseData, characterId: string, now: number): boolean {
+  if (c.ownerCharacterId === characterId) return true;
+  if (c.lootableByAllAt !== undefined && now >= c.lootableByAllAt) return true;
+  if (c.diedInPvP && c.killerCharacterId === characterId) return true;
+  return false;
 }
 
 const BUNDLE_RADIUS = 0.5;
@@ -116,15 +136,19 @@ export class CorpseRenderer {
 
   get count(): number { return this.corpses.size; }
 
-  /** True if a corpse the local player can loot (their own) sits within
-   *  `radius` metres of (x, z). Drives the F-key /loot probe + HUD prompt;
-   *  mirrors `HarvestNodeManager.hasNodeWithin`'s shape. */
+  /** True if a corpse the local player can loot sits within `radius`
+   *  metres of (x, z). Drives the F-key /loot probe + HUD prompt.
+   *  Eligibility (mirrors server):
+   *    - Owner: always (until decay).
+   *    - PvP killer: from death through FFA.
+   *    - Anyone: after `lootableByAllAt` (3min PvP / 30min PvE). */
   hasLootableCorpseWithin(x: number, z: number, radius: number): boolean {
     const localId = this.getLocalCharacterId();
     if (!localId) return false;
+    const now = Date.now();
     const r2 = radius * radius;
     for (const inst of this.corpses.values()) {
-      if (inst.data.ownerCharacterId !== localId) continue;
+      if (!isCorpseLootableBy(inst.data, localId, now)) continue;
       const dx = inst.data.position.x - x;
       const dz = inst.data.position.z - z;
       if (dx * dx + dz * dz <= r2) return true;
@@ -138,8 +162,13 @@ export class CorpseRenderer {
 
   private _createCorpse(data: CorpseData): CorpseInstance {
     const groundY = this._findGroundY(data.position.x, data.position.z, data.position.y);
-    const isOwn   = data.ownerCharacterId === this.getLocalCharacterId();
-    const phase   = Math.random() * Math.PI * 2;
+    // Glow when the local player can loot it AT SPAWN — covers owner
+    // (always) + killer of a PvP corpse (immediately). FFA-after-timer
+    // transitions aren't reactively re-glowed; the F-key Loot prompt
+    // covers that path.
+    const localId   = this.getLocalCharacterId();
+    const isOwn     = localId !== null && isCorpseLootableBy(data, localId, Date.now());
+    const phase     = Math.random() * Math.PI * 2;
 
     const group = new THREE.Group();
     group.position.set(data.position.x, groundY, data.position.z);

@@ -1,6 +1,7 @@
 import type { Entity, Vector3 }  from '@/network/Protocol';
 import type { EntityRegistry }   from '@/state/EntityRegistry';
 import type { PlayerState }      from '@/state/PlayerState';
+import { isEffectivelyHostile }  from '@/entities/pvpHostility';
 
 /**
  * TabTargetService — FFXI / FFXIV-style keyboard target cycling.
@@ -181,10 +182,14 @@ export class TabTargetService {
     });
 
     // Hostile mobs sort first so combat tabs feel responsive; everything
-    // else sorts by distance behind them.
+    // else sorts by distance behind them. Open-PvP rule applies — armed
+    // non-guild player peers count as hostile for sorting (so they
+    // surface in the Tab cycle ahead of friendly NPCs).
+    const selfArmed   = this.player.pvpArmed;
+    const selfGuildId = this.player.guildId;
     candidates.sort((a, b) => {
-      const aH = a.hostile === true ? 0 : 1;
-      const bH = b.hostile === true ? 0 : 1;
+      const aH = isEffectivelyHostile(a, selfArmed, selfGuildId) ? 0 : 1;
+      const bH = isEffectivelyHostile(b, selfArmed, selfGuildId) ? 0 : 1;
       if (aH !== bH) return aH - bH;
       return this._distSq(playerPos, a.position) - this._distSq(playerPos, b.position);
     });

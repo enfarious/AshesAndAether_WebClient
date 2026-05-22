@@ -147,6 +147,13 @@ export class WASDController {
   /** Wire the player entity after EntityFactory creates it. */
   setPlayerEntity(pe: PlayerEntity | null): void { this._playerEntity = pe; }
 
+  /** Optional client-side movement resolver. Called during local prediction
+   *  so WASD ghost-walking matches what the server will accept. The server
+   *  is still authoritative — this just keeps the predicted visual honest.
+   *  Returns the unblocked endpoint along the (from→to) direction. */
+  private movementCollider: ((fromX: number, fromZ: number, toX: number, toZ: number) => { x: number; z: number }) | null = null;
+  setMovementCollider(fn: typeof this.movementCollider): void { this.movementCollider = fn; }
+
   constructor(
     private readonly camera:   OrbitCamera,
     private readonly socket:   SocketClient,
@@ -265,8 +272,22 @@ export class WASDController {
           ? 1.0
           : INERTIA_RAMP_FROM + (1 - INERTIA_RAMP_FROM) * (elapsedMs / INERTIA_RAMP_MS);
         const speedMPS = (this.player.movementSpeedMPS || FALLBACK_SPEED_MPS) * ramp;
-        this._localX += normX * speedMPS * dt;
-        this._localZ += normZ * speedMPS * dt;
+        const fromX = this._localX;
+        const fromZ = this._localZ;
+        const toX   = fromX + normX * speedMPS * dt;
+        const toZ   = fromZ + normZ * speedMPS * dt;
+
+        // Optional client-side collision: clamp local prediction so we
+        // don't ghost-walk through walls the server will reject. No-op when
+        // no collider is wired (overworld, vault, normal play).
+        if (this.movementCollider) {
+          const resolved = this.movementCollider(fromX, fromZ, toX, toZ);
+          this._localX = resolved.x;
+          this._localZ = resolved.z;
+        } else {
+          this._localX = toX;
+          this._localZ = toZ;
+        }
         // Y tracks server for terrain height
         this._localY = this.player.position.y;
 

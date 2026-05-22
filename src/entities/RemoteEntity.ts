@@ -68,6 +68,7 @@ function easeOut(t: number): number {
 const _NO_HEADING_TAGS = new Set([
   'vault_portal',
   'vault_exit_portal',
+  'deep_dungeon_portal',
   'hireling_console',
   'caravan_terminal',
 ]);
@@ -199,6 +200,12 @@ export class RemoteEntity extends EntityObject {
       // directly in `root` so multiple meshes form the portal. Same visual
       // for entry and exit; the action UI distinguishes them.
       EntityObject._addVaultPortalToGroup(root);
+      mesh = null as unknown as THREE.Mesh;
+    } else if (entity.tag === 'deep_dungeon_portal') {
+      // Standing-stone trilithon with a violet aether-light sheet between
+      // the pillars. Reads as a gateway, distinct from the vault portal's
+      // ground-rune-and-column.
+      EntityObject._addDeepDungeonPortalToGroup(root);
       mesh = null as unknown as THREE.Mesh;
     } else if (entity.tag === 'hireling_console') {
       // Vault-entry obelisk — the thing players F to open the hireling panel.

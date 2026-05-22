@@ -4,6 +4,7 @@ import type { PlayerState } from '@/state/PlayerState';
 import type { EntityRegistry } from '@/state/EntityRegistry';
 import type { WorldState } from '@/state/WorldState';
 import type { Entity } from './Protocol';
+import { localizeCombatNarrative } from './localizeNarrative';
 import type {
   HandshakeAckPayload,
   AuthSuccessPayload,
@@ -75,6 +76,7 @@ import type {
   VaultFailedPayload,
   VaultStagingActivePayload,
   VaultStagingBrokenPayload,
+  DungeonCompletePayload,
   ExperienceGainedPayload,
 } from './Protocol';
 
@@ -130,6 +132,7 @@ export class MessageRouter {
   private vaultRoomClearedListeners = new Set<(p: VaultRoomClearedPayload) => void>();
   private vaultStagingActiveListeners = new Set<(p: VaultStagingActivePayload) => void>();
   private vaultStagingBrokenListeners = new Set<(p: VaultStagingBrokenPayload) => void>();
+  private dungeonCompleteListeners    = new Set<(p: DungeonCompletePayload) => void>();
   private experienceGainedListeners = new Set<(p: ExperienceGainedPayload) => void>();
   private worldEntryListeners       = new Set<() => void>();
   private worldReadyListeners       = new Set<() => void>();
@@ -398,6 +401,11 @@ export class MessageRouter {
     return () => this.vaultCompleteListeners.delete(fn);
   }
 
+  onDungeonComplete(fn: (p: DungeonCompletePayload) => void): () => void {
+    this.dungeonCompleteListeners.add(fn);
+    return () => this.dungeonCompleteListeners.delete(fn);
+  }
+
   onVaultRoomEnter(fn: (p: VaultRoomEnterPayload) => void): () => void {
     this.vaultRoomEnterListeners.add(fn);
     return () => this.vaultRoomEnterListeners.delete(fn);
@@ -564,6 +572,31 @@ export class MessageRouter {
 
     s.on('event', (p) => {
       const payload = p as EventPayload;
+
+      // Combat narrative substitution — server emits templates with
+      // {attacker}/{target} placeholders so each viewer's chat reads
+      // "You hit Bob" / "Bob hit you" / "Alice hit Bob" depending on
+      // who the local player is. IDs come from eventTypeData.
+      if (
+        payload.narrative
+        && (payload.eventType === 'combat_hit'
+            || payload.eventType === 'combat_miss'
+            || payload.eventType === 'combat_heal'
+            || payload.eventType === 'combat_death')
+      ) {
+        const data = (payload.eventTypeData ?? {}) as {
+          attackerId?: string; healerId?: string; targetId?: string;
+        };
+        payload.narrative = localizeCombatNarrative(
+          payload.narrative,
+          data.attackerId ?? data.healerId,
+          data.targetId,
+          this.player.id,
+          this.player.name,
+          this.entities,
+        );
+      }
+
       this.world.onGameEvent(payload);
 
       // ── Combat outcomes (hit/miss/heal with structured eventTypeData) ───
@@ -1060,6 +1093,14 @@ export class MessageRouter {
       this.world.pushMessage('system', payload.message);
     });
 
+    // Deep dungeon cleared — terminal R9 boss died. Banner-only completion;
+    // the server ejects the party to the overworld a few seconds later.
+    s.on('dungeon_complete', (p) => {
+      const payload = p as DungeonCompletePayload;
+      this.world.pushMessage('system', payload.message ?? 'Dungeon cleared!');
+      this.dungeonCompleteListeners.forEach(fn => fn(payload));
+    });
+
     s.on('vault_staging_active', (p) => {
       const payload = p as VaultStagingActivePayload;
       this.world.pushMessage('system', 'Staging area active. Squad up — step out to begin.');
@@ -1081,6 +1122,16 @@ export class MessageRouter {
     s.on('logout_success', () => {
       console.log('[MessageRouter] logout_success — redirecting to /api/logout for full session reset');
       window.location.href = '/api/logout';
+    });
+
+    // Combat-locked logout refusal — gateway sends this when the player
+    // is in active PvP combat. Surface in chat as a system message so
+    // the player sees the countdown, then stay on the in-game screen.
+    s.on('logout_refused', (payload: unknown) => {
+      console.log('[MessageRouter] logout_refused — combat-locked', payload);
+      const data = (payload ?? {}) as { message?: string; secondsRemaining?: number };
+      const message = data.message ?? `You can't log out during open conflict. ${data.secondsRemaining ?? 0}s until the combat lock clears.`;
+      this.world.pushMessage('system', message);
     });
 
     s.on('_connected', () => {

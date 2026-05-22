@@ -311,11 +311,14 @@ export class ActionBar {
   /**
    * Red shake on the most-recently-pressed slot when the server rejects the cast.
    * Reacts to the error code:
-   *   - on_cooldown / on_gcd → SET a placeholder CD so the slot shows blocked.
-   *     Server doesn't tell us remaining-ms, so we guess from the manifest's
-   *     cooldown field, falling back to 2 s if the ability doesn't declare one.
-   *   - other failures (range, target, resources) → CLEAR the optimistic CD so
-   *     the user can retry the moment they fix the actual problem.
+   *   - on_cooldown → keep/snap the slot's CD: the ability genuinely IS on
+   *     cooldown. Prefer the server's remainingMs, else the manifest cooldown.
+   *   - every OTHER rejection (on_gcd, casting, channeling, out_of_range,
+   *     insufficient_resources, …) → CLEAR the optimistic CD set on press. A
+   *     blocked cast never fired, so the ability must not look like it went
+   *     on cooldown — and the GCD is a global lockout, not this ability's
+   *     own cooldown, so painting it as a per-slot CD misreads as "the
+   *     ability I pressed went on cooldown."
    */
   flashError(error: CombatErrorPayload): void {
     if (this._lastCastSlot === null) return;
@@ -324,7 +327,7 @@ export class ActionBar {
     const slot = this._lastCastSlot;
     this._flashSlot(slot, 'ab-flash-error');
 
-    if (error.code === 'on_cooldown' || error.code === 'on_gcd') {
+    if (error.code === 'on_cooldown') {
       // Prefer the server-authoritative remainingMs when present; fall back to
       // the manifest's declared cooldown, then to a 2 s placeholder.
       let duration: number;

@@ -62,9 +62,9 @@ export type MiasmaQuality = 'off' | 'low' | 'med' | 'high' | 'ultra';
 let _miasmaQuality: MiasmaQuality = 'med';
 
 /** Per-axis subdivision count of the MiasmaGroundFog plane. Total verts
- *  = (n+1)². 'off' disables the plane entirely. Higher tiers conform to
- *  terrain ridges more tightly at distance; 'med' is the visual sweet
- *  spot for typical play. */
+ *  = (n+1)². 0 disables the plane entirely. Settings now exposes this
+ *  as a direct numeric slider — the enum below is back-compat for any
+ *  consumer reading `miasmaQuality` as a tier. */
 const MIASMA_SUBDIV_TABLE: Record<MiasmaQuality, number> = {
   off:   0,
   low:   64,
@@ -72,6 +72,13 @@ const MIASMA_SUBDIV_TABLE: Record<MiasmaQuality, number> = {
   high:  192,
   ultra: 256,
 };
+
+/** Numeric override for the fog-plane subdivisions. When non-null, this
+ *  wins over the enum table — settings slider writes here directly so
+ *  testing values outside the named tiers (e.g. 4 for "sparse",
+ *  1024+ for "absurd") are reachable. Initialised from localStorage at
+ *  boot; set to null to fall back to the enum tier. */
+let _miasmaSubdivisionsOverride: number | null = null;
 
 export type MiasmaRange = 'short' | 'med' | 'long' | 'far' | 'ultra';
 let _miasmaRange: MiasmaRange = 'long';
@@ -245,13 +252,29 @@ export const ClientConfig = {
    *  on setting change — they reflect the value at their creation. */
   beaconSubdivisions(): BeaconSubdivisions { return BEACON_DETAIL_TABLE[_beaconDetail]; },
 
-  /** Miasma ground-fog quality. 'off' = no fog plane. */
+  /** Miasma ground-fog quality. 'off' = no fog plane. Back-compat tier;
+   *  settings slider drives the numeric override below. */
   get miasmaQuality(): MiasmaQuality { return _miasmaQuality; },
-  set miasmaQuality(v: MiasmaQuality) { _miasmaQuality = v; },
+  set miasmaQuality(v: MiasmaQuality) {
+    _miasmaQuality = v;
+    // Setting the tier through this path clears any numeric override so
+    // the chosen tier actually takes effect on next rebuild.
+    _miasmaSubdivisionsOverride = null;
+  },
 
-  /** Per-axis subdivisions for the current miasma quality. 0 means the
-   *  fog should not be constructed at all. */
-  miasmaSubdivisions(): number { return MIASMA_SUBDIV_TABLE[_miasmaQuality]; },
+  /** Direct numeric subdivision override — set by the Settings slider so
+   *  testing values outside the named tiers are reachable (sparse 4-8,
+   *  absurd 1024-2048). Null = use the enum tier. */
+  get miasmaSubdivisionsOverride(): number | null { return _miasmaSubdivisionsOverride; },
+  set miasmaSubdivisionsOverride(v: number | null) {
+    _miasmaSubdivisionsOverride = v == null ? null : Math.max(0, Math.floor(v));
+  },
+
+  /** Effective per-axis subdivisions: numeric override wins, falls back
+   *  to the enum tier. 0 means the fog plane should not be constructed. */
+  miasmaSubdivisions(): number {
+    return _miasmaSubdivisionsOverride ?? MIASMA_SUBDIV_TABLE[_miasmaQuality];
+  },
 
   /** Miasma fog view distance preset. */
   get miasmaRange(): MiasmaRange { return _miasmaRange; },

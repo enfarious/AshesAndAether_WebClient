@@ -30,6 +30,14 @@ interface WireTemplate {
 interface RoomPlacement {
   template: WireTemplate;
   origin:   { x: number; y: number; z: number };
+  /** Per-exit doorway dimensions, keyed by exit id. An exit with an
+   *  attached connector carries `{width, height}` (the connector's own
+   *  width/height); an exit with no connector is ABSENT from the map
+   *  (e.g. the admin single-room `/preview-room` path sends no
+   *  connectors). The server already resolved which connector attaches
+   *  to which exit — the renderer just consumes this map, falling back
+   *  to DOORWAY_WIDTH/DOORWAY_HEIGHT for any absent exit. */
+  exitDoorDims?: Record<string, { width: number; height: number }>;
 }
 /** A single polyline vertex — mirrors the server `Waypoint` type. Each
  *  point carries its own Y so a ramp/stair connector's polyline has
@@ -47,6 +55,9 @@ interface WireConnector {
   edgeId:   string;
   style:    'corridor' | 'ramp' | 'stair' | 'elevator';
   width:    number;
+  /** Per-connector floor-to-ceiling height. Drives the connector tube's
+   *  wall + ceiling height (was a fixed module constant). */
+  height:   number;
   polyline: WireWaypoint[];
 }
 /** World-space axis-aligned rect — matches the server WallRect shape. */
@@ -58,6 +69,9 @@ interface WireRect {
 interface WireGate {
   gateId: string;
   rect:   WireRect;
+  /** The gated connector's floor-to-ceiling height — sizes the gate slab
+   *  so it fills the actual doorway opening. */
+  height: number;
   closed: true;
 }
 interface PreviewPayload {
@@ -93,11 +107,6 @@ const DOORWAY_HEIGHT = 8.0;
  *  will leak past where the server blocks (and snap-back when it catches
  *  up). */
 const PLAYER_RADIUS  = 0.5;
-/** Connector wall + ceiling height. Must be at least DOORWAY_HEIGHT: the
- *  room cuts its doorway opening that tall, so a shorter connector leaves an
- *  open slot above the connector roof that peers into the void. The room's
- *  own lintel seals everything above DOORWAY_HEIGHT. */
-const CONNECTOR_WALL_HEIGHT = DOORWAY_HEIGHT;
 /** Stair step run-length (metres) — a stepped connector climbs its Y delta
  *  in steps of roughly this depth. Cosmetic only; collision + sampleFloorY
  *  treat a stair like a ramp (linear Y), matching the server. */
@@ -188,14 +197,14 @@ export class RoomTemplatePreview {
       this.group = new THREE.Group();
       this.group.name = 'room_preview';
       for (const placement of placements) {
-        const roomGroup = this._buildRoom(placement.template);
+        const roomGroup = this._buildRoom(placement);
         // RoomPlacement.origin.y is now a real, varying value (terraced
         // dungeons) — the sub-group is positioned at the full origin so
         // the room sits at its placement elevation.
         roomGroup.position.set(placement.origin.x, placement.origin.y, placement.origin.z);
         this.group.add(roomGroup);
         // Compute world-space, halo-inflated collision rects for this room.
-        for (const rect of this._computeWallRects(placement.template, placement.origin)) {
+        for (const rect of this._computeWallRects(placement)) {
           this.collisionRects.push(rect);
         }
         // Flat walkable floor region for this room (footprint AABB at
@@ -223,7 +232,7 @@ export class RoomTemplatePreview {
       // prediction stops at it (mirrors the server's gate block). Tracked
       // by gateId so the `dungeon_gate` event can drop a single gate.
       for (const gate of p.gates ?? []) {
-        const slab = this._buildGateSlab(gate.rect);
+        const slab = this._buildGateSlab(gate.rect, gate.height);
         this.gateMeshes.set(gate.gateId, slab);
         this.group.add(slab);
         const rect: CollisionRect = {
@@ -274,10 +283,11 @@ export class RoomTemplatePreview {
 
   /**
    * Build a dark slab mesh filling a closed gate's doorway rect. The rect
-   * is the raw (un-haloed) server doorway rect — WALL_THICK deep, up to
-   * DOORWAY_WIDTH wide. Sits in the doorway band (floor → DOORWAY_HEIGHT).
+   * is the raw (un-haloed) server doorway rect — WALL_THICK deep, as wide
+   * as the gated connector. `height` is the gated connector's
+   * floor-to-ceiling height, so the slab fills the actual opening.
    */
-  private _buildGateSlab(rect: WireRect): THREE.Mesh {
+  private _buildGateSlab(rect: WireRect, height: number): THREE.Mesh {
     const sizeX = Math.max(0.01, rect.maxX - rect.minX);
     const sizeZ = Math.max(0.01, rect.maxZ - rect.minZ);
     const mat = new THREE.MeshStandardMaterial({
@@ -285,12 +295,12 @@ export class RoomTemplatePreview {
       emissive: 0x2a0d0d, emissiveIntensity: 0.35,
     });
     const mesh = new THREE.Mesh(
-      new THREE.BoxGeometry(sizeX, DOORWAY_HEIGHT, sizeZ),
+      new THREE.BoxGeometry(sizeX, height, sizeZ),
       mat,
     );
     mesh.position.set(
       (rect.minX + rect.maxX) / 2,
-      DOORWAY_HEIGHT / 2,
+      height / 2,
       (rect.minZ + rect.maxZ) / 2,
     );
     mesh.castShadow    = true;
@@ -400,11 +410,16 @@ export class RoomTemplatePreview {
    * World-space wall rects for one placement, halo-inflated by PLAYER_RADIUS
    * to match server's wall-slide grid expansion. Mirrors the segment math
    * in _buildWallSegments — if you change one, change the other.
+   *
+   * Server collision is 2D, so only the per-exit WIDTH matters here
+   * (height is render-only). This and the server's computeRoomWallRects
+   * are a true mirror pair: the per-exit width lookup MUST match or WASD
+   * prediction diverges from server collision at varied-width doorways.
    */
-  private _computeWallRects(
-    tmpl:   WireTemplate,
-    origin: { x: number; y: number; z: number },
-  ): CollisionRect[] {
+  private _computeWallRects(placement: RoomPlacement): CollisionRect[] {
+    const tmpl   = placement.template;
+    const origin = placement.origin;
+    const exitDoorDims = placement.exitDoorDims ?? {};
     const { sizeX, sizeZ } = tmpl.footprint;
     const rects: CollisionRect[] = [];
 
@@ -418,19 +433,24 @@ export class RoomTemplatePreview {
       else if (dir === 'E') crossPos =  sizeX / 2;
       else                  crossPos = -sizeX / 2;
 
-      const doorPositions = wallExits
-        .map((e) => (axis === 'x' ? e.position.x : e.position.z))
-        .sort((a, b) => a - b);
+      // Per-exit cutout: axis position + per-exit width (fallback
+      // DOORWAY_WIDTH for an exit with no attached connector).
+      const cutouts = wallExits
+        .map((e) => ({
+          pos:   axis === 'x' ? e.position.x : e.position.z,
+          width: exitDoorDims[e.id]?.width ?? DOORWAY_WIDTH,
+        }))
+        .sort((a, b) => a.pos - b.pos);
 
       const minA = -(wallAxisSize / 2 + WALL_THICK);
       const maxA =   wallAxisSize / 2 + WALL_THICK;
 
       let segStart = minA;
       const segments: Array<[number, number]> = [];
-      for (const dp of doorPositions) {
-        const segEnd = dp - DOORWAY_WIDTH / 2;
+      for (const c of cutouts) {
+        const segEnd = c.pos - c.width / 2;
         if (segEnd > segStart) segments.push([segStart, segEnd]);
-        segStart = dp + DOORWAY_WIDTH / 2;
+        segStart = c.pos + c.width / 2;
       }
       if (maxA > segStart) segments.push([segStart, maxA]);
 
@@ -512,6 +532,33 @@ export class RoomTemplatePreview {
     const poly = connector.polyline;
     const half = connector.width / 2;
 
+    // True iff poly[k] is an actual 90° bend (axis switches between in and
+    // out). Mirrors server Stitcher.computeConnectorFloorRegions and the
+    // client `_computeConnectorFloorRegions` collision sibling. Drives the
+    // interior-bend floor/ceiling trim below and the bend-block emission.
+    const isBendAt = (k: number): boolean => {
+      if (k <= 0 || k >= poly.length - 1) return false;
+      const prev = poly[k - 1]!, wp = poly[k]!, next = poly[k + 1]!;
+      const dInX = wp.x - prev.x, dInZ = wp.z - prev.z;
+      const dOutX = next.x - wp.x, dOutZ = next.z - wp.z;
+      if (Math.hypot(dInX, dInZ) < AXIS_EPSILON) return false;
+      if (Math.hypot(dOutX, dOutZ) < AXIS_EPSILON) return false;
+      const inAlongX  = Math.abs(dInZ)  <= AXIS_EPSILON;
+      const outAlongX = Math.abs(dOutZ) <= AXIS_EPSILON;
+      return inAlongX !== outAlongX;
+    };
+    // Inside-wall side at the bend at poly[k] — +1 = right turn (inside on
+    // +perp); −1 = left turn (inside on −perp). Used by the wall-mesh loop
+    // below to trim only the INSIDE wall by `half` at the bend end, so the
+    // wall mesh stops exactly at the inside-corner intersection instead of
+    // jutting `half` past it into the bend block. Mirrors server logic.
+    const bendInsideSide = (k: number): number => {
+      const prev = poly[k - 1]!, wp = poly[k]!, next = poly[k + 1]!;
+      const dInX = wp.x - prev.x, dInZ = wp.z - prev.z;
+      const dOutX = next.x - wp.x, dOutZ = next.z - wp.z;
+      return Math.sign(dInX * dOutZ - dInZ * dOutX);
+    };
+
     for (let i = 0; i < poly.length - 1; i++) {
       const a = poly[i]!;
       const b = poly[i + 1]!;
@@ -533,20 +580,45 @@ export class RoomTemplatePreview {
       const midZ = (a.z + b.z) / 2;
       const dy   = b.y - a.y;
 
+      // ── Interior-bend trim ───────────────────────────────────────────────
+      // FLOOR + CEILING meshes retract by `half` at every interior-bend
+      // end so the per-bend `width × width` block emitted after this loop
+      // is the sole cover for the bend area. WALLS keep full length
+      // (their inside-corner overlap is only WALL_THICK² and invisible).
+      // Mirrors collision logic in `_computeConnectorFloorRegions` and the
+      // server's Stitcher.computeConnectorFloorRegions.
+      const aTrim = isBendAt(i)     ? half : 0;
+      const bTrim = isBendAt(i + 1) ? half : 0;
+      const tRunLen = runLen - aTrim - bTrim;
+      // Trimmed endpoints (for floor + ceiling only).
+      const aTx = a.x + fx * aTrim, aTz = a.z + fz * aTrim;
+      const bTx = b.x - fx * bTrim, bTz = b.z - fz * bTrim;
+      const aTy = a.y + dy * (aTrim / runLen);
+      const bTy = b.y - dy * (bTrim / runLen);
+      const tMidX = (aTx + bTx) / 2;
+      const tMidZ = (aTz + bTz) / 2;
+      const tMidY = (aTy + bTy) / 2;
+      const tDy   = bTy - aTy;
+      // Segment shorter than the trim budget → skip floor/ceiling; the
+      // adjacent bend blocks butt up to each other and cover the gap.
+      const emitFloorCeil = tRunLen > AXIS_EPSILON;
+
       // ── Floor ──────────────────────────────────────────────────────────
-      if (connector.style === 'stair' && Math.abs(dy) > AXIS_EPSILON) {
-        // Stepped boxes climbing the Y delta. Step count from the run
-        // length so steps stay a sane depth; each step is a flat box.
-        const stepCount = Math.max(1, Math.round(runLen / STAIR_STEP_RUN));
-        const stepRun   = runLen / stepCount;
+      if (emitFloorCeil && connector.style === 'stair' && Math.abs(tDy) > AXIS_EPSILON) {
+        // Stepped boxes climbing the Y delta over the TRIMMED run. Step
+        // count from the trimmed run length; first step sits at aTx/aTz/aTy,
+        // last step at bTx/bTz/bTy.
+        const stepCount = Math.max(1, Math.round(tRunLen / STAIR_STEP_RUN));
+        const stepRun   = tRunLen / stepCount;
         for (let s = 0; s < stepCount; s++) {
-          // Step centre at fractional position (s+0.5)/stepCount along run.
+          // Step centre at fractional position (s+0.5)/stepCount along the
+          // trimmed run (aT → bT).
           const t  = (s + 0.5) / stepCount;
-          const cx = a.x + dx * t;
-          const cz = a.z + dz * t;
+          const cx = aTx + (bTx - aTx) * t;
+          const cz = aTz + (bTz - aTz) * t;
           // Top of the step = lerped floor Y at the step's far edge, so
           // the player stands at the matching sampleFloorY height.
-          const stepTopY = a.y + dy * ((s + 1) / stepCount);
+          const stepTopY = aTy + tDy * ((s + 1) / stepCount);
           const stepH    = 0.25;
           const step = new THREE.Mesh(
             new THREE.BoxGeometry(connector.width, stepH, stepRun),
@@ -559,27 +631,28 @@ export class RoomTemplatePreview {
           step.castShadow    = true;
           root.add(step);
         }
-      } else {
+      } else if (emitFloorCeil) {
         // corridor (flat), ramp (tilted), elevator (flat platform). A thin
         // box so the floor reads with thickness; tilted for a Y delta.
         const floorThick = 0.12;
         // Slope length — the hypotenuse including the Y rise, so a tilted
-        // floor still spans corner-to-corner without a gap.
-        const slopeLen = Math.hypot(runLen, dy);
+        // floor still spans corner-to-corner without a gap. Uses the
+        // TRIMMED run + Y delta.
+        const slopeLen = Math.hypot(tRunLen, tDy);
         const floor = new THREE.Mesh(
           new THREE.BoxGeometry(connector.width, floorThick, slopeLen),
           floorMat,
         );
-        floor.position.set(midX, (a.y + b.y) / 2 + 0.02, midZ);
+        floor.position.set(tMidX, tMidY + 0.02, tMidZ);
         // rotation.order MUST be 'YXZ'. Three.js's default 'XYZ' applies the
         // X (pitch) about the world axis BEFORE the yaw, shearing the ramp
         // into a parallelogram. 'YXZ' yaws first, so the pitch lands on the
         // run-local X axis.
         floor.rotation.order = 'YXZ';
         floor.rotation.y = yaw;
-        // Pitch about the (now run-local) X axis so the slope matches dy/runLen.
-        if (Math.abs(dy) > AXIS_EPSILON) {
-          floor.rotation.x = -Math.atan2(dy, runLen);
+        // Pitch about the (now run-local) X axis so the slope matches tDy/tRunLen.
+        if (Math.abs(tDy) > AXIS_EPSILON) {
+          floor.rotation.x = -Math.atan2(tDy, tRunLen);
         }
         floor.receiveShadow = true;
         floor.castShadow    = true;
@@ -590,18 +663,47 @@ export class RoomTemplatePreview {
       // Two boxes offset ±width/2 perpendicular to the run, full height,
       // each spanning the (sloped) segment length. Walls follow the Y
       // slope so they sit flush with floor + ceiling.
-      const wallH    = CONNECTOR_WALL_HEIGHT;
-      const wallLen  = Math.hypot(runLen, dy);
-      const wallPitch = Math.abs(dy) > AXIS_EPSILON ? -Math.atan2(dy, runLen) : 0;
+      //
+      // INSIDE-wall trim — the wall on the inside of any interior bend
+      // retracts by `half` at the bend end so it terminates exactly at
+      // the inside-corner intersection instead of jutting `half` past it
+      // into the bend block. The OUTSIDE wall keeps full length so it
+      // meets the outside-corner stub wall cleanly. Mirrors collision in
+      // `_computeConnectorWallRects` and the server's
+      // Stitcher.computeConnectorWallSegments.
+      const wallH = connector.height;
+      const aIsBend = isBendAt(i);
+      const bIsBend = isBendAt(i + 1);
+      const aInsideSide = aIsBend ? bendInsideSide(i) : 0;
+      const bInsideSide = bIsBend ? bendInsideSide(i + 1) : 0;
       for (const side of [+1, -1] as const) {
+        const aIsInsideHere = aIsBend && aInsideSide === side;
+        const bIsInsideHere = bIsBend && bInsideSide === side;
+        const wAT = aIsInsideHere ? half : 0;
+        const wBT = bIsInsideHere ? half : 0;
+        if (wAT + wBT >= runLen - AXIS_EPSILON) continue; // degenerate
+
+        // Trimmed wall endpoints (relative to original a, b).
+        const wAx = a.x + fx * wAT, wAz = a.z + fz * wAT;
+        const wBx = b.x - fx * wBT, wBz = b.z - fz * wBT;
+        const wAy = a.y + dy * (wAT / runLen);
+        const wBy = b.y - dy * (wBT / runLen);
+        const wRunLen = runLen - wAT - wBT;
+        const wDy = wBy - wAy;
+        const wMidX = (wAx + wBx) / 2;
+        const wMidZ = (wAz + wBz) / 2;
+        const wMidY = (wAy + wBy) / 2;
+        const wallLen = Math.hypot(wRunLen, wDy);
+        const wallPitch = Math.abs(wDy) > AXIS_EPSILON ? -Math.atan2(wDy, wRunLen) : 0;
+
         const wall = new THREE.Mesh(
           new THREE.BoxGeometry(WALL_THICK, wallH, wallLen),
           wallMat,
         );
         wall.position.set(
-          midX + nx * half * side,
-          (a.y + b.y) / 2 + wallH / 2,
-          midZ + nz * half * side,
+          wMidX + nx * half * side,
+          wMidY + wallH / 2,
+          wMidZ + nz * half * side,
         );
         wall.rotation.order = 'YXZ'; // yaw-then-pitch in the run-local frame
         wall.rotation.y = yaw;
@@ -613,23 +715,145 @@ export class RoomTemplatePreview {
 
       // ── Ceiling ────────────────────────────────────────────────────────
       // Optional but kept for visual consistency with rooms — a thin box
-      // capping the connector at wall height, following the Y slope.
-      const ceilThick = 0.1;
-      const ceiling = new THREE.Mesh(
-        new THREE.BoxGeometry(connector.width, ceilThick, wallLen),
-        ceilMat,
-      );
-      ceiling.position.set(midX, (a.y + b.y) / 2 + wallH, midZ);
-      ceiling.rotation.order = 'YXZ'; // yaw-then-pitch in the run-local frame
-      ceiling.rotation.y = yaw;
-      ceiling.rotation.x = wallPitch;
-      ceiling.receiveShadow = true;
-      root.add(ceiling);
+      // capping the connector at wall height, following the Y slope. Uses
+      // the TRIMMED run (matches floor).
+      if (emitFloorCeil) {
+        const ceilThick = 0.1;
+        const tSlopeLen = Math.hypot(tRunLen, tDy);
+        const ceiling = new THREE.Mesh(
+          new THREE.BoxGeometry(connector.width, ceilThick, tSlopeLen),
+          ceilMat,
+        );
+        ceiling.position.set(tMidX, tMidY + wallH, tMidZ);
+        ceiling.rotation.order = 'YXZ'; // yaw-then-pitch in the run-local frame
+        ceiling.rotation.y = yaw;
+        ceiling.rotation.x = Math.abs(tDy) > AXIS_EPSILON ? -Math.atan2(tDy, tRunLen) : 0;
+        ceiling.receiveShadow = true;
+        root.add(ceiling);
+      }
 
-      // Interior light per segment so the connector isn't pitch black.
-      const light = new THREE.PointLight(0xffd0a0, 1.0, runLen * 1.6 + 6, 1.4);
-      light.position.set(midX, (a.y + b.y) / 2 + wallH * 0.8, midZ);
-      root.add(light);
+      // Interior lights along the segment — density of one per ~`LIGHT_SPACING`
+      // metres of (trimmed) run, minimum one. Previously one per segment
+      // regardless of length, which left long corridors dim away from the
+      // single midpoint. Distributed evenly along the TRIMMED endpoints so
+      // they live inside the segment's actual floor extent (bend blocks get
+      // their own light below). Lights at ~80% of wall height.
+      if (emitFloorCeil) {
+        const LIGHT_SPACING = 10; // metres — tune for ambience vs draw-call cost
+        const lightCount = Math.max(1, Math.ceil(tRunLen / LIGHT_SPACING));
+        // Per-light range tied to spacing so adjacent lights overlap and the
+        // run reads evenly lit. `+ 4` so a short single-light segment still
+        // reaches its endpoints.
+        const lightRange = LIGHT_SPACING * 1.5 + 4;
+        for (let s = 0; s < lightCount; s++) {
+          const t = (s + 0.5) / lightCount;
+          const lx = aTx + (bTx - aTx) * t;
+          const lz = aTz + (bTz - aTz) * t;
+          const ly = aTy + (bTy - aTy) * t;
+          const light = new THREE.PointLight(0xffd0a0, 1.1, lightRange, 1.4);
+          light.position.set(lx, ly + wallH * 0.8, lz);
+          root.add(light);
+        }
+      }
+    }
+
+    // ── Per-bend block render geometry ─────────────────────────────────────
+    // One `width × width` flat floor + ceiling at every interior bend, plus
+    // the two outside-corner stub walls. Matches collision in
+    // `_computeConnectorFloorRegions` and `_computeConnectorWallRects`. The
+    // bend block covers all four quadrants of the bend area (outside corner
+    // + inside corner + the two side quadrants); both adjacent segments
+    // retract by `half` at the waypoint so the block is the SOLE floor +
+    // ceiling cover for the bend, killing the inside-corner 2 m × 2 m
+    // z-fight the player saw before this fix.
+    //
+    // Stub walls (the L closing the OUTSIDE corner) still need the
+    // signX/signZ derivation; the floor + ceiling block does not (it's
+    // sign-symmetric, just `width × width` centred at the waypoint).
+    const wallH = connector.height;
+    const floorThick = 0.12;
+    const ceilThick  = 0.1;
+    for (let k = 1; k < poly.length - 1; k++) {
+      if (!isBendAt(k)) continue;
+      const wp   = poly[k]!;
+      const prev = poly[k - 1]!;
+      const next = poly[k + 1]!;
+      const dInX = wp.x - prev.x, dInZ = wp.z - prev.z;
+      const dOutX = next.x - wp.x, dOutZ = next.z - wp.z;
+
+      // Sign derivation for stub walls — outside-corner direction. See
+      // server Stitcher.computeConnectorWallSegments for the derivation
+      // table; the spec's formula is wrong for Z-incoming bends, hence
+      // the per-axis branching.
+      const signX = (Math.abs(dInX) > AXIS_EPSILON)
+        ?  Math.sign(dInX)
+        : -Math.sign(dOutX);
+      const signZ = (Math.abs(dInZ) > AXIS_EPSILON)
+        ?  Math.sign(dInZ)
+        : -Math.sign(dOutZ);
+
+      // ── Bend block FLOOR — full width × width, centred on waypoint. ──
+      {
+        const floor = new THREE.Mesh(
+          new THREE.BoxGeometry(connector.width, floorThick, connector.width),
+          floorMat,
+        );
+        floor.position.set(wp.x, wp.y + 0.02, wp.z);
+        floor.receiveShadow = true;
+        floor.castShadow    = true;
+        root.add(floor);
+      }
+      // ── Bend block CEILING — same footprint, at wp.y + wallH. ──
+      {
+        const ceiling = new THREE.Mesh(
+          new THREE.BoxGeometry(connector.width, ceilThick, connector.width),
+          ceilMat,
+        );
+        ceiling.position.set(wp.x, wp.y + wallH, wp.z);
+        ceiling.receiveShadow = true;
+        root.add(ceiling);
+      }
+
+      // ── Outside-corner stub walls — UNCHANGED from previous fix. ──
+      // The bend block has no walls of its own; the OUTSIDE corner needs
+      // an L to seal it (the inside corner is intentionally open into the
+      // adjacent segments). Box length = half + WALL_THICK so the stub
+      // ends overlap WALL_THICK/2 with the segment walls, sealing the
+      // join with no visible seam.
+      const cornerCx = wp.x + signX * half / 2;
+      const cornerCz = wp.z + signZ * half / 2;
+      // Stub wall 1 — X-aligned at z = wp.z + signZ*half.
+      {
+        const wall = new THREE.Mesh(
+          new THREE.BoxGeometry(half + WALL_THICK, wallH, WALL_THICK),
+          wallMat,
+        );
+        wall.position.set(cornerCx, wp.y + wallH / 2, wp.z + signZ * half);
+        wall.castShadow    = true;
+        wall.receiveShadow = true;
+        root.add(wall);
+      }
+      // Stub wall 2 — Z-aligned at x = wp.x + signX*half.
+      {
+        const wall = new THREE.Mesh(
+          new THREE.BoxGeometry(WALL_THICK, wallH, half + WALL_THICK),
+          wallMat,
+        );
+        wall.position.set(wp.x + signX * half, wp.y + wallH / 2, cornerCz);
+        wall.castShadow    = true;
+        wall.receiveShadow = true;
+        root.add(wall);
+      }
+      // ── Bend block interior light ─────────────────────────────────────
+      // Without this the bend block reads as a dim transition between two
+      // lit segments — exactly where a player needs to read the geometry
+      // to make the turn. Centre of the block, same height + colour as
+      // the segment lights.
+      {
+        const light = new THREE.PointLight(0xffd0a0, 1.2, connector.width * 2.5 + 4, 1.4);
+        light.position.set(wp.x, wp.y + wallH * 0.8, wp.z);
+        root.add(light);
+      }
     }
 
     return root;
@@ -654,6 +878,26 @@ export class RoomTemplatePreview {
     const poly = connector.polyline;
     const half = connector.width / 2;
 
+    // Bend predicate + inside-side helper — mirrors server
+    // Stitcher.computeConnectorWallSegments.
+    const isBendAt = (k: number): boolean => {
+      if (k <= 0 || k >= poly.length - 1) return false;
+      const prev = poly[k - 1]!, wp = poly[k]!, next = poly[k + 1]!;
+      const dInX = wp.x - prev.x, dInZ = wp.z - prev.z;
+      const dOutX = next.x - wp.x, dOutZ = next.z - wp.z;
+      if (Math.hypot(dInX, dInZ) < AXIS_EPSILON) return false;
+      if (Math.hypot(dOutX, dOutZ) < AXIS_EPSILON) return false;
+      const inAlongX  = Math.abs(dInZ)  <= AXIS_EPSILON;
+      const outAlongX = Math.abs(dOutZ) <= AXIS_EPSILON;
+      return inAlongX !== outAlongX;
+    };
+    const bendInsideSide = (k: number): number => {
+      const prev = poly[k - 1]!, wp = poly[k]!, next = poly[k + 1]!;
+      const dInX = wp.x - prev.x, dInZ = wp.z - prev.z;
+      const dOutX = next.x - wp.x, dOutZ = next.z - wp.z;
+      return Math.sign(dInX * dOutZ - dInZ * dOutX);
+    };
+
     for (let i = 0; i < poly.length - 1; i++) {
       const a = poly[i]!;
       const b = poly[i + 1]!;
@@ -673,23 +917,30 @@ export class RoomTemplatePreview {
       const nx = -dz / len;
       const nz =  dx / len;
 
-      // Inset the wall ends that meet a room. The WALL_THICK/2 + PLAYER_RADIUS
-      // halo below extends the rect past the segment endpoint; without the
-      // inset that haloed rect pokes past the room wall plane into the
-      // doorway, leaving an L-corner NPCs snag on. Only the polyline's two
-      // room-meeting ends inset; interior bend joints keep full length.
-      // MUST match server Stitcher.computeConnectorWallSegments exactly.
-      const inset = Math.min(WALL_THICK / 2 + PLAYER_RADIUS, len * 0.4);
+      // Doorway inset (room-boundary end) — mutually exclusive per-end
+      // with the interior-bend trim below. MUST match server
+      // Stitcher.computeConnectorWallSegments exactly.
+      const doorwayInset = Math.min(WALL_THICK / 2 + PLAYER_RADIUS, len * 0.4);
       const ux = dx / len, uz = dz / len;
-      const aInset = (i === 0)               ? inset : 0;
-      const bInset = (i === poly.length - 2) ? inset : 0;
-      const iax = a.x + ux * aInset, iaz = a.z + uz * aInset;
-      const ibx = b.x - ux * bInset, ibz = b.z - uz * bInset;
 
-      // Each wall is a thick line segment; its AABB (the server's
-      // orientedSegmentToRect) is the collision rect. Halo-inflated by
-      // PLAYER_RADIUS to match the server's wall-slide grid expansion.
+      // INSIDE-wall bend trim — see server Stitcher for the full comment.
+      const aIsBend = isBendAt(i);
+      const bIsBend = isBendAt(i + 1);
+      const aInsideSide = aIsBend ? bendInsideSide(i) : 0;
+      const bInsideSide = bIsBend ? bendInsideSide(i + 1) : 0;
+
       for (const side of [+1, -1] as const) {
+        const aIsInsideHere = aIsBend && aInsideSide === side;
+        const bIsInsideHere = bIsBend && bInsideSide === side;
+
+        const aInset = aIsInsideHere ? half : (i === 0               ? doorwayInset : 0);
+        const bInset = bIsInsideHere ? half : (i === poly.length - 2 ? doorwayInset : 0);
+
+        if (aInset + bInset >= len - AXIS_EPSILON) continue;
+
+        const iax = a.x + ux * aInset, iaz = a.z + uz * aInset;
+        const ibx = b.x - ux * bInset, ibz = b.z - uz * bInset;
+
         const ax = iax + nx * half * side;
         const az = iaz + nz * half * side;
         const bx = ibx + nx * half * side;
@@ -700,6 +951,66 @@ export class RoomTemplatePreview {
           maxX: Math.max(ax, bx) + h + PLAYER_RADIUS,
           minZ: Math.min(az, bz) - h - PLAYER_RADIUS,
           maxZ: Math.max(az, bz) + h + PLAYER_RADIUS,
+        });
+      }
+    }
+
+    // ── Per-bend outside-corner stub-wall collision rects ──────────────────
+    // Mirrors the server's per-interior-waypoint loop in
+    // computeConnectorWallSegments. At each 90° bend the two flanking
+    // segment walls leave a `half × half` gap on the outside; close it with
+    // an L of two stub walls' haloed AABBs. NO inset here (these walls live
+    // INSIDE the connector, not at a room boundary).
+    //
+    // Outside-corner sign — see server Stitcher.computeConnectorWallSegments
+    // for the derivation table. The spec's formula is wrong for Z-incoming
+    // bends, hence the per-axis branching.
+    const h = WALL_THICK / 2;
+    for (let k = 1; k < poly.length - 1; k++) {
+      const wp   = poly[k]!;
+      const prev = poly[k - 1]!;
+      const next = poly[k + 1]!;
+      const dInX = wp.x - prev.x, dInZ = wp.z - prev.z;
+      const dOutX = next.x - wp.x, dOutZ = next.z - wp.z;
+      const inLen  = Math.hypot(dInX,  dInZ);
+      const outLen = Math.hypot(dOutX, dOutZ);
+      if (inLen < AXIS_EPSILON || outLen < AXIS_EPSILON) continue;
+
+      const inAlongX  = Math.abs(dInZ)  <= AXIS_EPSILON;
+      const outAlongX = Math.abs(dOutZ) <= AXIS_EPSILON;
+      if (inAlongX === outAlongX) continue; // collinear — no bend.
+
+      const signX = (Math.abs(dInX) > AXIS_EPSILON)
+        ?  Math.sign(dInX)
+        : -Math.sign(dOutX);
+      const signZ = (Math.abs(dInZ) > AXIS_EPSILON)
+        ?  Math.sign(dInZ)
+        : -Math.sign(dOutZ);
+
+      const outsideX = wp.x + signX * half;
+
+      // Stub 1 — X-aligned wall at z = wp.z + signZ*half, spanning
+      // x ∈ [wp.x, outsideX] (order-independent: take min/max).
+      {
+        const sax = wp.x,     saz = wp.z + signZ * half;
+        const sbx = outsideX, sbz = wp.z + signZ * half;
+        rects.push({
+          minX: Math.min(sax, sbx) - h - PLAYER_RADIUS,
+          maxX: Math.max(sax, sbx) + h + PLAYER_RADIUS,
+          minZ: Math.min(saz, sbz) - h - PLAYER_RADIUS,
+          maxZ: Math.max(saz, sbz) + h + PLAYER_RADIUS,
+        });
+      }
+      // Stub 2 — Z-aligned wall at x = outsideX, spanning
+      // z ∈ [wp.z, wp.z + signZ*half].
+      {
+        const sax = outsideX, saz = wp.z + signZ * half;
+        const sbx = outsideX, sbz = wp.z;
+        rects.push({
+          minX: Math.min(sax, sbx) - h - PLAYER_RADIUS,
+          maxX: Math.max(sax, sbx) + h + PLAYER_RADIUS,
+          minZ: Math.min(saz, sbz) - h - PLAYER_RADIUS,
+          maxZ: Math.max(saz, sbz) + h + PLAYER_RADIUS,
         });
       }
     }
@@ -722,6 +1033,20 @@ export class RoomTemplatePreview {
     const poly = connector.polyline;
     const half = connector.width / 2;
 
+    // True iff poly[k] is an actual 90° bend (axis switches between in and
+    // out). Mirrors server Stitcher.computeConnectorFloorRegions.
+    const isBendAt = (k: number): boolean => {
+      if (k <= 0 || k >= poly.length - 1) return false;
+      const prev = poly[k - 1]!, wp = poly[k]!, next = poly[k + 1]!;
+      const dInX = wp.x - prev.x, dInZ = wp.z - prev.z;
+      const dOutX = next.x - wp.x, dOutZ = next.z - wp.z;
+      if (Math.hypot(dInX, dInZ) < AXIS_EPSILON) return false;
+      if (Math.hypot(dOutX, dOutZ) < AXIS_EPSILON) return false;
+      const inAlongX  = Math.abs(dInZ)  <= AXIS_EPSILON;
+      const outAlongX = Math.abs(dOutZ) <= AXIS_EPSILON;
+      return inAlongX !== outAlongX;
+    };
+
     for (let i = 0; i < poly.length - 1; i++) {
       const a = poly[i]!;
       const b = poly[i + 1]!;
@@ -734,36 +1059,81 @@ export class RoomTemplatePreview {
       const alongZ = Math.abs(dx) <= AXIS_EPSILON;
       if (!alongX && !alongZ) continue; // diagonal — future branch
 
+      // Interior-bend trim — mirrors server Stitcher. Each adjacent segment
+      // retracts by `half` at every interior-bend end, so the bend block
+      // emitted below is the SOLE cover for the bend area (no inside-corner
+      // 2 m × 2 m z-fight).
+      const aTrim = isBendAt(i)     ? half : 0;
+      const bTrim = isBendAt(i + 1) ? half : 0;
+      if (aTrim + bTrim >= len - AXIS_EPSILON) continue; // degenerate
+
+      const ux = dx / len, uz = dz / len;
+      const aTy = a.y + (b.y - a.y) * (aTrim / len);
+      const bTy = b.y - (b.y - a.y) * (bTrim / len);
+
       if (alongX) {
-        const minX = Math.min(a.x, b.x);
-        const maxX = Math.max(a.x, b.x);
-        const yAtMinX = a.x <= b.x ? a.y : b.y;
-        const yAtMaxX = a.x <= b.x ? b.y : a.y;
+        const aTx = a.x + ux * aTrim;
+        const bTx = b.x - ux * bTrim;
+        const minX = Math.min(aTx, bTx);
+        const maxX = Math.max(aTx, bTx);
+        const yAtMinX = aTx <= bTx ? aTy : bTy;
+        const yAtMaxX = aTx <= bTx ? bTy : aTy;
         regions.push({
           minX, maxX,
           minZ: a.z - half, maxZ: a.z + half,
           y0: yAtMinX, y1: yAtMaxX,
           axis: yAtMinX === yAtMaxX ? 'flat' : 'x',
-          ceilingY: Math.min(yAtMinX, yAtMaxX) + CONNECTOR_WALL_HEIGHT,
+          ceilingY: Math.min(yAtMinX, yAtMaxX) + connector.height,
         });
       } else {
-        const minZ = Math.min(a.z, b.z);
-        const maxZ = Math.max(a.z, b.z);
-        const yAtMinZ = a.z <= b.z ? a.y : b.y;
-        const yAtMaxZ = a.z <= b.z ? b.y : a.y;
+        const aTz = a.z + uz * aTrim;
+        const bTz = b.z - uz * bTrim;
+        const minZ = Math.min(aTz, bTz);
+        const maxZ = Math.max(aTz, bTz);
+        const yAtMinZ = aTz <= bTz ? aTy : bTy;
+        const yAtMaxZ = aTz <= bTz ? bTy : aTy;
         regions.push({
           minX: a.x - half, maxX: a.x + half,
           minZ, maxZ,
           y0: yAtMinZ, y1: yAtMaxZ,
           axis: yAtMinZ === yAtMaxZ ? 'flat' : 'z',
-          ceilingY: Math.min(yAtMinZ, yAtMaxZ) + CONNECTOR_WALL_HEIGHT,
+          ceilingY: Math.min(yAtMinZ, yAtMaxZ) + connector.height,
         });
       }
+    }
+
+    // ── Per-bend block floor regions ───────────────────────────────────────
+    // One full `width × width` flat block per interior bend waypoint covers
+    // all four quadrants of the bend area (outside corner + inside corner +
+    // the two "side" quadrants). Replaces the previous half × half outside-
+    // corner patch — the bigger footprint is needed because both adjacent
+    // segments retract by `half` at the waypoint, so the bend must be sole-
+    // covered by this block. Carries the connector's ceilingY field (the
+    // client mirror's extra; server FloorRegion has no ceilingY).
+    for (let k = 1; k < poly.length - 1; k++) {
+      if (!isBendAt(k)) continue;
+      const wp = poly[k]!;
+      regions.push({
+        minX: wp.x - half, maxX: wp.x + half,
+        minZ: wp.z - half, maxZ: wp.z + half,
+        y0: wp.y, y1: wp.y, axis: 'flat',
+        ceilingY: wp.y + connector.height,
+      });
     }
     return regions;
   }
 
-  private _buildRoom(tmpl: WireTemplate): THREE.Group {
+  private _buildRoom(placement: RoomPlacement): THREE.Group {
+    const tmpl = placement.template;
+    // `undefined` is the signal "preview mode, no graph context — cut every
+    // exit as a default-width doorway so the previewer sees them". A defined
+    // object is the stitched-dungeon path: only exits the stitcher wired a
+    // connector to are cut (others stay solid wall). Without that gate, a
+    // template reused at a slot that doesn't use all its exits (e.g. b3 the
+    // dead-end, or b1's south_entry where the connector lands on west_entry)
+    // opens a doorway into the void. Mirrors server
+    // Stitcher.computeRoomWallRects exactly.
+    const exitDoorDims = placement.exitDoorDims;
     const root = new THREE.Group();
     root.name = `room_${tmpl.id}`;
 
@@ -785,7 +1155,7 @@ export class RoomTemplatePreview {
       color: 0x3a3128, roughness: 0.78, metalness: 0.05,
     });
     for (const dir of ['N', 'S', 'E', 'W'] as const) {
-      for (const mesh of this._buildWallSegments(dir, tmpl.exits, sizeX, sizeZ, wallH, wallMat)) {
+      for (const mesh of this._buildWallSegments(dir, tmpl.exits, exitDoorDims, sizeX, sizeZ, wallH, wallMat)) {
         root.add(mesh);
       }
     }
@@ -839,10 +1209,30 @@ export class RoomTemplatePreview {
       }
     }
 
-    // Interior point light — without it the enclosed box is pitch black.
-    const light = new THREE.PointLight(0xffd0a0, 1.6, Math.max(sizeX, sizeZ) * 1.4, 1.4);
-    light.position.set(0, wallH * 0.8, 0);
-    root.add(light);
+    // Interior lights — without them the enclosed box is pitch black. A
+    // single centre light leaves the corners gloomy in any room ≳ 14 m on
+    // either side (intensity falls off as 1/d^1.4); above that threshold
+    // use a 2×2 quarter-position grid so the floor reads evenly. Per-light
+    // intensity is sized to keep total flux ~comparable to the old single
+    // light at small-room sizes and noticeably brighter at large ones.
+    const ROOM_GRID_THRESHOLD = 14;
+    const lightY = wallH * 0.8;
+    const lightRange = Math.max(sizeX, sizeZ) * 0.95 + 4;
+    if (sizeX > ROOM_GRID_THRESHOLD || sizeZ > ROOM_GRID_THRESHOLD) {
+      // 2×2 quarter-position grid. Lights at (±sizeX/4, _, ±sizeZ/4).
+      const qx = sizeX / 4, qz = sizeZ / 4;
+      for (const sx of [-1, +1] as const) {
+        for (const sz of [-1, +1] as const) {
+          const light = new THREE.PointLight(0xffd0a0, 1.3, lightRange, 1.4);
+          light.position.set(sx * qx, lightY, sz * qz);
+          root.add(light);
+        }
+      }
+    } else {
+      const light = new THREE.PointLight(0xffd0a0, 1.6, lightRange, 1.4);
+      light.position.set(0, lightY, 0);
+      root.add(light);
+    }
 
     return root;
   }
@@ -919,23 +1309,43 @@ export class RoomTemplatePreview {
   }
 
   /**
-   * Build one wall as up to N+2 box segments — N+1 around N doorway
-   * cutouts in the lower band (0 → DOORWAY_HEIGHT), plus one full-width
-   * lintel spanning DOORWAY_HEIGHT → wallH. Walls with no doorways are
-   * a single full-height box.
+   * Build one wall as a run of box segments around its doorway cutouts.
+   * Each cutout is sized to ITS exit's connector: width carves the
+   * horizontal gap, height sets the open height. Full-height wall
+   * segments run between cutouts; each cutout gets its OWN lintel box
+   * spanning just its X-range, from its cutout height up to wallH.
+   * Walls with no doorways are a single full-height box.
+   *
+   * Per-exit dims come from `exitDoorDims` (keyed by exit id); an exit
+   * absent from the map — no attached connector, e.g. the admin
+   * single-room preview — falls back to DOORWAY_WIDTH/DOORWAY_HEIGHT.
+   *
+   * Per-cutout (rather than one wall-wide) lintels are required now that
+   * doorways on the same wall can differ in height. They also make the
+   * old CONNECTOR_WALL_HEIGHT === DOORWAY_HEIGHT invariant unnecessary:
+   * each cutout is sized to its OWN connector's height, so the cutout
+   * roof and the connector tube roof match by construction — no open
+   * slot above the connector to seal.
    *
    * For N/S walls the wall runs along X; the cross-axis position is on Z.
    * For E/W walls it's the other way around.
    */
   private _buildWallSegments(
-    direction: 'N' | 'S' | 'E' | 'W',
-    allExits:  WireExit[],
-    sizeX:     number,
-    sizeZ:     number,
-    wallH:     number,
-    material:  THREE.Material,
+    direction:    'N' | 'S' | 'E' | 'W',
+    allExits:     WireExit[],
+    exitDoorDims: Record<string, { width: number; height: number }> | undefined,
+    sizeX:        number,
+    sizeZ:        number,
+    wallH:        number,
+    material:     THREE.Material,
   ): THREE.Mesh[] {
-    const wallExits = allExits.filter((e) => e.direction === direction);
+    // Preview-room mode (no dims map) → cut every exit; stitched mode →
+    // cut ONLY exits the stitcher wired a connector to. Mirrors server
+    // Stitcher.computeRoomWallRects.
+    const wallExits = allExits.filter((e) =>
+      e.direction === direction &&
+      (exitDoorDims === undefined || e.id in exitDoorDims)
+    );
 
     const axis: 'x' | 'z' = (direction === 'N' || direction === 'S') ? 'x' : 'z';
     const wallAxisSize    = axis === 'x' ? sizeX : sizeZ;
@@ -953,30 +1363,45 @@ export class RoomTemplatePreview {
       return [this._buildWallBox(axis, crossPos, minA, maxA, 0, wallH, material)];
     }
 
-    // Doorway band — segments around each cutout. Height clamps to wallH
-    // for walls shorter than the default doorway (no headroom).
-    const doorPositions = wallExits
-      .map((e) => axis === 'x' ? e.position.x : e.position.z)
-      .sort((a, b) => a - b);
+    // One cutout descriptor per exit on this wall — its axis position
+    // plus its per-exit width/height (fallback for an exit with no
+    // attached connector). Sorted along the wall axis so the segment
+    // walk below proceeds left-to-right.
+    const cutouts = wallExits
+      .map((e) => {
+        // Optional-chain since exitDoorDims is undefined in preview mode.
+        // In stitched mode it's defined, but an exit could still be absent
+        // here if it's been filtered out above — defensively fall back.
+        const dims = exitDoorDims?.[e.id];
+        return {
+          pos:    axis === 'x' ? e.position.x : e.position.z,
+          width:  dims?.width  ?? DOORWAY_WIDTH,
+          height: dims?.height ?? DOORWAY_HEIGHT,
+        };
+      })
+      .sort((a, b) => a.pos - b.pos);
 
-    const lowerH = Math.min(DOORWAY_HEIGHT, wallH);
     const meshes: THREE.Mesh[] = [];
     let segStart = minA;
-    for (const dp of doorPositions) {
-      const segEnd = dp - DOORWAY_WIDTH / 2;
-      if (segEnd > segStart) {
-        meshes.push(this._buildWallBox(axis, crossPos, segStart, segEnd, 0, lowerH, material));
+    for (const c of cutouts) {
+      const cutLow  = c.pos - c.width / 2;
+      const cutHigh = c.pos + c.width / 2;
+      // Full-height wall segment between the previous cutout and this one.
+      if (cutLow > segStart) {
+        meshes.push(this._buildWallBox(axis, crossPos, segStart, cutLow, 0, wallH, material));
       }
-      segStart = dp + DOORWAY_WIDTH / 2;
+      // Per-cutout lintel — spans this cutout's X-range, from its open
+      // height up to wallH. Clamp to wallH so a cutout taller than the
+      // wall just yields no lintel.
+      const cutoutH = Math.min(c.height, wallH);
+      if (wallH > cutoutH) {
+        meshes.push(this._buildWallBox(axis, crossPos, cutLow, cutHigh, cutoutH, wallH, material));
+      }
+      segStart = cutHigh;
     }
+    // Trailing full-height wall segment past the last cutout.
     if (maxA > segStart) {
-      meshes.push(this._buildWallBox(axis, crossPos, segStart, maxA, 0, lowerH, material));
-    }
-
-    // Lintel — full-width band above the doorway. Skipped when the wall
-    // is at or below DOORWAY_HEIGHT (no headroom for a lintel).
-    if (wallH > DOORWAY_HEIGHT) {
-      meshes.push(this._buildWallBox(axis, crossPos, minA, maxA, DOORWAY_HEIGHT, wallH, material));
+      meshes.push(this._buildWallBox(axis, crossPos, segStart, maxA, 0, wallH, material));
     }
 
     return meshes;

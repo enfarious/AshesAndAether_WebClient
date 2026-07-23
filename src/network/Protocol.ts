@@ -1061,6 +1061,23 @@ export type MarketDataPayload =
 
 // ── Examine / Peek ───────────────────────────────────────────────────────────
 
+/** One equipped item as seen by an onlooker. BASE ITEM ONLY — augments,
+ *  sockets, and enchants are deliberately omitted. A base item's stats reach
+ *  a wiki the first week regardless, but a player's actual build stays
+ *  theirs. */
+export interface ExamineEquipmentSlot {
+  /** Canonical slot id: 'weapon1' | 'head' | 'chest' | ... */
+  slot:     string;
+  /** Display name of the base item. */
+  name:     string;
+  /** Icon key for the slot cell. */
+  icon?:    string;
+  tier?:    number;
+  /** Base stats, revealed on click. NOT the wearer's effective values — this
+   *  is the item's own line, identical for everyone who owns one. */
+  baseStats?: Record<string, number>;
+}
+
 export interface ExaminePeekPayload {
   id:          string;
   name:        string;
@@ -1077,6 +1094,17 @@ export interface ExaminePeekPayload {
   tag?:        string;
   // Plant
   growthStage?: string;
+  // Player — drives the inspect panel. Absent for every other entityType,
+  // which is what tells the client to render a plain text verdict instead.
+  equipment?:  ExamineEquipmentSlot[];
+  guildTag?:   string;
+  guildName?:  string;
+  /** Single-symbol role tag ('T','H','M','R'...) from the slotted loadout. */
+  role?:       string;
+  /** Difficulty verdict vs the VIEWER's level. Server-computed from the same
+   *  conMultiplier the XP curve uses, so what you're told and what you'd earn
+   *  can never disagree. Omitted when examining a player. */
+  conVerdict?: string;
 }
 
 // ── Error ─────────────────────────────────────────────────────────────────────

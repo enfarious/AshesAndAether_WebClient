@@ -579,11 +579,29 @@ export class TargetWindow {
     this.root.classList.remove('tw-hidden');
   }
 
+  /** Beyond this, a target is dropped rather than displayed.
+   *
+   *  Targets could previously persist at any distance — a mob 150m+ away
+   *  stayed in the frame with a live distance readout, and a bare /attack
+   *  would try to re-engage it. Nothing useful can be done to something that
+   *  far off: it's outside the 50m combat engagement range, outside the 100m
+   *  /approach creature cap, and outside interact range by a wide margin. */
+  private static readonly TARGET_DROP_DISTANCE = 50;
+
   private _refresh(): void {
     const id = this.player.targetId;
     if (!id) return;
 
     const entity = this.entities.get(id);
+
+    // Drop targets that have wandered (or that we've run) out of range. Only
+    // when the entity is actually known — a missing entity means it's out of
+    // the client's replication window, which the `else` branch below already
+    // handles by blanking the distance rather than clearing.
+    if (entity && this._distanceTo(entity) > TargetWindow.TARGET_DROP_DISTANCE) {
+      this.player.clearTarget();
+      return;
+    }
 
     // Name
     const nameEl = this.root.querySelector<HTMLElement>('#tw-name')!;

@@ -339,41 +339,58 @@ export class ForestRenderer {
 // Pine: each variant embeds its foliage tiers directly.
 // yFrac = fraction of trunkH where the cone BASE starts (wide bottom of each tier).
 // Tiers overlap intentionally — each tier's apex is above the next tier's base.
+//
+// STAND-GROWN WHITE PINE (updated 2026-07-31 to match the UE meshes in
+// SourceArt/Trees/SM_Tree_Pine_Kit.fbx). Variant is AGE, and age drives
+// SELF-PRUNING: shaded lower branches die and drop, so the lowest tier's
+// yFrac climbs as the tree matures. A sapling is conical nearly to the
+// ground; an ancient is a bare column with a crown on top.
+//
+// This replaced an open-grown spec whose ancient variant was 22 m tall with a
+// 6.5 m cone radius — a ~13 m canopy on every mature tree, which closed the
+// forest floor and made a pine stand impassable. Heights went UP and
+// footprints went DOWN: ancient is now 26 m tall and ~6.9 m wide.
+//
+// Keep in step with PINE_SPECS in the Blender authoring script and with the
+// UE meshes; the two clients render the same server trees and are compared
+// directly (the web client is the accessibility path, not a dev-only tool).
 const PINE_SPECS = [
-  // Variant 0: young sapling — 2 tiers
-  { trunkH: 8,  trunkR: 0.18, cones: [
-    { r: 3.2, h: 5.5, yFrac: 0.28 },
-    { r: 1.6, h: 3.8, yFrac: 0.56 },
+  // Variant 0: sapling — conical to the ground, no self-pruning yet
+  { trunkH: 6,  trunkR: 0.12, cones: [
+    { r: 1.55, h: 2.6, yFrac: 0.14 },
+    { r: 1.20, h: 2.2, yFrac: 0.36 },
+    { r: 0.85, h: 1.8, yFrac: 0.58 },
+    { r: 0.45, h: 1.4, yFrac: 0.78 },
   ]},
-  // Variant 1: adolescent — 3 tiers
-  { trunkH: 11, trunkR: 0.24, cones: [
-    { r: 4.0, h: 6.5, yFrac: 0.26 },
-    { r: 2.6, h: 5.2, yFrac: 0.46 },
-    { r: 1.4, h: 3.5, yFrac: 0.65 },
+  // Variant 1: adolescent — lower whorls starting to shade out
+  { trunkH: 10, trunkR: 0.18, cones: [
+    { r: 1.90, h: 3.0, yFrac: 0.30 },
+    { r: 1.45, h: 2.6, yFrac: 0.48 },
+    { r: 1.00, h: 2.2, yFrac: 0.65 },
+    { r: 0.55, h: 1.7, yFrac: 0.82 },
   ]},
-  // Variant 2: mature — 4 tiers
-  { trunkH: 14, trunkR: 0.30, cones: [
-    { r: 5.0, h: 7.0, yFrac: 0.24 },
-    { r: 3.4, h: 6.0, yFrac: 0.42 },
-    { r: 2.1, h: 4.8, yFrac: 0.58 },
-    { r: 1.0, h: 3.2, yFrac: 0.73 },
+  // Variant 2: mature — clean bole for the lower half
+  { trunkH: 15, trunkR: 0.26, cones: [
+    { r: 2.30, h: 3.4, yFrac: 0.46 },
+    { r: 1.75, h: 3.0, yFrac: 0.60 },
+    { r: 1.20, h: 2.5, yFrac: 0.73 },
+    { r: 0.65, h: 1.9, yFrac: 0.86 },
   ]},
-  // Variant 3: old growth — 5 tiers
-  { trunkH: 18, trunkR: 0.40, cones: [
-    { r: 5.8, h: 7.5, yFrac: 0.22 },
-    { r: 4.2, h: 6.5, yFrac: 0.37 },
-    { r: 2.8, h: 5.5, yFrac: 0.51 },
-    { r: 1.7, h: 4.0, yFrac: 0.63 },
-    { r: 0.9, h: 2.8, yFrac: 0.75 },
+  // Variant 3: old growth — crown confined to the top ~40%
+  { trunkH: 20, trunkR: 0.36, cones: [
+    { r: 2.75, h: 3.6, yFrac: 0.58 },
+    { r: 2.20, h: 3.2, yFrac: 0.68 },
+    { r: 1.65, h: 2.8, yFrac: 0.78 },
+    { r: 1.05, h: 2.3, yFrac: 0.87 },
+    { r: 0.55, h: 1.8, yFrac: 0.95 },
   ]},
-  // Variant 4: ancient — 6 tiers, bare spire tip
-  { trunkH: 22, trunkR: 0.52, cones: [
-    { r: 6.5, h: 8.0, yFrac: 0.20 },
-    { r: 5.0, h: 7.0, yFrac: 0.33 },
-    { r: 3.6, h: 6.0, yFrac: 0.46 },
-    { r: 2.3, h: 4.8, yFrac: 0.57 },
-    { r: 1.3, h: 3.5, yFrac: 0.68 },
-    { r: 0.6, h: 2.2, yFrac: 0.79 },
+  // Variant 4: ancient — bare column, crown only in the top third
+  { trunkH: 26, trunkR: 0.48, cones: [
+    { r: 3.20, h: 3.8, yFrac: 0.68 },
+    { r: 2.55, h: 3.4, yFrac: 0.76 },
+    { r: 1.90, h: 3.0, yFrac: 0.84 },
+    { r: 1.25, h: 2.5, yFrac: 0.91 },
+    { r: 0.60, h: 1.9, yFrac: 0.97 },
   ]},
 ] as const;
 
@@ -388,63 +405,87 @@ type DeciduousSpec = {
 
 type DeciduousSpecies = 'oak_tree' | 'maple_tree' | 'apple_tree' | 'pear_tree';
 
+// Updated 2026-07-31 to match the UE meshes in
+// SourceArt/Trees/SM_Tree_Deciduous_Kit.fbx. Two changes across all four
+// species:
+//
+//   1. HEIGHT now carries age. The previous table moved trunkH very little
+//      (oak: 9 -> 13 m across all five variants) while crownR grew a lot
+//      (5.5 -> 9.0), so an "ancient" tree was mostly just fatter than a young
+//      one, and mature specimens came out wider than they were tall.
+//   2. FOOTPRINTS came down hard. Ancient oak was crownR 9.0 with limbReach
+//      10.5 -- a ~21 m canopy -- and giant maple was wider still. At the tree
+//      densities the wildlife sim generates, that closes the canopy and makes
+//      a wood impassable.
+//
+// Figures are stylised-but-Earth, from northeastern US species: red oak
+// 20-25 m, sugar maple 25-35 m, orchard apple 4-6 m and distinctly wider than
+// tall, common pear 6-12 m and distinctly upright. Apple and pear are kept
+// deliberately far apart in habit -- they are the two species most likely to
+// be seen side by side near OSM farmland, and "small apple" vs "small pear"
+// should not be the same silhouette.
+//
+// Keep in step with the Blender authoring script and the UE meshes; both
+// clients render the same server trees and get compared directly.
 const DECIDUOUS_SPECS: Record<DeciduousSpecies, ReadonlyArray<DeciduousSpec>> = {
-  // Oaks: "1 2 1" silhouette — 1 crown sphere on top, 2 wide limbs in the middle,
-  // trunk tapers to the ground. limbReach > crownR pushes limbs well past the crown.
+  // Oaks: heavy irregular limbs, crown held high on a clean bole once mature.
+  // limbReach > crownR keeps the classic oak habit of limbs pushing past the
+  // crown mass.
   oak_tree: [
-    // 0: young oak — compact single crown, no limbs yet
-    { trunkH: 9,  crownR: 5.5, limbs: 0 },
-    // 1: adolescent — first two limbs spreading
-    { trunkH: 11, crownR: 6.5, limbs: 2, limbReach: 5.5, limbYFrac: 0.60, limbRatio: 0.38 },
-    // 2: classic mature "1 2 1"
-    { trunkH: 12, crownR: 7.5, limbs: 2, limbReach: 7.5, limbYFrac: 0.58, limbRatio: 0.40 },
-    // 3: large, three heavy limbs
-    { trunkH: 13, crownR: 8.0, limbs: 3, limbReach: 7.0, limbYFrac: 0.56, limbRatio: 0.38 },
-    // 4: ancient — two massive limbs reaching very wide
-    { trunkH: 13, crownR: 9.0, limbs: 2, limbReach: 10.5, limbYFrac: 0.54, limbRatio: 0.46 },
+    // 0: sapling -- single small crown, no limbs
+    { trunkH: 3.2,  crownR: 1.10, limbs: 0 },
+    // 1: adolescent -- first limbs, crown still low
+    { trunkH: 7.0,  crownR: 1.85, limbs: 2, limbReach: 1.5, limbYFrac: 0.58, limbRatio: 0.42 },
+    // 2: mature -- bole clearing, limbs spreading
+    { trunkH: 13.0, crownR: 2.60, limbs: 3, limbReach: 2.9, limbYFrac: 0.60, limbRatio: 0.44 },
+    // 3: large -- four heavy limbs
+    { trunkH: 19.0, crownR: 3.10, limbs: 4, limbReach: 4.0, limbYFrac: 0.62, limbRatio: 0.42 },
+    // 4: ancient -- tall, five limbs, crown in the top third
+    { trunkH: 24.0, crownR: 3.50, limbs: 5, limbReach: 5.2, limbYFrac: 0.64, limbRatio: 0.46 },
   ],
-  // Maples: broad, full crowns — crownR is large, limbs spread wide and overlap
-  // to create a dense rounded canopy.
+  // Maples: taller than oak with a DENSER, more oval crown -- more limbs at
+  // tighter reach so the masses overlap into one canopy rather than reading as
+  // separate lobes. Crown starts lower than oak and stays fuller.
   maple_tree: [
-    // 0: young maple — full round crown, no branches yet
-    { trunkH: 8,  crownR: 6.5, limbs: 0 },
-    // 1: medium maple — three spreading limbs fill out the canopy
-    { trunkH: 9,  crownR: 8.0, limbs: 3, limbReach: 6.5, limbYFrac: 0.60, limbRatio: 0.33 },
-    // 2: full spreading maple
-    { trunkH: 10, crownR: 9.0, limbs: 4, limbReach: 8.0, limbYFrac: 0.58, limbRatio: 0.32 },
-    // 3: large maple, very wide canopy
-    { trunkH: 10, crownR: 10.0, limbs: 3, limbReach: 9.5, limbYFrac: 0.56, limbRatio: 0.36 },
-    // 4: giant maple — massive spreading crown
-    { trunkH: 11, crownR: 11.0, limbs: 4, limbReach: 10.5, limbYFrac: 0.55, limbRatio: 0.33 },
+    // 0: sapling
+    { trunkH: 3.6,  crownR: 1.15, limbs: 0 },
+    // 1: young -- three upright limbs
+    { trunkH: 8.5,  crownR: 1.80, limbs: 3, limbReach: 1.3, limbYFrac: 0.52, limbRatio: 0.36 },
+    // 2: mature -- dense oval crown
+    { trunkH: 16.0, crownR: 2.50, limbs: 4, limbReach: 2.3, limbYFrac: 0.50, limbRatio: 0.35 },
+    // 3: large
+    { trunkH: 23.0, crownR: 3.00, limbs: 5, limbReach: 3.2, limbYFrac: 0.48, limbRatio: 0.36 },
+    // 4: giant -- tallest species in the set
+    { trunkH: 29.0, crownR: 3.40, limbs: 6, limbReach: 4.0, limbYFrac: 0.46, limbRatio: 0.35 },
   ],
-  // Apple: short orchard tree — broad rounded crown, gnarled limbs at older variants.
-  // Reads as "wider than tall" silhouette; clearly distinct from oak (taller, leaner)
-  // and maple (much bigger overall).
+  // Apple: orchard tree. LOW branching and wider than tall -- limbs leave the
+  // trunk at barely a third of its height and reach nearly flat. The habit,
+  // not the scale, is what separates it from pear.
   apple_tree: [
-    // 0: young sapling
-    { trunkH: 5,  crownR: 4.0, limbs: 0 },
-    // 1: young orchard tree, two limbs
-    { trunkH: 6,  crownR: 5.0, limbs: 2, limbReach: 4.0, limbYFrac: 0.55, limbRatio: 0.36 },
-    // 2: mature orchard apple
-    { trunkH: 7,  crownR: 5.5, limbs: 3, limbReach: 4.5, limbYFrac: 0.52, limbRatio: 0.38 },
-    // 3: full mature, wider crown
-    { trunkH: 7,  crownR: 6.0, limbs: 3, limbReach: 5.5, limbYFrac: 0.50, limbRatio: 0.40 },
-    // 4: gnarled old apple — wide, twisted limbs
-    { trunkH: 8,  crownR: 6.5, limbs: 4, limbReach: 6.0, limbYFrac: 0.48, limbRatio: 0.42 },
+    // 0: whip
+    { trunkH: 1.6, crownR: 0.55, limbs: 0 },
+    // 1: young orchard tree
+    { trunkH: 2.6, crownR: 0.85, limbs: 3, limbReach: 0.95, limbYFrac: 0.38, limbRatio: 0.44 },
+    // 2: bearing age
+    { trunkH: 3.8, crownR: 1.15, limbs: 4, limbReach: 1.55, limbYFrac: 0.35, limbRatio: 0.46 },
+    // 3: full mature -- spread now exceeds height
+    { trunkH: 4.8, crownR: 1.35, limbs: 5, limbReach: 2.05, limbYFrac: 0.33, limbRatio: 0.48 },
+    // 4: gnarled old apple -- widest-to-tallest ratio in the set
+    { trunkH: 5.6, crownR: 1.50, limbs: 5, limbReach: 2.45, limbYFrac: 0.31, limbRatio: 0.50 },
   ],
-  // Pear: tall, narrow, upright pyramidal silhouette — opposite of apple.
-  // Limb reach stays small relative to trunkH so the canopy stays slender.
+  // Pear: upright and narrow -- the opposite habit to apple. Limbs leave the
+  // trunk steeply and stay close in, giving the pyramidal silhouette.
   pear_tree: [
-    // 0: young sapling
-    { trunkH: 7,  crownR: 3.0, limbs: 0 },
-    // 1: adolescent
-    { trunkH: 9,  crownR: 3.5, limbs: 2, limbReach: 2.5, limbYFrac: 0.65, limbRatio: 0.32 },
-    // 2: mature
-    { trunkH: 11, crownR: 4.0, limbs: 3, limbReach: 3.0, limbYFrac: 0.62, limbRatio: 0.30 },
+    // 0: whip
+    { trunkH: 2.2,  crownR: 0.55, limbs: 0 },
+    // 1: adolescent -- steeply angled limbs
+    { trunkH: 4.2,  crownR: 0.80, limbs: 3, limbReach: 0.55, limbYFrac: 0.45, limbRatio: 0.34 },
+    // 2: bearing age
+    { trunkH: 6.8,  crownR: 1.05, limbs: 4, limbReach: 0.85, limbYFrac: 0.42, limbRatio: 0.32 },
     // 3: large pyramidal
-    { trunkH: 12, crownR: 4.5, limbs: 3, limbReach: 3.5, limbYFrac: 0.60, limbRatio: 0.32 },
-    // 4: tall heritage pear
-    { trunkH: 13, crownR: 5.0, limbs: 4, limbReach: 4.0, limbYFrac: 0.58, limbRatio: 0.30 },
+    { trunkH: 9.5,  crownR: 1.25, limbs: 5, limbReach: 1.15, limbYFrac: 0.40, limbRatio: 0.33 },
+    // 4: tall heritage pear -- nearly 3x taller than wide
+    { trunkH: 11.5, crownR: 1.40, limbs: 5, limbReach: 1.40, limbYFrac: 0.38, limbRatio: 0.32 },
   ],
 };
 

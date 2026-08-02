@@ -1,7 +1,6 @@
 import type { PlayerState }  from '@/state/PlayerState';
 import type { WorldState }   from '@/state/WorldState';
 import type { SocketClient } from '@/network/SocketClient';
-import type { CorruptionState } from '@/network/Protocol';
 
 /** Display label for the contextual-interact key. Sourced as a const here so
  *  there's exactly one place to swap when rebindable keybinds ship — that
@@ -11,19 +10,30 @@ const INTERACT_KEY_LABEL = 'F';
 
 // ── Corruption display data ──────────────────────────────────────────────────
 
-const CORRUPTION_COLORS: Record<CorruptionState, { gradient: string; label: string }> = {
-  CLEAN:   { gradient: 'linear-gradient(90deg, #2a3a2a, #3a5a3a)', label: 'rgba(180,200,180,0.50)' },
-  STAINED: { gradient: 'linear-gradient(90deg, #3a3a1a, #6a6a20)', label: 'rgba(200,200,100,0.70)' },
-  WARPED:  { gradient: 'linear-gradient(90deg, #3a2a10, #8a5a10)', label: 'rgba(220,160,60,0.85)' },
-  LOST:    { gradient: 'linear-gradient(90deg, #2a1030, #6a2080)', label: 'rgba(180,100,220,0.90)' },
-};
+/** Bar styling by corruption tier, 0 = clean through 5 = Reaver.
+ *  Keyed by tier NUMBER rather than the old four-value state enum: the
+ *  server sends `tier` and `tierName`, and the v1 enum it used to send
+ *  ('CLEAN'|'STAINED'|'WARPED'|'LOST') no longer exists. Indexing this by
+ *  the absent field is what made _updateCorruption throw on every refresh. */
+const CORRUPTION_TIER_STYLES: { gradient: string; label: string }[] = [
+  { gradient: 'linear-gradient(90deg, #2a3a2a, #3a5a3a)', label: 'rgba(180,200,180,0.50)' }, // 0 Clean
+  { gradient: 'linear-gradient(90deg, #2f3a22, #4d6a2c)', label: 'rgba(190,210,150,0.60)' }, // 1 Touched
+  { gradient: 'linear-gradient(90deg, #3a3a1a, #6a6a20)', label: 'rgba(200,200,100,0.70)' }, // 2 Stained
+  { gradient: 'linear-gradient(90deg, #3a2a10, #8a5a10)', label: 'rgba(220,160,60,0.85)' },  // 3 Warped
+  { gradient: 'linear-gradient(90deg, #3a1520, #8a2038)', label: 'rgba(230,120,140,0.88)' }, // 4 Severed
+  { gradient: 'linear-gradient(90deg, #2a1030, #6a2080)', label: 'rgba(180,100,220,0.90)' }, // 5 Reaver
+];
 
-const CORRUPTION_TOOLTIPS: Record<CorruptionState, string> = {
-  CLEAN:   'Corruption: Clean — No benefits, no taint.',
-  STAINED: 'Corruption: Stained — +5% cache detection.',
-  WARPED:  'Corruption: Warped — +15% cache detection, +10% hazard resist, dead system interface.',
-  LOST:    'Corruption: Lost — +30% cache detection, +25% hazard resist, dead system interface.',
-};
+/** Tooltip by tier, 0 = clean. Blurbs mirror core/Corruption.ts
+ *  CORRUPTION_TIERS — keep them in step when tier effects change. */
+const CORRUPTION_TIER_TOOLTIPS: string[] = [
+  'Corruption: Clean — no tiers unlocked, no taint.',
+  'Corruption: Touched — PvE damage +5%.',
+  'Corruption: Stained — damage taken -5%.',
+  'Corruption: Warped — camo while holding still.',
+  'Corruption: Severed — PvP damage +5%.',
+  'Corruption: Reaver — Aether-faded chests.',
+];
 
 /**
  * HUD — vitals bars, combat gauges, target display, and death overlay.
@@ -36,7 +46,10 @@ export class HUD {
   private clockEl:       HTMLElement | null = null;
   private timerInterval: ReturnType<typeof setInterval> | null = null;
   private clockInterval: ReturnType<typeof setInterval> | null = null;
-  private _lastCorruptionState: CorruptionState = 'CLEAN';
+  private _lastCorruptionTier: number = 0;
+  /** Last applied alive/dead state, or null when no character is loaded.
+   *  Death-overlay work only runs on a transition — see _updateDeathOverlay. */
+  private _lastAliveState: boolean | null = null;
   private effectsInterval: ReturnType<typeof setInterval> | null = null;
   private _lastBuffCount   = 0;
   private _lastDebuffCount = 0;
@@ -1042,9 +1055,13 @@ export class HUD {
   }
 
   private _updateCorruption(): void {
-    const state = this.player.corruptionState;
+    const tier  = this.player.corruptionTier;
     const value = this.player.corruption;
-    const colors = CORRUPTION_COLORS[state];
+    // Clamp the index rather than trusting it: a server-side tier list that
+    // grows past 5 should degrade to the deepest style we have, not throw.
+    const idx    = Math.max(0, Math.min(CORRUPTION_TIER_STYLES.length - 1, tier));
+    const colors = CORRUPTION_TIER_STYLES[idx]!;
+    const label  = this.player.corruptionTierName || 'Clean';
 
     // Fill
     const fillEl = this.root.querySelector<HTMLElement>('#hud-corruption-fill');
@@ -1056,17 +1073,17 @@ export class HUD {
     // Label
     const textEl = this.root.querySelector<HTMLElement>('#hud-corruption-text');
     if (textEl) {
-      textEl.textContent = `${state} ${Math.round(value)}`;
+      textEl.textContent = `${label.toUpperCase()} ${Math.round(value)}`;
       textEl.style.color = colors.label;
     }
 
     // Tooltip
     const barEl = this.root.querySelector<HTMLElement>('#hud-corruption');
-    if (barEl) barEl.title = CORRUPTION_TOOLTIPS[state];
+    if (barEl) barEl.title = CORRUPTION_TIER_TOOLTIPS[idx] ?? CORRUPTION_TIER_TOOLTIPS[0]!;
 
-    // Pulse on state change
-    if (state !== this._lastCorruptionState) {
-      this._lastCorruptionState = state;
+    // Pulse on tier change
+    if (tier !== this._lastCorruptionTier) {
+      this._lastCorruptionTier = tier;
       if (barEl) {
         barEl.classList.remove('pulse');
         // Force reflow so re-adding the class restarts the animation
@@ -1133,7 +1150,33 @@ export class HUD {
 
   private _updateDeathOverlay(): void {
     if (!this.deathOverlay) return;
+
+    // No character loaded yet (login / character select). PlayerState's
+    // isAlive defaults to false, so without this guard the HUD concludes the
+    // player is dead before they've picked a character and shows the death
+    // overlay — a full-screen radial-gradient effect — over the login screen.
+    //
+    // This went unnoticed for a long time because _updateCorruption threw on
+    // every _refresh and aborted the method before reaching this line. The
+    // exception was accidentally acting as a circuit breaker; fixing it
+    // turned the effect on and pinned CPU and GPU at the login screen.
+    if (!this.player.id) {
+      this.deathOverlay.classList.remove('visible');
+      if (this.timerInterval !== null) {
+        clearInterval(this.timerInterval);
+        this.timerInterval = null;
+      }
+      this._lastAliveState = null;
+      return;
+    }
+
     const alive = this.player.isAlive;
+
+    // Only act on a TRANSITION. _refresh runs on every state notify, and the
+    // old code scheduled a requestAnimationFrame on each one while dead — a
+    // rAF per notify, forever, for a class that was already applied.
+    if (alive === this._lastAliveState) return;
+    this._lastAliveState = alive;
 
     if (!alive) {
       // Fade in (slight delay to let the 3D tendril effect start first)

@@ -26,6 +26,11 @@ export interface ManifestAsset {
   optional?: boolean;
   metaPath?: string;  // for terrain_heightmap assets
   scale?:    number;  // per-asset scale multiplier (applied on top of zone unitScale)
+  /** Content stamp from the bake (mtime-size). Part of the IndexedDB cache
+   *  key, so a rebuilt artifact invalidates its own cache entry. Absent on
+   *  manifests baked before this existed — those fall back to path-only
+   *  keying, i.e. the old behaviour. */
+  buildId?:  string;
   /** Chunk side length in metres; only present on `buildings_chunked` assets. */
   chunkSizeM?: number;
   /** Spatial chunks; only present on `buildings_chunked` assets. */
@@ -460,7 +465,14 @@ export class AssetLoader {
   private async _loadGlb(asset: ManifestAsset, unitScale: number): Promise<THREE.Group> {
     if (!asset.path) throw new Error(`Asset ${asset.id} has no path (chunked assets must be loaded via their chunk entries, not directly)`);
     const url      = `${ClientConfig.serverUrl}${asset.path}`;
-    const cacheKey = `glb:v${DB_VERSION}:${asset.path}`;
+    // Cache key includes the bake's content stamp. Without it the key was
+    // path-only, and since paths are stable across rebakes a rebuilt GLB was
+    // never re-fetched: the client served last bake's geometry indefinitely
+    // while the server's collision used the new heightmap. Terrain looked
+    // right, collision was right, and they disagreed with each other.
+    const cacheKey = asset.buildId
+      ? `glb:v${DB_VERSION}:${asset.path}:${asset.buildId}`
+      : `glb:v${DB_VERSION}:${asset.path}`;
 
     let buffer = await this._dbGet<ArrayBuffer>(cacheKey);
     if (!buffer) {

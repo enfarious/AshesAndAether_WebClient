@@ -17,6 +17,11 @@ interface WaterFeature {
 
 interface WaterMeshEntry {
   mesh: THREE.Mesh;
+  /** Water body id from the bake, or null for legacy polygon-built meshes.
+   *  Ice forms per body, so this is how a freeze/thaw message finds the
+   *  geometry it applies to. */
+  bodyId?: number | null;
+  kind?: 'lake' | 'river' | null;
 }
 
 // ── Shader source ──────────────────────────────────────────────────────────────
@@ -44,10 +49,18 @@ void main() {
            * cos(pos.z * wf * 1.1 + uTime * 1.1);
   pos.y += (w1 * 0.6 + w2 * 0.4) * uWaveAmplitude;
 
-  // Analytical wave normal (partial derivatives of displacement)
+  // Analytical wave normal (partial derivatives of displacement).
+  //
+  // NOTE: the second term of dWdx previously carried an extra wf factor
+  // (1.3 * wf * cos(...)) on top of the outer wf multiply, scaling X slopes
+  // by wf^2 while Z slopes scaled by wf. The asymmetry produced hard
+  // directional banding -- chevrons running diagonally across large flat
+  // bodies -- because the normal tilted far harder along X than Z.
+  // d/dx sin(x*wf*1.3) is 1.3*wf*cos(...), and the outer factor already
+  // supplies the wf.
   float dWdx = wf * (
       cos(pos.x * wf + uTime * 1.2) * cos(pos.z * wf * 0.7 + uTime * 0.9) * 0.6
-    + 1.3 * wf * cos(pos.x * wf * 1.3 - uTime * 0.8)
+    + 1.3 * cos(pos.x * wf * 1.3 - uTime * 0.8)
       * cos(pos.z * wf * 1.1 + uTime * 1.1) * 0.4
   ) * uWaveAmplitude;
   float dWdz = wf * (
@@ -147,10 +160,18 @@ void main() {
   float fresnel = pow(1.0 - max(dot(normal, viewDir), 0.0), 3.0);
   fresnel = 0.3 + 0.7 * fresnel;
 
-  // Animated surface detail (two scrolling noise layers)
-  vec2 uv1 = vWorldPosition.xz * 0.08 + vec2(uTime * 0.02, uTime * 0.015);
-  vec2 uv2 = vWorldPosition.xz * 0.12 + vec2(-uTime * 0.018, uTime * 0.025);
-  float detail = noise(uv1) * 0.5 + noise(uv2) * 0.5;
+  // Animated surface detail — three octaves.
+  //
+  // Frequencies are in world metres: 0.08 meant a ~12.5m noise period, which
+  // on a large flat lake reads as huge slabs of colour sliding around rather
+  // than water. Mesh subdivision doesn't help here — vertex density affects
+  // displacement, not the fragment-stage colour pattern — so the frequency
+  // itself has to come up. A third octave breaks up the regularity that any
+  // two-layer value noise leaves behind.
+  vec2 uv1 = vWorldPosition.xz * 0.18 + vec2(uTime * 0.04, uTime * 0.03);
+  vec2 uv2 = vWorldPosition.xz * 0.40 + vec2(-uTime * 0.05, uTime * 0.06);
+  vec2 uv3 = vWorldPosition.xz * 0.85 + vec2(uTime * 0.08, -uTime * 0.07);
+  float detail = noise(uv1) * 0.55 + noise(uv2) * 0.30 + noise(uv3) * 0.15;
 
   // Blend deep ↔ surface colour using noise detail
   vec3 waterCol = mix(uDeepColor, uWaterColor, 0.5 + detail * 0.5);
@@ -284,6 +305,18 @@ export class WaterRenderer {
 
     this.clear();
 
+    // Prefer the baked per-body mesh from the zone bake.
+    //
+    // It's better geometry than anything derivable here: built from the
+    // carve's water-surface grid, so river surfaces follow the terrain's
+    // slope down a valley instead of sitting flat along their whole length,
+    // and every body carries an id that ice can be applied to individually.
+    // It also skips the THREE.Shape triangulation below, which ran per body
+    // on every load for every player.
+    //
+    // Falls back to OSM polygons when a zone hasn't been rebaked yet.
+    if (await this._loadBakedMeshes(zoneId)) return;
+
     let features: WaterFeature[];
     try {
       const res = await fetch(`${ClientConfig.serverUrl}/world/water/${zoneId}`);
@@ -321,6 +354,97 @@ export class WaterRenderer {
     if (this._meshes.length > 0) {
       console.log(`[WaterRenderer] ${this._meshes.length} water meshes for ${zoneId}`);
     }
+  }
+
+  /**
+   * Load the baked per-body water mesh for a zone.
+   *
+   * Returns true when meshes were installed, false when the zone has no
+   * baked water (older bake, or genuinely dry) so the caller can fall back.
+   *
+   * The GLB holds one mesh per body named `water_{id}_{kind}`, which is how
+   * each mesh binds to the body the server will freeze and thaw. Geometry is
+   * in feet like every other baked asset, so it takes the same unit scale
+   * from the manifest origin.
+   */
+  private async _loadBakedMeshes(zoneId: string): Promise<boolean> {
+    let manifest: {
+      origin?: { units?: string };
+      assets?: { type?: string; path?: string }[];
+    };
+    try {
+      const res = await fetch(
+        `${ClientConfig.serverUrl}/world/assets/${zoneId}/manifest.json`,
+      );
+      if (!res.ok) return false;
+      manifest = await res.json();
+    } catch { return false; }
+
+    const asset = manifest.assets?.find(a => a.type === 'water_mesh');
+    if (!asset?.path) return false;
+
+    let buffer: ArrayBuffer;
+    try {
+      const res = await fetch(`${ClientConfig.serverUrl}${asset.path}`);
+      if (!res.ok) return false;
+      buffer = await res.arrayBuffer();
+    } catch { return false; }
+
+    const { GLTFLoader } = await import('three/examples/jsm/loaders/GLTFLoader.js');
+    let scene: THREE.Group;
+    try {
+      const gltf = await new Promise<{ scene: THREE.Group }>((resolve, reject) => {
+        new GLTFLoader().parse(buffer, '', g => resolve(g as { scene: THREE.Group }), reject);
+      });
+      scene = gltf.scene;
+    } catch (err) {
+      console.warn('[WaterRenderer] Baked water GLB parse failed:', err);
+      return false;
+    }
+
+    // Baked assets are authored in feet; 'feet' is what the manifest declares.
+    const unitScale = manifest.origin?.units === 'feet' ? 0.3048 : 1;
+
+    const collected: THREE.Mesh[] = [];
+    scene.traverse(child => {
+      if (child instanceof THREE.Mesh) collected.push(child);
+    });
+    if (collected.length === 0) return false;
+
+    for (const mesh of collected) {
+      // Flatten the GLB hierarchy AND the unit conversion into the geometry.
+      //
+      // Baking scale into the vertices rather than leaving it on the object
+      // matters because the water shader derives its wave and noise detail
+      // from vertex position. Left as an object scale, the shader sees
+      // feet-valued coordinates — 3.28× larger than the metres it was tuned
+      // against — and the surface pattern stretches by the same factor.
+      mesh.updateWorldMatrix(true, false);
+      const xform = mesh.matrixWorld.clone();
+      xform.premultiply(new THREE.Matrix4().makeScale(unitScale, unitScale, unitScale));
+      mesh.geometry.applyMatrix4(xform);
+      mesh.position.set(0, 0, 0);
+      mesh.rotation.set(0, 0, 0);
+      mesh.scale.setScalar(1);
+      mesh.geometry.computeBoundingSphere();
+
+      mesh.material = this._material;
+      mesh.renderOrder = 1;
+      mesh.frustumCulled = true;
+
+      // Name is `water_{id}_{kind}` — the binding to a freezable body.
+      const m = /^water_(\d+)_(lake|river)/.exec(mesh.name ?? '');
+      const bodyId = m ? Number.parseInt(m[1]!, 10) : null;
+      const kind   = m ? (m[2] as 'lake' | 'river') : null;
+
+      this._scene.add(mesh);
+      this._meshes.push({ mesh, bodyId, kind });
+    }
+
+    console.log(
+      `[WaterRenderer] ${this._meshes.length} baked water bodies for ${zoneId}`,
+    );
+    return true;
   }
 
   /** Advance wave animation + sync fog + sun. */
@@ -610,7 +734,14 @@ export class WaterRenderer {
         uSunDirection:     { value: new THREE.Vector3(0.3, 0.8, 0.2).normalize() },
         uOpacity:          { value: 0.82 },
         uWaveAmplitude:    { value: 0.12 },
-        uWaveFrequency:    { value: 0.8 },
+        // Wave period must stay well above the mesh's vertex spacing or the
+        // sine aliases and the surface renders as alternating flat facets
+        // rather than a wave. Water is meshed from the DEM grid (~10m cells)
+        // subdivided 3x, so spacing is ~3.4m. At the old 0.8 the second wave
+        // layer (wf * 1.3) had a 6.0m period, needing spacing under 3.0m --
+        // just past the limit, which is what produced the chevron facets.
+        // 0.3 gives periods of ~21m and ~16m, comfortably above spacing.
+        uWaveFrequency:    { value: 0.3 },
         uSpecularPower:    { value: 48.0 },
         uSpecularStrength: { value: 0.6 },
         uFogColor:         { value: new THREE.Color(0x6080a0) },

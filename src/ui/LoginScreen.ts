@@ -1,6 +1,7 @@
 import type { SocketClient } from '@/network/SocketClient';
 import type { SessionState } from '@/state/SessionState';
 import { ClientConfig }      from '@/config/ClientConfig';
+import { PreWorldTerminal }  from '@/ui/PreWorldTerminal';
 
 /** localStorage key for the opt-in remember-me feature. Plaintext —
  *  same security model as the browser's password manager (anyone with
@@ -298,6 +299,11 @@ export class LoginScreen {
         <div class="login-error" id="login-error"></div>
         <div class="login-status" id="login-status"></div>
 
+        <!-- Command terminal slot. Mounted by _wireTerminal so login and
+             character select share one implementation — same prompt, same
+             history, same unknown-command feedback. -->
+        <div id="login-term-slot"></div>
+
         <div class="login-server">
           <span class="login-server-lbl">Server</span>
           <input class="login-server-input" id="login-server" type="text"
@@ -346,6 +352,8 @@ export class LoginScreen {
       this._setStatus('Connecting as guest…');
       this.socket.requestAuth({ method: 'guest' });
     });
+
+    this._wireTerminal(el, userInput, passInput, rememberBox, submitBtn, guestBtn);
 
     passInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') submitBtn.click();
@@ -422,6 +430,109 @@ export class LoginScreen {
 
     this.root.appendChild(modal);
     this.confirmModal = modal;
+  }
+
+  /**
+   * Wire the pre-world command terminal.
+   *
+   * Commands drive the SAME controls the buttons do rather than calling
+   * socket.requestAuth directly, so remember-me, validation, error display
+   * and loading state can't drift between the two routes.
+   *
+   * On passwords: /login <user> accepts the username and then asks for the
+   * password in a masked field, rather than taking it inline. A password
+   * typed as part of a command lands in terminal scrollback and in any
+   * history the client keeps — the MUD convention, but a bad one. This keeps
+   * the whole flow keyboard-reachable without putting the secret in a log.
+   */
+  private _wireTerminal(
+    root: HTMLElement,
+    userInput: HTMLInputElement,
+    passInput: HTMLInputElement,
+    rememberBox: HTMLInputElement,
+    submitBtn: HTMLButtonElement,
+    guestBtn: HTMLButtonElement,
+  ): void {
+    PreWorldTerminal.injectStyles();
+
+    const term = new PreWorldTerminal({
+      greeting: [
+        'Ashes & Aether. Type /help for commands, or /login guest to jump in.',
+      ],
+      help: [
+        '/login guest          — play without an account',
+        '/login <username>     — sign in (asks for your password next)',
+        '/server <host:port>   — change server address',
+        '/remember on|off      — save credentials on this device',
+        'Once in the world, /help lists the full command set.',
+      ],
+      onCommand: (raw, t) => {
+        const parts = raw.trim().split(/\s+/);
+        const cmd = (parts[0] ?? '').toLowerCase();
+
+        switch (cmd) {
+          case '/login':
+          case '/connect': {
+            const who = parts[1];
+            if (!who) { t.write('Usage: /login guest, or /login <username>'); return true; }
+
+            if (who.toLowerCase() === 'guest') {
+              t.write('Connecting as guest…');
+              guestBtn.click();
+              return true;
+            }
+
+            if (parts.length > 2) {
+              // Refused on purpose: a password given as an argument is echoed
+              // into the log above and kept in command history.
+              t.write('Do not put your password in the command — it would be');
+              t.write('written to this log. Use /login <username> and enter it');
+              t.write('at the masked prompt.');
+              return true;
+            }
+
+            void t.askMasked(`Password for ${who}:`, `Password for ${who}`)
+              .then((pw) => {
+                if (!pw) { t.write('Cancelled.'); return; }
+                // Drive the real form so remember-me, validation and the
+                // server's error handling all behave identically.
+                userInput.value = who;
+                passInput.value = pw;
+                t.write(`Signing in as ${who}…`);
+                submitBtn.click();
+                passInput.value = '';
+              });
+            return true;
+          }
+
+          case '/server': {
+            const host = parts[1];
+            if (!host) { t.write(`Server is ${ClientConfig.serverUrl}`); return true; }
+            const serverInput = root.querySelector<HTMLInputElement>('#login-server');
+            if (serverInput) {
+              serverInput.value = host;
+              serverInput.dispatchEvent(new Event('change', { bubbles: true }));
+              serverInput.blur();
+            }
+            t.write(`Server set to ${host}`);
+            return true;
+          }
+
+          case '/remember': {
+            const v = (parts[1] ?? '').toLowerCase();
+            if (v !== 'on' && v !== 'off') { t.write('Usage: /remember on|off'); return true; }
+            rememberBox.checked = (v === 'on');
+            t.write(`Credentials will ${v === 'on' ? '' : 'not '}be saved on this device.`);
+            return true;
+          }
+
+          default:
+            return false;
+        }
+      },
+    });
+
+    root.querySelector('#login-term-slot')?.appendChild(term.el);
   }
 
   private _setError(msg: string): void {

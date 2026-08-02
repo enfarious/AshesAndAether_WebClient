@@ -64,9 +64,20 @@ export class ClickMoveController {
     this.raycaster.setFromCamera(ndc, this.camera.getCamera());
 
     // ── 1. Entity hit? ───────────────────────────────────────────────────────
+    // Plants are excluded for the same reason TabTargetService excludes them
+    // (see the note on its candidate switch): harvest is proximity-driven, so
+    // a target serves no purpose. Trees and rocks are already unpickable —
+    // trees because EntityFactory skips mesh creation for FOREST_SPECIES, rocks
+    // because they live in RockRegistry and were never entities. Excluding
+    // plants makes all three harvest anchors behave alike: walk up, use the
+    // node hint, /harvest. Anything clickable is something you can act on.
     const entityObjects = this.factory.getAllObjects()
       .map(obj => obj.object3d)
-      .filter(o => o.userData['entityId'] !== this.registry.playerId);
+      .filter(o => {
+        const id = o.userData['entityId'] as string | undefined;
+        if (!id || id === this.registry.playerId) return false;
+        return this.registry.get(id)?.type !== 'plant';
+      });
 
     const entityHits = this.raycaster.intersectObjects(entityObjects, true);
     if (entityHits.length > 0) {

@@ -21,7 +21,11 @@ export const SPEED_MULTIPLIERS: Record<MovementSpeed, number> = {
 
 export type CompassDirection  = 'N' | 'NE' | 'E' | 'SE' | 'S' | 'SW' | 'W' | 'NW';
 export type ContentRating     = 'T' | 'M' | 'AO';
-export type CorruptionState   = 'CLEAN' | 'STAINED' | 'WARPED' | 'LOST';
+// NOTE: the v1 `CorruptionState` union ('CLEAN'|'STAINED'|'WARPED'|'LOST') was
+// removed here. Corruption is a numeric 0–5 tier (see CorruptionUpdatePayload);
+// the server has not sent the string form since v2. The type was deleted rather
+// than deprecated because it still *typechecked* — that is precisely why v1
+// readers kept reappearing and surviving compilation. Do not reintroduce it.
 export type CommunicationChannel = 'say' | 'shout' | 'emote' | 'cfh' | 'whisper' | 'party' | 'guild' | 'world' | 'companion';
 export type InteractionAction = 'talk' | 'trade' | 'attack' | 'use' | 'examine';
 export type AnimationAction   =
@@ -140,18 +144,15 @@ export interface DerivedStats {
   castStability: number;
 }
 
-export interface CorruptionStatus {
-  current: number;
-  state: CorruptionState;
-  isolationMinutes: number;
-  contributionPoints: number;
-}
-
-export interface CorruptionBenefits {
-  cacheDetectionBonus: number;
-  hazardResistBonus: number;
-  deadSystemInterface: boolean;
-}
+// NOTE: `CorruptionStatus` and `CorruptionBenefits` used to sit here, carried
+// on CharacterPayload as required fields. Neither was ever populated — no
+// gateway handler sends corruption on world_entry, and the zone persists it as
+// a bare number. They were v1 surface that survived several rounds of
+// "are we keeping corruption?" and outlived the answer.
+//
+// Corruption reaches the client on the `corruption_update` channel only.
+// If isolation/contribution get wired to the wire later, add them as an
+// OPTIONAL field and let the compiler find the read sites.
 
 /** One of the six axis directions tracked for build-identity. Mirrors the
  *  server-side AxisDirection in @ashes/core/abilities/axisBonuses. */
@@ -210,8 +211,6 @@ export interface CharacterState {
    *  Drives the character-sheet 6-spoke web visualization. Server pushes
    *  on world_entry and on PASSIVE_LOADOUT_CHANGED. */
   axisSnapshot?: AxisSnapshot;
-  corruption: CorruptionStatus;
-  corruptionBenefits: CorruptionBenefits;
   unlockedFeats: string[];
   unlockedAbilities: { activeNodes: string[]; passiveNodes: string[]; apSpent: number };
   activeLoadout:  (string | null)[];
@@ -1156,13 +1155,48 @@ export interface ExperienceGainedPayload {
 
 // ── Corruption ────────────────────────────────────────────────────────────────
 
+/** Tier thresholds, mirroring core/Corruption.ts CORRUPTION_TIERS. Index 0 is
+ *  tier 1 — below the first threshold you are tier 0 (clean). */
+export const CORRUPTION_TIER_THRESHOLDS = [8, 22, 45, 72, 100] as const;
+
+/** Display names by tier index, 0 = clean. */
+export const CORRUPTION_TIER_NAMES = [
+  'Clean', 'Touched', 'Stained', 'Warped', 'Severed', 'Reaver',
+] as const;
+
+/** Highest tier whose threshold `corruption` has reached. 0 = clean. */
+export function corruptionTierFor(corruption: number): number {
+  let t = 0;
+  for (let i = 0; i < CORRUPTION_TIER_THRESHOLDS.length; i++) {
+    if (corruption >= CORRUPTION_TIER_THRESHOLDS[i]!) t = i + 1;
+  }
+  return t;
+}
+
+/**
+ * Mirrors the server's CorruptionUpdatePayload (zone-server
+ * corruption/CorruptionService.ts).
+ *
+ * The v1 client modelled corruption as a four-value enum
+ * ('CLEAN'|'STAINED'|'WARPED'|'LOST'). v2 replaced that with a numeric tier
+ * 0–5 (0 = clean, then Touched / Stained / Warped / Severed / Reaver) and the
+ * server stopped sending `state` entirely. The client kept reading it, got
+ * undefined, and the HUD threw on every refresh looking up a colour for it.
+ * Keep this in step with the server interface.
+ */
 export interface CorruptionUpdatePayload {
   corruption: number;
-  state: CorruptionState;
-  previousState?: CorruptionState;
-  delta: number;
-  reason?: string;
-  timestamp: number;
+  /** 0 = clean, 1..5 = Touched / Stained / Warped / Severed / Reaver. */
+  tier: number;
+  tierName: string;
+  /** Local Aether Density at the player's feet, 0..1. */
+  density: number;
+  /** -1..1. Negative = withdrawal, effects inverted. */
+  alignment: number;
+  /** Corruption value at the next tier boundary, or null at T5. */
+  nextTierAt: number | null;
+  /** Signed drift per hour at the current position. */
+  ratePerHour: number;
 }
 
 // ── Loot ──────────────────────────────────────────────────────────────────────

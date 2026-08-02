@@ -734,11 +734,29 @@ export class MessageRouter {
 
     s.on('corruption_update', (p) => {
       const payload = p as CorruptionUpdatePayload;
+
+      // Tier crossings are announced client-side because the payload has no
+      // `previousTier` — corruption_update is a state snapshot, not a diff.
+      // The comparison therefore has to happen BEFORE applyCorruptionUpdate
+      // overwrites PlayerState, which is the whole reason this isn't a
+      // one-liner. Read first, apply, then compare.
+      //
+      // (This block previously read `payload.previousState`/`payload.state`
+      // from the v1 four-value enum. The server stopped sending both when
+      // corruption became a numeric 0–5 tier; see the note on
+      // CorruptionUpdatePayload in Protocol.ts.)
+      const prevTier = this.player.corruptionTier;
+
       this.player.applyCorruptionUpdate(payload);
-      // Notify chat on state transitions
-      if (payload.previousState && payload.previousState !== payload.state) {
-        const label = payload.state.charAt(0) + payload.state.slice(1).toLowerCase();
-        this.world.pushMessage('system', `Your corruption has shifted to ${label}.`);
+
+      if (payload.tier !== prevTier) {
+        // Direction matters: corruption falls as well as rises (withdrawal in
+        // low-density ground), and "shifted" reads as a warning either way.
+        const verb = payload.tier > prevTier ? 'deepened' : 'receded';
+        this.world.pushMessage(
+          'system',
+          `Your corruption has ${verb} \u2014 you are ${payload.tierName}.`,
+        );
       }
     });
 

@@ -6,7 +6,8 @@ import {
   type MovementSpeed,
   type CoreStats,
   type DerivedStats,
-  type CorruptionState,
+  corruptionTierFor,
+  CORRUPTION_TIER_NAMES,
   type CorruptionUpdatePayload,
   type StatusEffect,
   type ItemInfo,
@@ -89,7 +90,13 @@ export class PlayerState {
   private _lastXpBreakdown: XpBreakdownInfo | null = null;
 
   private _corruption: number = 0;
-  private _corruptionState: CorruptionState = 'CLEAN';
+  /** 0 = clean, 1..5 = Touched / Stained / Warped / Severed / Reaver. */
+  private _corruptionTier: number = 0;
+  private _corruptionTierName: string = 'Clean';
+  private _corruptionDensity: number = 0;
+  private _corruptionAlignment: number = 0;
+  private _corruptionNextTierAt: number | null = null;
+  private _corruptionRatePerHour: number = 0;
   private _effects: StatusEffect[] = [];
 
   private _combat: CombatGauges = {
@@ -231,7 +238,12 @@ export class PlayerState {
   get derivedStatsBonuses(): Partial<DerivedStats> | null { return this._derivedStatsBonuses; }
   get axisSnapshot(): import('@/network/Protocol').AxisSnapshot | null { return this._axisSnapshot; }
   get corruption(): number { return this._corruption; }
-  get corruptionState(): CorruptionState { return this._corruptionState; }
+  get corruptionTier(): number { return this._corruptionTier; }
+  get corruptionTierName(): string { return this._corruptionTierName; }
+  get corruptionDensity(): number { return this._corruptionDensity; }
+  get corruptionAlignment(): number { return this._corruptionAlignment; }
+  get corruptionNextTierAt(): number | null { return this._corruptionNextTierAt; }
+  get corruptionRatePerHour(): number { return this._corruptionRatePerHour; }
   get effects(): StatusEffect[] { return this._effects; }
   get combat():   CombatGauges { return this._combat; }
   /** Bumps on every applyCombatUpdate. Lets consumers detect a fresh server
@@ -307,6 +319,12 @@ export class PlayerState {
   // ── Mutations ─────────────────────────────────────────────────────────────
 
   applyWorldEntry(character: CharacterState, abilityManifest?: AbilityNodeSummary[], isGuest?: boolean): void {
+    // Entering a world — first login, or crossing into a vault, dungeon or
+    // other zone — invalidates any target: the entity lives in the zone you
+    // just left. Without this the target frame kept showing a mob from the
+    // previous zone, complete with its stale distance and health, and a
+    // bare /attack would try to re-engage it.
+    this.clearTarget();
     this._id            = character.id;
     this._name          = character.name;
     this._level         = character.level;
@@ -321,8 +339,14 @@ export class PlayerState {
     this._health   = character.health  ? { ...character.health }  : { current: 0, max: 0 };
     this._stamina  = character.stamina ? { ...character.stamina } : { current: 0, max: 0 };
     this._mana     = character.mana    ? { ...character.mana }    : { current: 0, max: 0 };
-    this._corruption      = character.corruption?.current ?? 0;
-    this._corruptionState = character.corruption?.state   ?? 'CLEAN';
+    // Corruption is NOT carried on the character payload — it arrives on the
+    // `corruption_update` channel, which the zone pushes on join. Entering at
+    // 0/Clean is what this code already did in practice (the field was always
+    // undefined and fell through to the defaults); it is now stated outright
+    // rather than hidden behind optional chaining on a required field.
+    this._corruption          = 0;
+    this._corruptionTier      = corruptionTierFor(this._corruption);
+    this._corruptionTierName  = CORRUPTION_TIER_NAMES[this._corruptionTier] ?? 'Clean';
     this._effects         = [];
     this._partyId         = null;
     this._partyLeaderId   = null;
@@ -380,6 +404,12 @@ export class PlayerState {
     if (update.stamina)              this._stamina  = { ...update.stamina };
     if (update.mana)                 this._mana     = { ...update.mana };
     if (update.isAlive !== undefined) {
+      // Dying clears your target. The old one is almost certainly out of
+      // range (you respawn elsewhere), and a stale entry means a bare
+      // /attack re-engages something you can no longer see. Clearing on the
+      // transition rather than on every update so a live-and-still-alive
+      // tick doesn't wipe a target you just picked.
+      if (this._isAlive && !update.isAlive) this.clearTarget();
       this._isAlive = update.isAlive;
       // Clear the corpse timer when the player comes back to life
       if (update.isAlive) this._corpseDissolvesAt = null;
@@ -445,8 +475,13 @@ export class PlayerState {
   }
 
   applyCorruptionUpdate(payload: CorruptionUpdatePayload): void {
-    this._corruption      = payload.corruption;
-    this._corruptionState = payload.state;
+    this._corruption            = payload.corruption;
+    this._corruptionTier        = payload.tier;
+    this._corruptionTierName    = payload.tierName;
+    this._corruptionDensity     = payload.density;
+    this._corruptionAlignment   = payload.alignment;
+    this._corruptionNextTierAt  = payload.nextTierAt;
+    this._corruptionRatePerHour = payload.ratePerHour;
     this._notify();
   }
 

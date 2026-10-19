@@ -131,7 +131,7 @@ export class BuildPanel {
         card.innerHTML = `
           <div class="bp-card-name">${entry.displayName}</div>
           <div class="bp-card-meta">
-            <span class="bp-card-cost">${entry.goldCost}g</span>
+            <span class="bp-card-cost">${entry.scripCost} scrip</span>
             <span class="bp-card-size">${entry.sizeX}\u00d7${entry.sizeZ}</span>
           </div>
           <div class="bp-card-desc">${entry.description}</div>

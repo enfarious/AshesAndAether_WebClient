@@ -5,6 +5,7 @@ import type { EntityRegistry } from '@/state/EntityRegistry';
 import type { WorldState }     from '@/state/WorldState';
 import type { SocketClient }   from '@/network/SocketClient';
 import { ClientConfig }        from '@/config/ClientConfig';
+import { DefenseMapLayer, type DefenseStateMsg } from '@/ui/WorldMapDefense';
 
 /**
  * WorldMapPanel — fullscreen Leaflet strategic map overlay.
@@ -128,6 +129,22 @@ interface ZoneRegistryEntry {
   placeType?:   string;
   center:       { lat: number; lon: number };
   active?:      boolean;
+  /** Authored: the town's beacon has fallen (Reaver country). */
+  dark?:        boolean;
+}
+
+/** GET /api/map/danger — every registry zone's baked AD grid, coarse.
+ *  `values: null` = uncharted (never baked). */
+interface DangerResponse {
+  res: number;
+
+  zones: Array<{ id: string; dark: boolean; origin: { lat: number; lon: number }; radiusM?: number;
+                 halfX: number; halfZ: number; values: number[] | null }>;
+}
+
+/** GET /api/map/borders — state/country outlines, [lon, lat] polylines. */
+interface BordersResponse {
+  regions?: Array<{ id: string; name: string; home: boolean; lines: Array<Array<[number, number]>> }>;
 }
 
 interface ZoneRegistryResponse {
@@ -204,6 +221,14 @@ export class WorldMapPanel {
   // World view (zoomed-out multi-zone layer)
   private worldZones: { id: string; entry: ZoneRegistryEntry }[] | null = null;
   private worldZoneMarkers: L.Marker[] = [];
+  /** State outlines — fetched once, always on the map (they only read at
+   *  world zoom, and the in-zone view is far inside them anyway). */
+  private borderLines: L.Polyline[] = [];
+  /** World-view danger map: miasma wash + one overlay per zone. Rebuilt
+   *  each time the view zooms out (zones get charted, beacons fall). */
+  private dangerLayers: L.Layer[] = [];
+  private dangerSeq = 0;
+  private bordersRequested = false;
   private inWorldView = false;
 
   constructor(
@@ -215,6 +240,38 @@ export class WorldMapPanel {
   ) {
     this.root = this._build();
     uiRoot.appendChild(this.root);
+    // Defense state streams whether or not the map is open — keep the
+    // latest so opening mid-fight draws the whole picture at once.
+    this.socket.on('defense_state', (p: unknown) => {
+      this.defenseState = p as DefenseStateMsg;
+      this.defenseStateZone = this.world.zone?.id ?? '';
+      if (this.visible) this._renderDefense();
+    });
+  }
+
+  // Settlement defense overlay
+  private readonly defenseLayer = new DefenseMapLayer();
+  private defenseState: DefenseStateMsg | null = null;
+  private defenseFitted = false;
+  private defenseStateZone = '';
+
+  private _inDefense(): boolean {
+    const zoneId = this.world.zone?.id ?? '';
+    return zoneId.startsWith('defense:') && zoneId === this.defenseStateZone && !!this.defenseState?.layout;
+  }
+
+  private _renderDefense(): void {
+    if (!this.map || !this.projector) return;
+    if (!this._inDefense()) { this.defenseLayer.clear(); this.defenseFitted = false; return; }
+    const toLL = this.projector.worldToLatLng;
+    const host = this.root.querySelector<HTMLElement>('#wm-panel') ?? this.root;
+    this.defenseLayer.render(this.map, toLL, this.defenseState!, host);
+    this.defenseLayer.tickRaiders(this.map, toLL, this.defenseState!, this.entities.getAll());
+    if (!this.defenseFitted) {
+      this.defenseFitted = true;
+      this._setFollow(false);
+      this.map.fitBounds(this.defenseLayer.boundsLL(this.defenseState!, toLL), { padding: [40, 40], animate: false });
+    }
   }
 
   // ── Public API ─────────────────────────────────────────────────────────────
@@ -255,6 +312,7 @@ export class WorldMapPanel {
     // World-zone registry — fetched once, cached for the session. Cheap
     // and rarely changes (new zones are an admin-time event).
     if (!this.worldZones) void this._fetchWorldZones();
+    if (!this.bordersRequested) void this._fetchBorders();
 
     if (this.followTimer === null) {
       this.followTimer = setInterval(() => this._followTick(), FOLLOW_TICK_MS);
@@ -342,6 +400,7 @@ export class WorldMapPanel {
     this.waterPolyRings = null;
     this.waterLineRings = null;
     this.forestRingsM   = null;
+    this.defenseLayer.clear();
     void this._fetchSnapshot(currentZoneId);
     return true;
   }
@@ -379,6 +438,8 @@ export class WorldMapPanel {
     this._renderPlayerMarker();
     this._renderAllies();
     this._fitToZone();
+    this.defenseFitted = false;
+    this._renderDefense();
   }
 
   private _renderZoneRect(): void {
@@ -803,6 +864,32 @@ export class WorldMapPanel {
 
   // ── World view (zoomed-out, multi-zone) ────────────────────────────────────
 
+  private async _fetchBorders(): Promise<void> {
+    this.bordersRequested = true;
+    try {
+      const res = await fetch(`${ClientConfig.serverUrl}/api/map/borders`);
+      if (!res.ok) { this.bordersRequested = false; return; }
+      const data = await res.json() as BordersResponse;
+      if (!this.map) return;
+      // Neighbours first so New York's line sits on top where they share an edge.
+      const regions = [...(data.regions ?? [])].sort((a, b) => Number(a.home) - Number(b.home));
+      for (const r of regions) {
+        for (const line of r.lines) {
+          const pl = L.polyline(line.map(([lon, lat]) => L.latLng(lat, lon)), {
+            color:       r.home ? '#e6c060' : '#7a8496',
+            weight:      r.home ? 2.2 : 1,
+            opacity:     r.home ? 0.85 : 0.45,
+            dashArray:   r.home ? undefined : '4 4',
+            interactive: false,
+          }).addTo(this.map);
+          this.borderLines.push(pl);
+        }
+      }
+    } catch {
+      this.bordersRequested = false;   // retry next open
+    }
+  }
+
   private async _fetchWorldZones(): Promise<void> {
     try {
       const res = await fetch(`${ClientConfig.serverUrl}/api/travel/zones`);
@@ -824,8 +911,8 @@ export class WorldMapPanel {
     if (shouldBeWorld === this.inWorldView) return;
     this.inWorldView = shouldBeWorld;
     this._setInZoneLayersVisible(!shouldBeWorld);
-    if (shouldBeWorld) this._renderWorldZones();
-    else               this._clearWorldZones();
+    if (shouldBeWorld) { this._renderWorldZones(); void this._renderDanger(); }
+    else               { this._clearWorldZones(); this._clearDanger(); }
   }
 
   /** Toggle visibility AND interactivity of every in-zone layer in one
@@ -881,7 +968,9 @@ export class WorldMapPanel {
       if (!entry.center) continue;
       const isCurrent = id === myZoneId;
       const ll = L.latLng(entry.center.lat, entry.center.lon);
-      const cls = isCurrent ? 'wm-world-zone wm-world-zone-current' : 'wm-world-zone wm-world-zone-other';
+      const cls = isCurrent ? 'wm-world-zone wm-world-zone-current'
+                : entry.dark ? 'wm-world-zone wm-world-zone-other wm-world-zone-dark'
+                :              'wm-world-zone wm-world-zone-other';
       const placeType = entry.placeType ? entry.placeType : 'zone';
       const name = entry.displayName ?? id;
 
@@ -911,6 +1000,7 @@ export class WorldMapPanel {
           <div style="font-family:monospace;font-size:11px;color:#d4c9b8;min-width:180px;">
             <strong style="color:#9cb8d9;">${escapeHtml(name)}</strong><br/>
             <em style="color:#7a8aa0;">${escapeHtml(placeType)}</em><br/>
+            ${entry.dark ? '<span style="color:#c08ae8;font-size:10px;">Beacon fallen — Reaver country.</span><br/>' : ''}
             <span style="color:#7a8aa0;font-size:10px;">Travel: rail / ship / air not yet available.</span>
           </div>
         `, { className: 'wm-popup' });
@@ -918,6 +1008,67 @@ export class WorldMapPanel {
 
       this.worldZoneMarkers.push(marker);
     }
+  }
+
+  /** Region/world-scale danger: the plane between zones is lethal miasma,
+   *  charted zones show their baked AD, uncharted ones a soft disc (violet
+   *  if the registry says the beacon fell). Sits under the zone markers. */
+  private async _renderDanger(): Promise<void> {
+    const seq = ++this.dangerSeq;
+    this._clearDanger();
+    if (!this.map || !this.showAd) return;
+    let data: DangerResponse;
+    try {
+      const res = await fetch(`${ClientConfig.serverUrl}/api/map/danger`);
+      if (!res.ok) return;
+      data = await res.json() as DangerResponse;
+    } catch { return; }
+    // Zoomed back in (or zoomed out again) while fetching — that call owns it.
+    if (seq !== this.dangerSeq || !this.map || !this.inWorldView) return;
+
+    // Miasma wash over the charted frame (the borders bbox).
+    this.dangerLayers.push(L.rectangle(L.latLngBounds([39.6, -80.9], [45.9, -70.6]), {
+      stroke: false, fillColor: '#2a0c2e', fillOpacity: 0.35, interactive: false,
+    }).addTo(this.map));
+
+    for (const z of data.zones) {
+      if (z.values && z.halfX > 0 && z.halfZ > 0 && z.values.length === data.res * data.res) {
+        const n = data.res;
+        const canvas = document.createElement('canvas');
+        canvas.width = n; canvas.height = n;
+        const ctx = canvas.getContext('2d')!;
+        const img = ctx.createImageData(n, n);
+        // Clip to the playable circle — the bbox corners are miasma, which
+        // the wash already draws.
+        const rad = z.radiusM ?? 2000;
+        for (let i = 0; i < z.values.length; i++) {
+          const xm = -z.halfX + ((i % n) + 0.5) * (2 * z.halfX / n);
+          const zm = -z.halfZ + (Math.floor(i / n) + 0.5) * (2 * z.halfZ / n);
+          const [r, g, b, a] = adColor(z.values[i] ?? 0);
+          img.data[i * 4] = r; img.data[i * 4 + 1] = g; img.data[i * 4 + 2] = b;
+          img.data[i * 4 + 3] = xm * xm + zm * zm > rad * rad ? 0 : a;
+        }
+        ctx.putImageData(img, 0, 0);
+        const proj = makeProjector(z.origin);
+        const bounds = L.latLngBounds(proj.worldToLatLng(-z.halfX, -z.halfZ), proj.worldToLatLng(z.halfX, z.halfZ));
+        this.dangerLayers.push(L.imageOverlay(canvas.toDataURL(), bounds, {
+          interactive: false, className: 'wm-ad-overlay',
+        }).addTo(this.map));
+      } else {
+        this.dangerLayers.push(L.circle(L.latLng(z.origin.lat, z.origin.lon), {
+          radius:      3219,   // 2 mi — registry default
+          stroke:      false,
+          fillColor:   z.dark ? '#6e1e64' : '#8c8c96',
+          fillOpacity: z.dark ? 0.45 : 0.12,
+          interactive: false,
+        }).addTo(this.map));
+      }
+    }
+  }
+
+  private _clearDanger(): void {
+    this.dangerLayers.forEach(l => l.remove());
+    this.dangerLayers = [];
   }
 
   private _clearWorldZones(): void {
@@ -993,6 +1144,11 @@ export class WorldMapPanel {
     }
 
     this._renderAllies();
+    if (this._inDefense()) {
+      this.defenseLayer.tickRaiders(this.map, this.projector.worldToLatLng, this.defenseState!, this.entities.getAll());
+    } else {
+      this.defenseLayer.clear();
+    }
   }
 
   // ── Controls ───────────────────────────────────────────────────────────────
@@ -1018,6 +1174,12 @@ export class WorldMapPanel {
     if (btn) btn.textContent = this.showAd ? 'Aether: ON' : 'Aether: OFF';
     if (btn) btn.classList.toggle('wm-active', this.showAd);
     this._renderAdOverlay();
+    if (this.inWorldView) {
+      // Zoomed out: the region danger map is the Aether layer; the in-zone
+      // overlay stays hidden like the rest of the zone layers.
+      this._setInZoneLayersVisible(false);
+      void this._renderDanger();
+    }
   }
 
   private _toggleRocks(): void {
@@ -1329,6 +1491,12 @@ export class WorldMapPanel {
             0 0 6px rgba(110,160,220,0.6),
             0 0 14px rgba(110,160,220,0.3);
           animation: wm-pulse-cool 3.2s ease-in-out infinite;
+        }
+        /* Beacon fallen — Reaver country. Dim violet, no pulse: nothing holds the light here. */
+        .wm-world-zone-dark {
+          background: radial-gradient(circle at 35% 35%, #d8c0f0 0%, #8a5ac0 55%, #2a1840 100%);
+          box-shadow: 0 0 5px rgba(160,110,220,0.5);
+          animation: none;
         }
         @keyframes wm-pulse-warm {
           0%, 100% { box-shadow: 0 0 8px rgba(230,192,96,0.85), 0 0 18px rgba(230,192,96,0.45); }

@@ -9,11 +9,11 @@
  * serves both without forking a near-identical component.
  */
 export interface VaultCompleteToastData {
-  goldAwarded: number;
+  scripAwarded: number;
   hasPortal:   boolean;
   /** Override the big headline line. Defaults to 'VAULT CLEARED'. */
   headline?:   string;
-  /** Override the sub line. Defaults to the gold / "vault is yours" text. */
+  /** Override the sub line. Defaults to the scrip / "vault is yours" text. */
   sub?:        string;
 }
 
@@ -53,8 +53,8 @@ export class VaultCompleteToast {
 
     const sub = document.createElement('div');
     sub.className = 'vct-sub';
-    sub.textContent = data.sub ?? (data.goldAwarded > 0
-      ? `+${data.goldAwarded.toLocaleString()} gold`
+    sub.textContent = data.sub ?? (data.scripAwarded > 0
+      ? `+${data.scripAwarded.toLocaleString()} scrip`
       : 'The vault is yours.');
     el.appendChild(sub);
 

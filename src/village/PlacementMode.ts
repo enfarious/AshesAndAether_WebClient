@@ -58,7 +58,7 @@ export class PlacementMode {
     this.scene.add(this.ghostMesh);
 
     // Create instructions overlay
-    this._showOverlay(payload.displayName, payload.goldCost);
+    this._showOverlay(payload.displayName, payload.scripCost);
 
     // Bind input handlers
     this._onMouseMove = (e) => this._handleMouseMove(e);
@@ -153,7 +153,7 @@ export class PlacementMode {
 
   // ── Overlay ─────────────────────────────────────────────────────────────────
 
-  private _showOverlay(displayName: string, goldCost: number): void {
+  private _showOverlay(displayName: string, scripCost: number): void {
     this._hideOverlay();
     const el = document.createElement('div');
     el.id = 'placement-overlay';
@@ -187,7 +187,7 @@ export class PlacementMode {
           color: rgba(180, 160, 120, 0.70);
         }
       </style>
-      <div class="pm-title">Placing: ${displayName} (${goldCost}g)</div>
+      <div class="pm-title">Placing: ${displayName} (${scripCost} scrip)</div>
       <div class="pm-hint">Click to place &middot; R to rotate &middot; Esc to cancel</div>
     `;
     this.uiRoot.appendChild(el);

@@ -52,7 +52,7 @@ interface TrainRoute {
   destDisplayName: string;
   destStationName: string;
   miles:           number;
-  gold:            number;
+  scrip:            number;
   bearingDeg:      number;
   bearingOctant:   Octant;
   active:          boolean;
@@ -316,7 +316,7 @@ export class TravelPanel {
             ${stop.tollBooth ? '<span class="tp-toll-icon" title="Toll booth ahead">⚠</span>' : ''}
             ${stop.active ? '<span class="tp-active-icon" title="Playable zone">★</span>' : ''}
             <span class="tp-stop-dist">${stop.distanceMiles} mi</span>
-            <span class="tp-stop-fare" title="Caravan fare">${fare}g</span>
+            <span class="tp-stop-fare" title="Caravan fare">${fare} scrip</span>
             <span class="tp-stop-octant" title="${stop.bearingDeg}° from here">${this._esc(stop.bearingOctant)}</span>
           </span>
         </button>
@@ -338,7 +338,7 @@ export class TravelPanel {
           <span class="tp-footer-dest">${this._esc(stop.name)}</span>
           <span class="tp-footer-detail">
             ${stop.distanceMiles} miles ${this._esc(stop.bearingOctant)} via ${this._esc(route.ref)}
-            · <span class="tp-footer-fare">Fare ${fare}g</span>
+            · <span class="tp-footer-fare">Fare ${fare} scrip</span>
             ${stop.tollBooth ? ' · <span class="tp-footer-toll">⚠ toll road</span>' : ' · no toll'}
             ${stop.active ? ' · <span class="tp-footer-active">zone active</span>' : ' · <span class="tp-footer-unbuilt">needs build</span>'}
           </span>
@@ -588,7 +588,7 @@ export class TravelPanel {
         <span class="tp-train-meta">
           <span class="tp-train-station">${this._esc(r.destStationName)}</span>
           <span class="tp-stop-dist">${r.miles} mi</span>
-          <span class="tp-stop-fare" title="Train fare">${r.gold}g</span>
+          <span class="tp-stop-fare" title="Train fare">${r.scrip} scrip</span>
           <span class="tp-stop-octant" title="${r.bearingDeg}° from here">${this._esc(r.bearingOctant)}</span>
         </span>
       </button>
@@ -628,7 +628,7 @@ export class TravelPanel {
         const destZoneId = btn.dataset.zone;
         if (!destZoneId) return;
         // Route through /train slash command — server validates the route,
-        // debits gold, updates DB position, emits zone_transfer. Panel
+        // debits scrip, updates DB position, emits zone_transfer. Panel
         // closes on zone_transfer event.
         this.socket.sendCommand(`/train ${destZoneId}`);
         this.hide();
@@ -640,7 +640,7 @@ export class TravelPanel {
     switch (this._trainSort) {
       case 'distance-asc':  return a.miles - b.miles;
       case 'distance-desc': return b.miles - a.miles;
-      case 'fare-asc':      return a.gold - b.gold;
+      case 'fare-asc':      return a.scrip - b.scrip;
       case 'name-asc':      return a.destDisplayName.localeCompare(b.destDisplayName);
     }
   }

@@ -295,6 +295,14 @@ export class PlayerEntity extends EntityObject {
     this._buildingCollider = c;
   }
 
+  /** Settlement-defense slice fence (server metres). While set, WASD
+   *  prediction is held inside it — the server's walls stop us there, and
+   *  predicting past them is the rubber-band. Null clears it. */
+  setFenceBox(box: { minX: number; maxX: number; minZ: number; maxZ: number } | null): void {
+    this._fenceBox = box;
+  }
+  private _fenceBox: { minX: number; maxX: number; minZ: number; maxZ: number } | null = null;
+
   /**
    * Analytical cylinder push-out for tree trunks.
    * Mirrors the server's CollisionSystem.resolveMovement tree check exactly.
@@ -499,6 +507,13 @@ export class PlayerEntity extends EntityObject {
 
     // 3. Tree collision — analytical cylinder push-out (matches server)
     ({ x, z } = this._resolveTreeCollision(x, z));
+
+    // 3b. Defense slice fence — hard stop at the box edge.
+    if (this._fenceBox) {
+      const f = this._fenceBox;
+      x = Math.min(f.maxX, Math.max(f.minX, x));
+      z = Math.min(f.maxZ, Math.max(f.minZ, z));
+    }
 
     // 4. Apply position
     this.object3d.position.x = x;

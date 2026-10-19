@@ -4,7 +4,7 @@ import type { SocketClient } from '@/network/SocketClient';
  * MerchantPanel — buy/sell modal opened by F-keying a vendor NPC.
  *
  * Listens for `open_merchant_panel` server pushes (sent on F-key + after
- * every buy/sell so the gold + sellable list refresh). Buttons fire `/buy`
+ * every buy/sell so the scrip + sellable list refresh). Buttons fire `/buy`
  * and `/sell` slash commands — same path as in-chat versions, preserving
  * future text-client compatibility (slash-commands-first).
  *
@@ -47,7 +47,7 @@ interface MerchantSellEntry {
 export interface MerchantPanelPayload {
   merchantId:   string;
   merchantName: string;
-  gold:         number;
+  scrip:         number;
   catalog:      MerchantCatalogEntry[];
   sellable:     MerchantSellEntry[];
   timestamp:    number;
@@ -216,7 +216,7 @@ export class MerchantPanel {
         display: flex;
         justify-content: space-between;
       }
-      .mp-gold {
+      .mp-scrip {
         color: rgba(255,215,140,0.95);
       }
       .mp-tabs {
@@ -414,8 +414,8 @@ export class MerchantPanel {
     const left = document.createElement('span');
     left.textContent = `${this._payload.catalog.length} items for sale · ${this._payload.sellable.length} sellable in inventory`;
     const right = document.createElement('span');
-    right.className = 'mp-gold';
-    right.textContent = `Gold: ${this._payload.gold}`;
+    right.className = 'mp-scrip';
+    right.textContent = `Scrip: ${this._payload.scrip}`;
     this.subEl.appendChild(left);
     this.subEl.appendChild(right);
   }
@@ -639,9 +639,9 @@ export class MerchantPanel {
 
     const buy = document.createElement('button');
     buy.textContent = 'Buy';
-    const canAfford = this._payload!.gold >= r.buyPrice;
+    const canAfford = this._payload!.scrip >= r.buyPrice;
     buy.disabled = !canAfford;
-    if (!canAfford) buy.title = 'Not enough gold';
+    if (!canAfford) buy.title = 'Not enough scrip';
     buy.addEventListener('click', () => {
       this.socket.sendCommand(`/buy ${r.templateId}`);
     });

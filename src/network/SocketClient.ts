@@ -133,6 +133,8 @@ export class SocketClient {
       // /choose <token> <value> slash command. Used by the zone
       // whisperer NPC + future bounty boards / NPC dialog trees.
       'open_choice',
+      // Settlement defense — 1 Hz encounter state (layout, machines, militia).
+      'defense_state',
       // Post-fight contribution scoreboard — pushed to every participant
       // when a zone / region / world boss resolves. Carries the
       // FightResult payload (dmg/heal/tank/debuff per character).

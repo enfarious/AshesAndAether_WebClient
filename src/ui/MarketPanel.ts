@@ -81,7 +81,7 @@ export class MarketPanel {
     switch (p.type) {
       case 'market_wallet':
         this.balance = p.balance;
-        this._renderGold();
+        this._renderScrip();
         break;
 
       case 'market_search':
@@ -192,7 +192,7 @@ export class MarketPanel {
       tr.innerHTML = `
         <td>${esc(r.itemName)}</td>
         <td>${r.quantity}</td>
-        <td>${r.pricePerUnit}g</td>
+        <td>${r.pricePerUnit} scrip</td>
         <td>${r.scope === 'WORLD' ? 'W' : 'R'}</td>
         <td>${esc(r.regionName)}</td>
         <td><button class="mp-btn mp-btn-sm" data-oid="${esc(r.orderId)}">Buy</button></td>
@@ -286,7 +286,7 @@ export class MarketPanel {
         <td>${esc(o.itemName)}</td>
         <td>${o.quantity}</td>
         <td>${o.filledQuantity}</td>
-        <td>${o.pricePerUnit}g</td>
+        <td>${o.pricePerUnit} scrip</td>
         <td>${o.scope === 'WORLD' ? 'W' : 'R'}</td>
         <td><button class="mp-btn mp-btn-sm mp-btn-danger" data-oid="${esc(o.orderId)}">Cancel</button></td>
       `;
@@ -298,10 +298,10 @@ export class MarketPanel {
     }
   }
 
-  // ── Gold display ─────────────────────────────────────────────────────────
+  // ── Scrip display ─────────────────────────────────────────────────────────
 
-  private _renderGold(): void {
-    const el = this.root.querySelector<HTMLElement>('#mp-gold');
+  private _renderScrip(): void {
+    const el = this.root.querySelector<HTMLElement>('#mp-scrip');
     if (el) el.textContent = `${this.balance}g`;
   }
 
@@ -369,7 +369,7 @@ export class MarketPanel {
           letter-spacing: 0.18em;
           text-transform: uppercase;
         }
-        .mp-gold {
+        .mp-scrip {
           font-family: var(--font-mono);
           font-size: 14px;
           color: rgba(240,210,110,0.95);
@@ -559,7 +559,7 @@ export class MarketPanel {
       <div id="mp-panel">
         <div class="mp-header">
           <span class="mp-title">Market</span>
-          <span class="mp-gold" id="mp-gold">${this.balance}g</span>
+          <span class="mp-scrip" id="mp-scrip">${this.balance} scrip</span>
           <button class="mp-close-btn" id="mp-close-btn">&times;</button>
         </div>
 

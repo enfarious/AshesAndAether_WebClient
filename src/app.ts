@@ -90,6 +90,8 @@ import { yieldToBrowser }     from '@/world/yieldUtil';
 import { ForestDebugRenderer } from '@/world/ForestDebugRenderer';
 import { ForestRenderer }      from '@/world/ForestRenderer';
 import { BuildingCollider }    from '@/world/BuildingCollider';
+import { DefenseFence }        from '@/world/DefenseFence';
+import { setFoFContext }       from '@/entities/pvpHostility';
 import { VaultRenderer }      from '@/world/VaultRenderer';
 import type { VaultTileData } from '@/world/VaultRenderer';
 import { PlacementMode }      from '@/village/PlacementMode';
@@ -140,6 +142,15 @@ export class App {
   /** Continuous overworld building collision — loaded per zone, wired into
    *  the PlayerEntity so WASD prediction matches the server. */
   private readonly _buildingCollider = new BuildingCollider();
+  /** Settlement-defense slice fence — built from defense_state.layout.bounds. */
+  private _defenseFence: DefenseFence | null = null;
+  private _defenseFenceBox: { minX: number; maxX: number; minZ: number; maxZ: number } | null = null;
+
+  private _clearDefenseFence(): void {
+    this._defenseFence?.clear();
+    this._defenseFenceBox = null;
+    this.factory?.getPlayerEntity()?.setFenceBox(null);
+  }
   private corpses: CorpseSystem;
   private weather: WeatherEffects;
   private clouds:  CloudLayer;
@@ -255,9 +266,13 @@ export class App {
    *  PE) — the flag still said "wired" so wasd kept talking to the dead PE,
    *  which is what caused WASD hitching after travel. */
   private _wiredPe:              import('@/entities/PlayerEntity').PlayerEntity | null = null;
-  private _wiredHeightmap:       import('@/world/HeightmapService').HeightmapService | null = null;
-  private _wiredWorldRoot:       import('three').Group | null = null;
-  private _wiredForestRenderer:  ForestRenderer | null = null;
+  // `undefined` = never wired to the current PE. Distinct from `null`, which
+  // is a real value ("this zone has no heightmap") that must still be pushed
+  // — otherwise a PE swap into a flat zone keeps the camera clamped to the
+  // previous zone's terrain.
+  private _wiredHeightmap:       import('@/world/HeightmapService').HeightmapService | null | undefined = undefined;
+  private _wiredWorldRoot:       import('three').Group | null | undefined = undefined;
+  private _wiredForestRenderer:  ForestRenderer | null | undefined = undefined;
 
   /** Fallback timer that hides the loading screen if `world_ready` never
    *  arrives. Armed when phase enters `loading_world`, cleared on
@@ -608,6 +623,21 @@ export class App {
         if (data?.id) this.disposableBeacons?.removeBeacon(data.id);
         return;
       }
+    });
+
+    // ── Settlement defense: slice fence (visual + WASD stop) ─────────
+    this.socket.on('defense_state', (payload: unknown) => {
+      const zoneId = this.world.zone?.id ?? '';
+      if (!zoneId.startsWith('defense:')) { this._clearDefenseFence(); return; }
+      const b = (payload as { layout?: { bounds?: { centerX?: number; centerZ?: number; halfExtentM?: number } } } | undefined)
+        ?.layout?.bounds;
+      if (!b || typeof b.centerX !== 'number' || typeof b.centerZ !== 'number' || typeof b.halfExtentM !== 'number') return;
+      const h = b.halfExtentM - 0.6;   // server walls at the edge, 0.5 m player radius
+      const box = { minX: b.centerX - h, maxX: b.centerX + h, minZ: b.centerZ - h, maxZ: b.centerZ + h };
+      this._defenseFenceBox = box;
+      this.factory.getPlayerEntity()?.setFenceBox(box);
+      if (!this._defenseFence) this._defenseFence = new DefenseFence(this.scene.scene);
+      this._defenseFence.show(box, this._heightmap);
     });
 
     // ── PvP state transitions (per-character; drives AD widget pulse) ─
@@ -1056,6 +1086,18 @@ export class App {
     // each current dep against the last-wired reference and re-apply on diff.
     // When PE itself swaps (zone transfer recreates the entity), all dep
     // tracking is invalidated since the new PE has none of our state.
+    // Friend-or-foe context for nameplates / targeting (pvpHostility.ts).
+    {
+      const selfId = this.entities.playerId;
+      const self = selfId ? this.entities.get(selfId) : undefined;
+      setFoFContext({
+        selfId,
+        selfReaver:        self?.reaver === true,
+        selfDefenseRaider: self?.defenseRaider === true,
+        inDefense:         (this.world.zone?.id ?? '').startsWith('defense:'),
+      });
+    }
+
     const pe = this.factory.getPlayerEntity();
     if (pe !== this._wiredPe) {
       this.wasd.setPlayerEntity(pe);
@@ -1064,12 +1106,13 @@ export class App {
       // Stable collider instance — its footprints reload per zone; the PE
       // just holds the reference. Re-applied here whenever the PE swaps.
       pe?.setBuildingCollider(this._buildingCollider);
+      pe?.setFenceBox(this._defenseFenceBox);
       this._wiredPe = pe;
       // PE swap → new PE has no deps applied. Invalidate dep tracking so the
       // checks below re-apply each one to the new PE.
-      this._wiredHeightmap      = null;
-      this._wiredWorldRoot      = null;
-      this._wiredForestRenderer = null;
+      this._wiredHeightmap      = undefined;
+      this._wiredWorldRoot      = undefined;
+      this._wiredForestRenderer = undefined;
     }
     if (pe && this._heightmap !== this._wiredHeightmap) {
       pe.setHeightmap(this._heightmap);
@@ -1789,7 +1832,7 @@ export class App {
       }
       this.router.onVaultComplete(p => {
         this.vaultCompleteToast!.show({
-          goldAwarded: p.goldAwarded,
+          scripAwarded: p.scripAwarded,
           hasPortal:   !!p.exitPortal,
         });
         this.instanceResultsWindow!.show(p);
@@ -1803,7 +1846,7 @@ export class App {
       // it does not double up with the scoreboard.
       this.router.onDungeonComplete(p => {
         this.vaultCompleteToast!.show({
-          goldAwarded: 0,
+          scripAwarded: 0,
           hasPortal:   false,
           headline:    'DUNGEON CLEARED',
           sub:         p.message ?? 'The dungeon is yours.',
@@ -2527,6 +2570,7 @@ export class App {
     // colliding against the last overworld's building polygons (invisible
     // walls inside the instance).
     this._buildingCollider.clear();
+    this._clearDefenseFence();
 
     // Clear stale room geometry + its client-side collision when leaving a
     // dungeon / staging instance for a normal zone — otherwise the room
@@ -2619,6 +2663,16 @@ export class App {
       this._assetsLoaded = true;
       this._maybeFinishLoading();
       return;
+    }
+
+    // Defense slices (`defense:<parentZoneId>:<instanceId>`) are instanced
+    // portions of a real overworld zone with no world data of their own —
+    // everything below loads the PARENT's (same coordinate frame). Mirrors
+    // @ashes/core worldDataZoneId and the UE client's DataZoneIdFor.
+    if (zoneId.startsWith('defense:')) {
+      const rest  = zoneId.slice('defense:'.length);
+      const colon = rest.indexOf(':');
+      if (colon > 0) zoneId = rest.slice(0, colon);
     }
 
     // Open-world zones — restore outdoor camera/fog if we were in a vault.

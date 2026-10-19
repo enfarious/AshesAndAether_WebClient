@@ -117,7 +117,7 @@ export class LootWindow {
           gap: 8px;
         }
 
-        .loot-gold {
+        .loot-scrip {
           font-size: 11px;
           color: rgba(212,201,184,0.7);
           letter-spacing: 0.06em;
@@ -216,11 +216,11 @@ export class LootWindow {
   private _renderPanel(session: ActiveSession): void {
     const { payload, voted, results } = session;
     const isSolo  = payload.mode === 'solo';
-    const hasGold = (payload.gold ?? 0) > 0;
+    const hasScrip = (payload.scrip ?? 0) > 0;
 
-    const goldLabel = isSolo
-      ? `+ ${payload.gold} gold`
-      : `+ ${payload.goldPerMember} gold each`;
+    const scripLabel = isSolo
+      ? `+ ${payload.scrip} scrip`
+      : `+ ${payload.scripPerMember} scrip each`;
 
     const titleText = isSolo ? 'Loot Received' : `Loot — ${payload.mobName}`;
 
@@ -266,7 +266,7 @@ export class LootWindow {
         ${!isSolo ? `<div class="loot-countdown" id="loot-cd-${payload.sessionId}"></div>` : ''}
       </div>
       <div class="loot-body">
-        ${hasGold ? `<div class="loot-gold">${goldLabel}</div>` : ''}
+        ${hasScrip ? `<div class="loot-scrip">${scripLabel}</div>` : ''}
         ${itemsHtml}
       </div>
     `;

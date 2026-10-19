@@ -6,7 +6,7 @@ import type { Entity } from '@/network/Protocol';
 import type { EntityObject } from './EntityObject';
 import { ClientConfig } from '@/config/ClientConfig';
 import { computeConTier, NOTORIOUS_READOUT, aggroNameColor, type ConReadout } from './ConTier';
-import { isPvpHostileToSelf } from './pvpHostility';
+import { isPvpHostileToSelf, isReaverTruce } from './pvpHostility';
 
 /**
  * NameplateManager — owns the CSS2DRenderer, builds and updates one DOM
@@ -460,6 +460,7 @@ class Nameplate {
                           || type === 'hireling'
                           || type === 'npc'
                           || entity.disposition === 'friendly'
+                          || isReaverTruce(entity)
                         );
 
     // ── Name (with guild tag for non-party players) ────────────────────
@@ -471,6 +472,8 @@ class Nameplate {
     }
     this.nameEl.textContent = displayName;
     this.nameEl.style.color = aggroNameColor(entity.disposition, isFriendly);
+    // A Reaver who isn't your enemy right now: you still see what they are.
+    if (type === 'player' && entity.reaver && !pvpHostile && !ctx.isSelf) this.nameEl.style.color = '#c08ae8';
 
     // ── Role tag (party + companions/hirelings get the panel letter) ────
     if (ctx.isParty || type === 'companion' || type === 'hireling') {

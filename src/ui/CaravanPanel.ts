@@ -5,10 +5,10 @@ import type { SocketClient } from '@/network/SocketClient';
  *
  * Opened by the server (`open_caravan_panel`) when the player F-keys a
  * caravan terminal. Lists every other terminal in the zone with its
- * straight-line distance + computed coin cost. "Hail" on a row books
+ * straight-line distance + computed scrip cost. "Hail" on a row books
  * the ride via `/caravan <terminalId>`.
  *
- * v0 displays cost only — server does not deduct coins yet (wallet
+ * v0 displays cost only — server does not deduct scrip yet (wallet
  * plumbing into world_entry is its own ticket). Buttons still fire and
  * the server-side handler will eventually start the ride; until Phase
  * C lands, the server acks the booking with a chat-style notice and
@@ -20,8 +20,8 @@ export interface CaravanDestination {
   name:      string;
   /** Straight-line distance in metres from the origin terminal. */
   distance:  number;
-  /** Display cost in coins. */
-  costCoins: number;
+  /** Display cost in scrip. */
+  costScrip: number;
 }
 
 export interface CaravanPanelPayload {
@@ -220,7 +220,7 @@ export class CaravanPanel {
     this.titleEl.textContent = `Hail a Caravan — ${p.fromTerminalName}`;
     this.subEl.textContent   = p.destinations.length === 0
       ? 'No other terminals in this zone.'
-      : `${p.destinations.length} destination${p.destinations.length === 1 ? '' : 's'}. Cost shown is the future fare — coins are NOT deducted yet.`;
+      : `${p.destinations.length} destination${p.destinations.length === 1 ? '' : 's'}. Cost shown is the future fare — scrip is NOT deducted yet.`;
 
     this.bodyEl.innerHTML = '';
     if (p.destinations.length === 0) {
@@ -247,7 +247,7 @@ export class CaravanPanel {
 
       const cost = document.createElement('div');
       cost.className   = 'cp-row-cost';
-      cost.textContent = String(d.costCoins);
+      cost.textContent = String(d.costScrip);
 
       const btn = document.createElement('button');
       btn.textContent = 'Hail';

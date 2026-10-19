@@ -4,7 +4,7 @@ import type { VaultCompletePayload, VaultSummaryPayload } from '@/network/Protoc
 /**
  * InstanceResultsWindow — the deliberate-leave surface for a cleared vault.
  *
- * Vault completion is a loot + gold result, not a boss-fight scoreboard, so
+ * Vault completion is a loot + scrip result, not a boss-fight scoreboard, so
  * it gets its own window rather than the PostFightScoreboardModal. Like the
  * scoreboard's instanced mode, this window is:
  *   - persistent — stays up until the player chooses to leave (or the
@@ -114,7 +114,7 @@ export class InstanceResultsWindow {
         color: rgba(220,205,180,0.7);
         letter-spacing: 0.04em;
       }
-      #ir-box .ir-gold {
+      #ir-box .ir-scrip {
         font-family: var(--font-mono, monospace);
         font-size: 13px;
         color: #ffe6a8;
@@ -245,8 +245,8 @@ export class InstanceResultsWindow {
       subParts.push(fmtDurationSec(summary.duration));
       subParts.push(`${summary.roomsCleared}/${summary.totalRooms} rooms`);
     }
-    if (payload.goldAwarded > 0) {
-      subParts.push(`+${payload.goldAwarded.toLocaleString()} gold each`);
+    if (payload.scripAwarded > 0) {
+      subParts.push(`+${payload.scripAwarded.toLocaleString()} scrip each`);
     }
     this.subEl.textContent = subParts.join('  ·  ');
 

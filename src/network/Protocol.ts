@@ -331,6 +331,13 @@ export interface Entity {
    *  decide whether this peer is hostile (drives target Attack button,
    *  nameplate color, tab-target cycling). */
   pvpArmed?: boolean;
+  /** Mob faction ('reaver', 'bandit', 'aether'…). Reaver-faction mobs are in
+   *  truce with Reaver players. */
+  faction?: string;
+  /** Player has gone Reaver (sticky corruption status). */
+  reaver?: boolean;
+  /** Defense slice: this player rides with the raiders (vs the militia). */
+  defenseRaider?: boolean;
   /** Mob-only: the id of whatever entity this mob is currently auto-
    *  attacking. Server pushes on AA-target transition + initial spawn.
    *  Drives the sub-target indicator (red when this mob is engaged with
@@ -1216,8 +1223,8 @@ export interface LootSessionStartPayload {
   mobName:       string;
   mode:          'solo' | 'party';
   items:         LootSessionItem[];
-  gold:          number;
-  goldPerMember: number;
+  scrip:          number;
+  scripPerMember: number;
   expiresAt:     number;
 }
 
@@ -1266,7 +1273,7 @@ export interface VillagePlacementModePayload {
   sizeZ:        number;
   modelAsset:   string;
   gridSize:     number;
-  goldCost:     number;
+  scripCost:     number;
 }
 
 export interface VillageStructureInfo {
@@ -1297,7 +1304,7 @@ export interface VillageCatalogEntry {
   category:       string;
   sizeX:          number;
   sizeZ:          number;
-  goldCost:       number;
+  scripCost:       number;
   maxPerVillage:  number;
 }
 
@@ -1507,7 +1514,7 @@ export interface VaultSummaryPayload {
 /** Server → Client: vault completed successfully. */
 export interface VaultCompletePayload {
   instanceId:  string;
-  goldAwarded: number;
+  scripAwarded: number;
   message?:    string;
   summary?:    VaultSummaryPayload;
   /** Exit portal spawn — client synthesizes this entity locally. Optional

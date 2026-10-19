@@ -130,6 +130,12 @@ export class PlacementMode {
     e.preventDefault();
 
     const pos = this.ghostMesh.position;
+    if (this.payload.viaCommand) {
+      const rad = (this.rotation * Math.PI) / 180;
+      this.socket.sendCommand(`/village build ${this.payload.catalogId} ${pos.x.toFixed(2)} ${pos.z.toFixed(2)} ${rad.toFixed(4)}`);
+      this.exit();
+      return;
+    }
     this.socket.sendVillagePlaceConfirm(
       this.payload.catalogId,
       pos.x,

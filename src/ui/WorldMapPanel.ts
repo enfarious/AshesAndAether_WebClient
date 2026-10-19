@@ -278,9 +278,25 @@ export class WorldMapPanel {
 
   get isVisible(): boolean { return this.visible; }
 
-  toggle(): void { this.visible ? this.hide() : this.show(); }
+  /** Open but in the background: dimmed, click-through, and not a modal for
+   *  the gamepad — the pad plays the game while the map stays up. */
+  get isDefocused(): boolean { return this.visible && this._defocused; }
+  private _defocused = false;
+
+  /** Map key: opens the map; with it already up, flips focus instead of
+   *  closing it (same as the UE client). Esc / the close button close it. */
+  toggle(): void {
+    if (!this.visible) { this.show(); return; }
+    this.setDefocused(!this._defocused);
+  }
+
+  setDefocused(defocused: boolean): void {
+    this._defocused = defocused;
+    this.root.classList.toggle('wm-defocused', defocused);
+  }
 
   show(): void {
+    this.setDefocused(false);
     this.root.style.display = 'flex';
     requestAnimationFrame(() => this.root.classList.add('wm-visible'));
     this.visible = true;
@@ -327,6 +343,7 @@ export class WorldMapPanel {
   }
 
   hide(): void {
+    this.setDefocused(false);
     this.root.classList.remove('wm-visible');
     this.root.style.display = 'none';
     this.visible = false;
@@ -1271,6 +1288,18 @@ export class WorldMapPanel {
           pointer-events: none;
         }
         #world-map-panel.wm-visible { pointer-events: auto; }
+        /* Defocused (Map key while open): the map stays up, dimmed, and every
+           click / wheel goes through to the world. */
+        #world-map-panel.wm-defocused { opacity: 0.55; }
+        #world-map-panel.wm-defocused,
+        #world-map-panel.wm-defocused * { pointer-events: none !important; }
+        #world-map-panel.wm-defocused #wm-backdrop { opacity: 0 !important; }
+        #world-map-panel.wm-defocused::after {
+          content: 'Map in the background · press M (Map) to take control of it';
+          position: absolute; bottom: 9vh; left: 50%; transform: translateX(-50%);
+          padding: 4px 12px; background: rgba(8,14,22,0.85); border: 1px solid #2d4860;
+          font-family: var(--font-mono, monospace); font-size: 12px; color: rgba(210,228,240,0.9);
+        }
 
         #wm-backdrop {
           position: absolute;

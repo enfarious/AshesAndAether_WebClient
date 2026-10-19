@@ -27,6 +27,8 @@ export interface SystemMenuCallbacks {
   market:     () => void;
   layout:     () => void;
   settings:   () => void;
+  /** Bug report / suggestion — the server's reports panel (/report). */
+  report:     () => void;
 }
 
 interface MenuEntry {
@@ -49,6 +51,7 @@ const ENTRIES: MenuEntry[] = [
   { id: 'market',     icon: '⚖', label: 'Market',     keybind: 'Ctrl+M' },
   { id: 'layout',     icon: '⬚', label: 'Layout',     keybind: 'F10' },
   { id: 'settings',   icon: '⚙', label: 'Settings',   keybind: '' },
+  { id: 'report',     icon: '✉', label: 'Report a Bug / Idea', keybind: '' },
 ];
 
 export class SystemMenu {

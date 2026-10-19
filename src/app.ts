@@ -65,6 +65,8 @@ import { ChoiceModal }        from '@/ui/ChoiceModal';
 import { PostFightScoreboardModal } from '@/ui/PostFightScoreboardModal';
 import { MerchantPanel }      from '@/ui/MerchantPanel';
 import { CaravanPanel }       from '@/ui/CaravanPanel';
+import { ServerPanel }        from '@/ui/ServerPanel';
+import { MusicDirector }      from '@/audio/MusicDirector';
 import { DummyPanel }         from '@/ui/DummyPanel';
 import { TravelPanel }        from '@/ui/TravelPanel';
 import { CommandHelpPanel }   from '@/ui/CommandHelpPanel';
@@ -238,6 +240,11 @@ export class App {
   // instead of hand-rolled OR-chains. Panels register themselves at
   // construction site. See ModalStack for the contract.
   private modalStack = new ModalStack();
+  /** Generic server-built window (`open_village_panel`): villages, guild,
+   *  journal, reports, inspections — see ServerPanel. */
+  private serverPanel: ServerPanel | null = null;
+  /** Zone / ward / boss-aware music (twin of the UE AA_MusicSubsystem). */
+  private music: MusicDirector | null = null;
 
   // Gamepad ability-arming controller — bridges fb3-on-slot → confirm prompt
   // → fire. Constructed once the ActionBar exists. Self-cast only for now;
@@ -409,6 +416,7 @@ export class App {
       onBeaconDetailChange: () => { this.guildBeacons?.rebuildAuras(); },
       onMiasmaQualityChange: () => { this._rebuildMiasmaFog(); },
       onMiasmaRangeChange:   () => { this._rebuildMiasmaFog(); },
+      onMusicChange:         () => { this.music?.applySettings(); },
     }, this.gamepadBindings);
     this.modalStack.register(this.settingsWindow);
 
@@ -425,6 +433,20 @@ export class App {
     this.camInput = new CameraInput(this.camera, canvas);
     this.assets  = new AssetLoader();
     this.factory = new EntityFactory(this.scene.scene, this.entities, this.player);
+    this.music = new MusicDirector({
+      inWorld:       () => this.session.phase === 'in_world',
+      zoneId:        () => this.world.zone?.id ?? '',
+      playerId:      () => this.entities.playerId,
+      playerXZ:      () => {
+        const pe = this.factory.getPlayerEntity();
+        return pe ? { x: pe.object3d.position.x, z: pe.object3d.position.z } : null;
+      },
+      entities:      () => this.entities.getAll(),
+      wardAnchors:   () => this.beacons?.anchorList() ?? [],
+      isVillage:     () => this.world.isVillage,
+      timeOfDay:     () => this.world.getTimeOfDayNormalized(),
+      aetherDensity: () => this.world.aetherDensity,
+    });
     this.autoAttackRing = new AutoAttackRing(this.scene.scene, this.factory, this.player);
     this.subTargetIndicator = new SubTargetIndicator(
       this.scene.scene,
@@ -876,6 +898,8 @@ export class App {
 
   dispose(): void {
     cancelAnimationFrame(this.rafId);
+    this.music?.dispose();
+    this.music = null;
     this.clickMove.dispose();
     this.wasd.dispose();
     this.gamepad.dispose();
@@ -1956,6 +1980,21 @@ export class App {
       // rolling 30s DPS + hit/miss/crit/glance/pen/deflect counters.
       this.dummyPanel = new DummyPanel(this.uiRoot, this.socket, this.router);
     }
+    if (!this.serverPanel) {
+      this.serverPanel = new ServerPanel(this.uiRoot, this.socket, {
+        getPlayerXZ: () => {
+          const pe = this.factory.getPlayerEntity();
+          return pe ? { x: pe.object3d.position.x, z: pe.object3d.position.z } : null;
+        },
+        startPlacement: (piece, _isBuilding, sizeX, sizeZ, grid) => {
+          this.placementMode?.enter({
+            catalogId: piece, structureName: piece, displayName: piece,
+            sizeX, sizeZ, modelAsset: '', gridSize: grid, scripCost: 0, viaCommand: true,
+          });
+        },
+      });
+      this.modalStack.register(this.serverPanel);
+    }
     if (!this.caravanPanel) {
       // Modal that opens on `open_caravan_panel` (F-key on a caravan
       // terminal). Rows fire `/caravan <terminalId>` on Hail.
@@ -1974,6 +2013,7 @@ export class App {
         () => this._heightmap,
         this.socket,
         this.player,
+        (x, z, terrainY, prevY) => this.factory.getPlayerEntity()?.roadSurfaceY(x, z, terrainY, prevY) ?? terrainY,
       );
       this.caravanRide.bind(this.world);
     }
@@ -2137,6 +2177,7 @@ export class App {
         market:     () => this.marketPanel?.toggle(),
         layout:     () => this.layoutEditor?.toggle(),
         settings:   () => this.settingsWindow?.toggle(),
+        report:     () => this.socket.sendCommand('/report'),
       });
     }
     // Layout editor — drag-to-reposition HUD widgets
@@ -2209,7 +2250,9 @@ export class App {
       // Single source of truth for "is any modal panel open?" — panels
       // register themselves with the ModalStack at construction. New windows
       // are picked up automatically; no closure to keep in sync.
-      this.gamepad.setIsMenuOpen(() => this.modalStack.anyOpen);
+      // A defocused world map on top isn't a modal: the pad plays the game.
+      this.gamepad.setIsMenuOpen(() => this.modalStack.anyOpen
+        && !(this.worldMapPanel?.isDefocused && this.modalStack.top === this.worldMapPanel));
 
       // d-pad (targeted state): U/D walks TargetWindow's action cursor,
       // L/R walks ActionBar's slot-focus cursor. Each axis hides the other

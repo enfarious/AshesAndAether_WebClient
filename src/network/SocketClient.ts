@@ -102,6 +102,9 @@ export class SocketClient {
       'open_hireling_panel',
       'open_dummy_panel',
       'open_caravan_panel',
+      // Generic server-built window (ServerPanel): villages, guild, journal,
+      // NPC talk, bug reports, building inspection …
+      'open_village_panel',
       'open_merchant_panel',
       // Server signal to open TravelPanel pre-selected to a tab — used by
       // F-key on train_station today; future ship terminal will reuse.

@@ -16,6 +16,7 @@
  *   - Chat history channel selection & lookback settings
  */
 
+import { KEY_MUSIC_VOL, KEY_MUSIC_FREQ, DEF_MUSIC_VOL, DEF_MUSIC_FREQ, MUSIC_FREQ_OPTIONS } from '@/audio/MusicDirector';
 import { ClientConfig, type SelfPlateMode } from '@/config/ClientConfig';
 import {
   loadSettings, saveSettings, getDefaultEndpoint, getDefaultModel,
@@ -44,6 +45,8 @@ export interface SettingsCallbacks {
   /** Fired when the user picks a new Miasma fog view distance. Also
    *  triggers a fog rebuild because plane size is a constructor param. */
   onMiasmaRangeChange: () => void;
+  /** Music volume / frequency changed (MusicDirector re-reads localStorage). */
+  onMusicChange?: () => void;
 }
 
 // ── localStorage keys ───────────────────────────────────────────────────────
@@ -554,7 +557,22 @@ export class SettingsWindow {
       min: 0, max: 100, step: 1,
       initial: loadNum(KEY_MASTER_VOL, DEF_MASTER_VOL),
       format: (v) => `${Math.round(v)}%`,
-      onChange: (v) => { saveNum(KEY_MASTER_VOL, v); },
+      onChange: (v) => { saveNum(KEY_MASTER_VOL, v); this.callbacks.onMusicChange?.(); },
+    }));
+
+    page.appendChild(this._buildSlider({
+      label: 'Music Volume',
+      min: 0, max: 100, step: 5,
+      initial: loadNum(KEY_MUSIC_VOL, DEF_MUSIC_VOL),
+      format: (v) => (v <= 0 ? 'Off' : `${Math.round(v)}%`),
+      onChange: (v) => { saveNum(KEY_MUSIC_VOL, v); this.callbacks.onMusicChange?.(); },
+    }));
+
+    page.appendChild(this._buildSelect({
+      label: 'Music Frequency',
+      options: MUSIC_FREQ_OPTIONS,
+      initial: String(Math.round(loadNum(KEY_MUSIC_FREQ, DEF_MUSIC_FREQ))),
+      onChange: (v) => { saveNum(KEY_MUSIC_FREQ, Number(v)); this.callbacks.onMusicChange?.(); },
     }));
 
     page.appendChild(this._buildSlider({

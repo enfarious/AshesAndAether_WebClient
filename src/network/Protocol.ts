@@ -318,6 +318,8 @@ export interface Entity {
   /** Notorious Monster flag — when true, the nameplate shows "??" in
    *  place of con arrows (level is unknown to the viewer). */
   notorious?: boolean;
+  /** Bosses only: 'zone' | 'dungeon' | 'region' | 'world' | 'vault'. */
+  bossKind?: string;
   /** Guild tag (3-5 uppercase chars) for non-party player plates —
    *  rendered as "[TAG] Name". Resolved server-side at zone-in. */
   guildTag?: string;
@@ -1274,6 +1276,10 @@ export interface VillagePlacementModePayload {
   modelAsset:   string;
   gridSize:     number;
   scripCost:     number;
+  /** Client-only: placement started from a server panel's `@place` button
+   *  confirms with `/village build <piece> x z rot` (the current path, same
+   *  as the UE client) instead of the legacy village_place_confirm event. */
+  viaCommand?:  boolean;
 }
 
 export interface VillageStructureInfo {

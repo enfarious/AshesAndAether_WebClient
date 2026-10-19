@@ -43,6 +43,9 @@ interface ActiveRide {
   curX:       number;
   curZ:       number;
   curHeading: number;
+  /** Road surface Y last frame — keeps the cart on the deck it's on
+   *  (bridge vs the road underneath) instead of jumping between levels. */
+  surfaceY?:  number;
   /** True after the rider reaches the last waypoint locally. Visual is
    *  frozen at final pos while we wait for the server's authoritative
    *  caravan_ride_ended. Catches the rare drift case cleanly. */
@@ -66,6 +69,10 @@ export class CaravanRide {
      *  map markers + any other PlayerState-position consumers see the
      *  live location instead of the frozen ride-start position. */
     private readonly playerState: PlayerState,
+    /** Road surface (bridge decks, overpasses, ramps) continuous with the
+     *  cart's last height; falls back to terrain. Same rule the server's
+     *  RoadSurface uses for the authoritative ride. */
+    private readonly roadSurfaceY?: (x: number, z: number, terrainY: number, prevY: number) => number,
   ) {}
 
   bind(world: WorldState): void {
@@ -192,7 +199,11 @@ export class CaravanRide {
 
   private _applyVisuals(ride: ActiveRide): void {
     const hm = this.getHeightmap();
-    const groundY = hm?.getElevation(ride.curX, ride.curZ) ?? 0;
+    const terrainY = hm?.getElevation(ride.curX, ride.curZ) ?? 0;
+    const groundY = this.roadSurfaceY
+      ? this.roadSurfaceY(ride.curX, ride.curZ, terrainY, ride.surfaceY ?? terrainY)
+      : terrainY;
+    ride.surfaceY = groundY;
     const y = groundY + ride.hoverM;
 
     const rider = this.factory.getObject(ride.riderId);

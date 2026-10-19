@@ -1035,17 +1035,39 @@ export class PlayerEntity extends EntityObject {
     if (this._heightmap) h = this._heightmap.getElevation(x, z);
     if (h === null) h = this._sampleTerrainHeight(x, z);
 
-    if (this._roadObjects.length > 0) {
-      this._downRay.ray.origin.set(x, 4000, z);
-      this._downRay.ray.direction.set(0, -1, 0);
-      const roadHits = this._downRay.intersectObjects(this._roadObjects, true);
-      if (roadHits.length > 0) {
-        const roadY = roadHits[0]?.point.y ?? null;
-        if (roadY !== null && (h === null || roadY > h)) h = roadY;
-      }
+    if (h === null) {
+      // No terrain: the topmost road is all we have.
+      return this._roadObjects.length > 0 ? this.roadSurfaceY(x, z, -Infinity, Infinity) : null;
     }
+    // Roads now stack (bridge decks / overpasses over the road below, from
+    // the road-elevation bake): stay on the level you're on.
+    const cur = this.object3d.position.y;
+    return this.roadSurfaceY(x, z, h, Number.isFinite(cur) && cur !== 0 ? cur : h);
+  }
 
-    return h;
+  /** Max rise onto a road level in one step (m) — climbing a ramp is many
+   *  small steps; jumping onto a deck from the road under it is not. */
+  private static readonly ROAD_STEP_M = 1.5;
+
+  /**
+   * Road surface at (x, z) continuous with `prevY`: the highest road level
+   * no more than ROAD_STEP_M above prevY, else the terrain. Never below the
+   * terrain. Mirrors the server's RoadSurface.resolveY, so walking under an
+   * overpass keeps you on the street instead of snapping onto the deck.
+   */
+  roadSurfaceY(x: number, z: number, terrainY: number, prevY: number): number {
+    if (this._roadObjects.length === 0) return terrainY;
+    this._downRay.ray.origin.set(x, 4000, z);
+    this._downRay.ray.direction.set(0, -1, 0);
+    const hits = this._downRay.intersectObjects(this._roadObjects, true);
+    let best = terrainY;
+    for (const hit of hits) {
+      const y = hit.point.y;
+      // Upward-facing surfaces only (slab tops) — skip slab undersides.
+      if (hit.face && hit.face.normal.y < 0.2) continue;
+      if (y <= prevY + PlayerEntity.ROAD_STEP_M && y > best) best = y;
+    }
+    return best;
   }
 
   /** Downward raycast against terrain GLB meshes — used outside DEM bounds. */
